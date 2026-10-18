@@ -50,6 +50,9 @@ export default defineConfig({
     //    the live-install gate above: that one inspects the CHECKOUT, and ~/.ssh is
     //    HOME-scoped -- a clean worktree run leaked 62 real keys (ENROLL813,
     //    2026-09-15). A seam, not a gate: it sets state, so it lives in its own file.
+    //  - keychain-spawn-guard: no test may spawn the macOS `security` CLI, so no
+    //    test can overwrite the live vault master key (card 31a6e54d). First, so
+    //    the other setup files are covered too.
     //  - no-live-ollama: no test reaches a real Ollama (port 11434, and the
     //    launch-time EMBED_URL / OLLAMA_URL). The embedding call is answered
     //    "backend down" without a socket; any other connect there is refused and
@@ -57,6 +60,7 @@ export default defineConfig({
     //    unnoticed, because the embedding path swallows its own failures (MT1,
     //    card d4e7fea7, 2026-10-17).
     setupFiles: [
+      './src/__tests__/setup/keychain-spawn-guard.ts',
       './src/__tests__/setup/assert-not-live-install.ts',
       './src/__tests__/setup/assert-supported-node.ts',
       './src/__tests__/setup/default-ssh-dir-seam.ts',
