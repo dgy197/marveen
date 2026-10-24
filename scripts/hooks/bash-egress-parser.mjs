@@ -1139,8 +1139,11 @@ export function positionalBody(body, args) {
 // $0..$9 / ${0}..${9} become the argument; $@ / $* the arguments from $1 on, as bash splits them:
 // separate words, also inside double quotes, except "$*", which is one word. Inside '...' nothing is
 // substituted. The arguments are PLAIN_ARG words, so pasting them cannot re-quote anything.
-function substitutePositionals(body, args) {
+function substitutePositionals(body, args, quoteArguments = false) {
   const rest = args.slice(1)
+  const value = (arg, quoted) => !quoteArguments ? arg : quoted
+    ? arg.replace(/[\\"$`]/g, '\\$&')
+    : "'" + arg.replace(/'/g, "'\\''") + "'"
   let out = ''; let q = null
   for (let k = 0; k < body.length; k++) {
     const c = body[k]
@@ -1151,12 +1154,39 @@ function substitutePositionals(body, args) {
     const m = c === '$' ? /^\$(?:\{([0-9@*])\}|([0-9@*]))/.exec(body.slice(k)) : null
     if (!m) { out += c; continue }
     const ref = m[1] ?? m[2]
-    if (/[0-9]/.test(ref)) out += args[Number(ref)] ?? ''
-    else if (ref === '*' && q === '"') out += rest.join(' ')
-    else out += q === '"' ? rest.join('" "') : rest.join(' ')
+    if (/[0-9]/.test(ref)) out += value(args[Number(ref)] ?? '', q === '"')
+    else if (ref === '*' && q === '"') out += rest.map((a) => value(a, true)).join(' ')
+    else out += q === '"' ? rest.map((a) => value(a, true)).join('" "') : rest.map((a) => value(a, false)).join(' ')
     k += m[0].length - 1
   }
   return out
+}
+// Direct calls may carry literal JSON or prose, not just URL-shaped words. Keep the
+// conservative positional path for dynamic arguments, redirections and shell metacharacters.
+// In particular, do not quote a runtime value into a supposedly literal destination.
+function directFunctionBody(body, args, callText) {
+  const existing = positionalBody(body, args)
+  if (existing !== null) return existing
+  if (/[\n\r$`\\<>]/.test(callText) || args.some((a) => /[$`\\;|&<>()\n\r]/.test(a))) return null
+  let quote = null
+  for (const c of callText) {
+    if (c === quote) quote = null
+    else if (quote === null && (c === '"' || c === "'")) quote = c
+    else if (quote === null && /[*?\[\]{}~]/.test(c)) return null
+  }
+  if (quote !== null) return null
+  // Unquoted expansion splits fields and expands globs; do not turn it into one word.
+  quote = null
+  for (let k = 0; k < body.length; k++) {
+    const c = body[k]
+    if (c === '\\' && quote !== "'") { k++; continue }
+    if (c === quote) quote = null
+    else if (quote === null && (c === '"' || c === "'")) quote = c
+    else if (quote === null && c === '$' && POSITIONAL_REF.test(body.slice(k))) return null
+  }
+  if (/\b(?:shift|getopts)\b|\bset\b[^;&|\n]*(?:\s--(?:\s|$)|\s[^-+\s])/.test(body)
+    || /\$\{[0-9@*][^}]/.test(body)) return null
+  return substitutePositionals(body, args, true)
 }
 const NESTING_LIMIT = { deny: true, reason: 'nesting-limit', hosts: ['<too deeply nested to read>'] }
 const MAX_DEPTH = 4
@@ -1764,7 +1794,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
           // curl or wget is denied for it.
           if (depth >= MAX_DEPTH - 1 && !fetches) continue
           if (depth >= MAX_DEPTH) return NESTING_LIMIT
-          const body = positionalBody(fbody, [word, ...args])
+          const body = directFunctionBody(fbody, [word, ...args], text)
           if (body === null) return { deny: true, reason: 'function-positional', hosts: [`<curl/wget argument of ${word}() from $1..$9, $@ or $*>`] }
           const r = judgeBody(withDefs(body), depth + 1, vendorHosts, vendorDomains, fetches || stdinTainted)
           if (r.deny) return { ...r, reason: `function-${r.reason}` }

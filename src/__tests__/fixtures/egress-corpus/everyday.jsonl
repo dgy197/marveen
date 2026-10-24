@@ -1,0 +1,515 @@
+{"id":"E001","class":"E","group":"mem","cmd":"curl -s -X POST http://localhost:3420/api/memories -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"agent_id\":\"brainy\",\"content\":\"Feladat kesz, PR nyitva\",\"category\":\"hot\",\"keywords\":\"pr, kesz\"}'","expect":"allow"}
+{"id":"E002","class":"E","group":"mem","cmd":"curl -s -X POST http://localhost:3420/api/memories -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"agent_id\":\"ezermester\",\"content\":\"Tanulsag: a hook fail-closed\",\"category\":\"warm\",\"keywords\":\"hook, tanulsag\"}'","expect":"allow"}
+{"id":"E003","class":"E","group":"mem","cmd":"curl -s -X POST http://localhost:3420/api/memories -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"agent_id\":\"fejleszto\",\"content\":\"Preferencia: tomor valasz\",\"category\":\"cold\",\"keywords\":\"preferencia\"}'","expect":"allow"}
+{"id":"E004","class":"E","group":"mem","cmd":"curl -s -X POST http://localhost:3420/api/memories -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"agent_id\":\"iroda\",\"content\":\"Hatarido: pentek 12:00\",\"category\":\"warm\",\"keywords\":\"hatarido\"}'","expect":"allow"}
+{"id":"E005","class":"E","group":"mem","cmd":"curl -s -X POST http://localhost:3420/api/memories -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"agent_id\":\"hajcsar\",\"content\":\"Konfig: port 3420\",\"category\":\"hot\",\"keywords\":\"port, konfig\"}'","expect":"allow"}
+{"id":"E006","class":"E","group":"mem","cmd":"curl -s -X POST http://localhost:3420/api/memories -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"agent_id\":\"hazmester\",\"content\":\"Projekt kontextus: egress kapu\",\"category\":\"cold\",\"keywords\":\"egress, kontextus\"}'","expect":"allow"}
+{"id":"E007","class":"E","group":"mem","cmd":"curl -s -X POST http://localhost:3420/api/memories -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"agent_id\":\"lapszabasz\",\"content\":\"Cold: hibaelemzes\",\"category\":\"shared\",\"keywords\":\"hiba, elemzes\"}'","expect":"allow"}
+{"id":"E008","class":"E","group":"mem","cmd":"curl -s -D /tmp/mem-fejlec-brainy.txt -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" \"http://localhost:3420/api/memories?agent=brainy&q=egress&mode=hybrid&category=warm\"","expect":"allow"}
+{"id":"E009","class":"E","group":"mem","cmd":"curl -s -D /tmp/mem-fejlec-ezermester.txt -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" \"http://localhost:3420/api/memories?agent=ezermester&q=kanban&mode=hybrid&category=hot\"","expect":"allow"}
+{"id":"E010","class":"E","group":"mem","cmd":"curl -s -D /tmp/mem-fejlec-iroda.txt -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" \"http://localhost:3420/api/memories?agent=iroda&q=szamla&mode=hybrid&category=cold\"","expect":"allow"}
+{"id":"E011","class":"E","group":"mem","cmd":"curl -s -D /tmp/mem-fejlec-hajcsar.txt -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" \"http://localhost:3420/api/memories?agent=hajcsar&q=hatarido&mode=hybrid&category=warm\"","expect":"allow"}
+{"id":"E012","class":"E","group":"mem","cmd":"grep -i '^x-memory-search' /tmp/mem-fejlec-ezermester.txt","expect":"allow"}
+{"id":"E013","class":"E","group":"mem","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" \"http://localhost:3420/api/memories?agent=ezermester&category=hot&limit=40\"","expect":"allow"}
+{"id":"E014","class":"E","group":"mem","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" \"http://localhost:3420/api/memories?agent=ezermester&q=egress&strict=1\"","expect":"allow"}
+{"id":"E015","class":"E","group":"mem","cmd":"curl -s -X PATCH http://localhost:3420/api/memories/5720 -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"category\":\"cold\",\"updated_by\":\"ezermester\"}'","expect":"allow"}
+{"id":"E016","class":"E","group":"mem","cmd":"curl -s -X PATCH http://localhost:3420/api/memories/5604 -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"category\":\"cold\",\"updated_by\":\"ezermester\"}'","expect":"allow"}
+{"id":"E017","class":"E","group":"mem","cmd":"curl -s -X PATCH http://localhost:3420/api/memories/5612 -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"category\":\"cold\",\"updated_by\":\"ezermester\"}'","expect":"allow"}
+{"id":"E018","class":"E","group":"mem","cmd":"curl -s -X PATCH http://localhost:3420/api/memories/6001 -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"category\":\"cold\",\"updated_by\":\"ezermester\"}'","expect":"allow"}
+{"id":"E019","class":"E","group":"mem","cmd":"curl -s -X PATCH http://localhost:3420/api/memories/6044 -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"category\":\"cold\",\"updated_by\":\"ezermester\"}'","expect":"allow"}
+{"id":"E020","class":"E","group":"mem","cmd":"curl -s -X PUT http://localhost:3420/api/memories/6012 -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -H \"X-Agent-Id: ezermester\" -d '{\"content\":\"frissitett tartalom\"}'","expect":"allow"}
+{"id":"E021","class":"E","group":"mem","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/memories/6012/versions","expect":"allow"}
+{"id":"E022","class":"E","group":"mem","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/memories/6012","expect":"allow"}
+{"id":"E023","class":"E","group":"mem","cmd":"curl -s -X POST http://localhost:3420/api/daily-log -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" --data-binary @- <<'JSON'\n{\"agent_id\":\"ezermester\",\"content\":\"## 14:05 -- Egress mérés\\nA korpusz lefutott, 0 tiltás.\"}\nJSON","expect":"allow"}
+{"id":"E024","class":"E","group":"mem","cmd":"python3 - <<'PY'\nimport json\np = {\"agent_id\": \"ezermester\", \"content\": \"Memória: a hook https://example.test/doc alapján dolgozik\", \"category\": \"warm\"}\nopen('/tmp/mem-payload.json', 'w').write(json.dumps(p))\nPY\ncurl -s -X POST http://localhost:3420/api/memories -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" --data-binary @/tmp/mem-payload.json","expect":"allow"}
+{"id":"E025","class":"E","group":"kanban","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/kanban","expect":"allow"}
+{"id":"E026","class":"E","group":"kanban","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/kanban | python3 -c \"import json,sys; d=json.load(sys.stdin); print(len([c for c in d if c['status']=='in_progress']))\"","expect":"allow"}
+{"id":"E027","class":"E","group":"kanban","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/kanban | python3 -c \"import json,sys; [print(c['id'], c['title']) for c in json.load(sys.stdin) if c['assignee']=='ezermester']\"","expect":"allow"}
+{"id":"E028","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"title\":\"Egress kapu keményítés\",\"status\":\"planned\",\"assignee\":\"ezermester\",\"priority\":\"high\"}'","expect":"allow"}
+{"id":"E029","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"title\":\"Számlamentés hibajelzés\",\"status\":\"in_progress\",\"assignee\":\"iroda\",\"priority\":\"normal\"}'","expect":"allow"}
+{"id":"E030","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"title\":\"Dashboard token forgatás\",\"status\":\"waiting\",\"assignee\":\"brainy\",\"priority\":\"low\"}'","expect":"allow"}
+{"id":"E031","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"title\":\"TimeTracker ellenőrzés\",\"status\":\"planned\",\"assignee\":\"fejleszto\",\"priority\":\"urgent\"}'","expect":"allow"}
+{"id":"E032","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"title\":\"Heti riport\",\"status\":\"in_progress\",\"assignee\":\"hajcsar\",\"priority\":\"normal\"}'","expect":"allow"}
+{"id":"E033","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"title\":\"Hook visszaállítási terv\",\"status\":\"planned\",\"assignee\":\"hazmester\",\"priority\":\"high\"}'","expect":"allow"}
+{"id":"E034","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban/f0e9aee4/move -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"status\":\"in_progress\"}'","expect":"allow"}
+{"id":"E035","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban/369f6df0/move -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"status\":\"done\"}'","expect":"allow"}
+{"id":"E036","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban/1c603227/move -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"status\":\"waiting\"}'","expect":"allow"}
+{"id":"E037","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban/7d2b49b4/move -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"status\":\"done\"}'","expect":"allow"}
+{"id":"E038","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban/3d84bec8/move -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"status\":\"in_progress\"}'","expect":"allow"}
+{"id":"E039","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban/5a5b82a0/move -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"status\":\"done\"}'","expect":"allow"}
+{"id":"E040","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban/f0e9aee4/comments -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"author\":\"ezermester\",\"content\":\"Kész, teszt 52/52 zöld\"}'","expect":"allow"}
+{"id":"E041","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban/369f6df0/comments -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"author\":\"iroda\",\"content\":\"Várok Brainy jóváhagyására\"}'","expect":"allow"}
+{"id":"E042","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban/1c603227/comments -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"author\":\"hajcsar\",\"content\":\"Határozat letöltve\"}'","expect":"allow"}
+{"id":"E043","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban/7d2b49b4/comments -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"author\":\"brainy\",\"content\":\"Átnéztem, rendben\"}'","expect":"allow"}
+{"id":"E044","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban/3d84bec8/comments -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"author\":\"fejleszto\",\"content\":\"PR: https://git.example.test/o/r/pull/12\"}'","expect":"allow"}
+{"id":"E045","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban/f0e9aee4/archive -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\"","expect":"allow"}
+{"id":"E046","class":"E","group":"kanban","cmd":"curl -s -X POST http://localhost:3420/api/kanban/f0e9aee4/comments -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" --data-binary @- <<'JSON'\n{\"author\":\"ezermester\",\"content\":\"Eredmény: a korpusz 0 tiltást ad. Részletek: https://example.test/riport és `curl -s http://localhost:3420/api/health`\"}\nJSON","expect":"allow"}
+{"id":"E047","class":"E","group":"kanban","cmd":"python3 - <<'PY'\nimport json, subprocess, urllib.request\nreq = urllib.request.Request('http://localhost:3420/api/kanban', headers={'Authorization': 'Bearer ' + open('/Users/gyorgydecsi/marveen/store/.dashboard-token').read().strip()})\nprint(len(json.load(urllib.request.urlopen(req))))\nPY","expect":"allow"}
+{"id":"E048","class":"E","group":"msg","cmd":"bash /Users/gyorgydecsi/marveen/scripts/agent-msg.sh ezermester brainy \"Kész: PR nyitva, teszt zöld.\"","expect":"allow"}
+{"id":"E049","class":"E","group":"msg","cmd":"bash /Users/gyorgydecsi/marveen/scripts/agent-msg.sh ezermester brainy \"Várok: jóváhagyás Brainytól.\"","expect":"allow"}
+{"id":"E050","class":"E","group":"msg","cmd":"bash /Users/gyorgydecsi/marveen/scripts/agent-msg.sh iroda brainy \"Számlamentés lefutott, 14 új.\"","expect":"allow"}
+{"id":"E051","class":"E","group":"msg","cmd":"bash /Users/gyorgydecsi/marveen/scripts/agent-msg.sh hajcsar brainy \"Határozat érkezett, Andinak készül a levél.\"","expect":"allow"}
+{"id":"E052","class":"E","group":"msg","cmd":"bash /Users/gyorgydecsi/marveen/scripts/agent-msg.sh brainy iroda \"Szia, kérlek nézd meg a kintlévőséget.\"","expect":"allow"}
+{"id":"E053","class":"E","group":"msg","cmd":"bash /Users/gyorgydecsi/marveen/scripts/agent-msg.sh fejleszto brainy \"Bitang: a build átment.\"","expect":"allow"}
+{"id":"E054","class":"E","group":"msg","cmd":"bash /Users/gyorgydecsi/marveen/scripts/agent-msg.sh hazmester brainy \"Memória-nyomás 12% szabad, figyelem.\"","expect":"allow"}
+{"id":"E055","class":"E","group":"msg","cmd":"bash scripts/agent-msg.sh ezermester brainy \"Kész.\"","expect":"allow"}
+{"id":"E056","class":"E","group":"msg","cmd":"bash /Users/gyorgydecsi/marveen/scripts/agent-msg.sh ezermester brainy - <<'MSG'\nÖsszefoglaló: a mérés lefutott.\nPR: https://git.example.test/example-org/example-repo/pull/42\nKockázat: nincs.\nMSG","expect":"allow"}
+{"id":"E057","class":"E","group":"msg","cmd":"echo \"Kész a node, részletek a kártyán.\" | bash /Users/gyorgydecsi/marveen/scripts/agent-msg.sh ezermester brainy -","expect":"allow"}
+{"id":"E058","class":"E","group":"msg","cmd":"printf '%s\\n' \"Státusz: zöld\" | bash /Users/gyorgydecsi/marveen/scripts/agent-msg.sh hazmester brainy -","expect":"allow"}
+{"id":"E059","class":"E","group":"msg","cmd":"cat /tmp/riport.txt | bash /Users/gyorgydecsi/marveen/scripts/agent-msg.sh iroda brainy -","expect":"allow"}
+{"id":"E060","class":"E","group":"msg","cmd":"OUT=$(bash /Users/gyorgydecsi/marveen/scripts/agent-msg.sh ezermester brainy \"Ping\"); echo \"$OUT\"","expect":"allow"}
+{"id":"E061","class":"E","group":"msg","cmd":"bash /Users/gyorgydecsi/marveen/scripts/agent-msg.sh ezermester brainy \"Hiba: a teszt bukik, kimenet a kártyán\" || echo \"küldés sikertelen\"","expect":"allow"}
+{"id":"E062","class":"E","group":"msg","cmd":"curl -s -X POST http://localhost:3420/api/messages -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" --data-binary @- <<'JSON'\n{\"from\":\"ezermester\",\"to\":\"brainy\",\"content\":\"PR kint: https://git.example.test/o/r/pull/7\"}\nJSON","expect":"allow"}
+{"id":"E063","class":"E","group":"msg","cmd":"curl -s -X POST http://localhost:3420/api/messages -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" --data-binary @- <<'JSON'\n{\"from\":\"iroda\",\"to\":\"brainy\",\"content\":\"Kész, a letöltés: https://example.test/download/1\"}\nJSON","expect":"allow"}
+{"id":"E064","class":"E","group":"msg","cmd":"curl -s -X POST http://localhost:3420/api/messages -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" --data-binary @- <<'JSON'\n{\"from\":\"hajcsar\",\"to\":\"brainy\",\"content\":\"Határozat: https://example.test/hatarozat\"}\nJSON","expect":"allow"}
+{"id":"E065","class":"E","group":"msg","cmd":"curl -s -X POST http://localhost:3420/api/messages -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" --data-binary @- <<'JSON'\n{\"from\":\"hazmester\",\"to\":\"brainy\",\"content\":\"Memguard: 11% szabad\"}\nJSON","expect":"allow"}
+{"id":"E066","class":"E","group":"msg","cmd":"curl -s -X POST http://localhost:3420/api/messages -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" --data-binary @- <<'JSON'\n{\"from\":\"fejleszto\",\"to\":\"brainy\",\"content\":\"A doksi: https://docs.example.test/api\"}\nJSON","expect":"allow"}
+{"id":"E067","class":"E","group":"msg","cmd":"curl -s -X POST http://localhost:3420/api/messages -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" --data-binary @- <<'JSON'\n{\"from\":\"lapszabasz\",\"to\":\"brainy\",\"content\":\"Előnézet: https://preview.example.test/\"}\nJSON","expect":"allow"}
+{"id":"E068","class":"E","group":"msg","cmd":"curl -s -X POST http://localhost:3420/api/messages -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"from\":\"ezermester\",\"to\":\"brainy\",\"content\":\"Kész, lásd https://git.example.test/o/r/pull/9\"}'","expect":"allow"}
+{"id":"E069","class":"E","group":"msg","cmd":"curl -s -X PUT http://localhost:3420/api/messages/1042 -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" --data-binary '{\"status\":\"done\",\"notify\":false}'","expect":"allow"}
+{"id":"E070","class":"E","group":"msg","cmd":"curl -s -X PUT http://localhost:3420/api/messages/1043 -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" --data-binary '{\"status\":\"done\",\"result\":\"Kész, 3 fájl változott\"}'","expect":"allow"}
+{"id":"E071","class":"E","group":"msg","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/messages/1042","expect":"allow"}
+{"id":"E072","class":"E","group":"msg","cmd":"curl -s -X POST http://localhost:3420/api/messages -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" --data-binary @/tmp/msg-payload.json","expect":"allow"}
+{"id":"E073","class":"E","group":"msg","cmd":"python3 -c 'import json; print(json.dumps({\"from\":\"ezermester\",\"to\":\"brainy\",\"content\":\"https://example.test/x\"}))' > /tmp/msg-payload.json && curl -s -X POST http://localhost:3420/api/messages -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" --data-binary @/tmp/msg-payload.json","expect":"allow"}
+{"id":"E074","class":"E","group":"api","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/agents","expect":"allow"}
+{"id":"E075","class":"E","group":"api","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/approvals","expect":"allow"}
+{"id":"E076","class":"E","group":"api","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/schedules","expect":"allow"}
+{"id":"E077","class":"E","group":"api","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/health","expect":"allow"}
+{"id":"E078","class":"E","group":"api","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/status","expect":"allow"}
+{"id":"E079","class":"E","group":"api","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/kanban?archived=0","expect":"allow"}
+{"id":"E080","class":"E","group":"api","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/approvals/b748b55d","expect":"allow"}
+{"id":"E081","class":"E","group":"api","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/messages?to=ezermester&status=pending","expect":"allow"}
+{"id":"E082","class":"E","group":"api","cmd":"curl -s -X POST http://localhost:3420/api/approvals -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"agent_id\":\"ezermester\",\"category\":\"deploy\",\"action_description\":\"Canary bekötés\",\"timeout_seconds\":3600}'","expect":"allow"}
+{"id":"E083","class":"E","group":"api","cmd":"curl -s -X POST http://localhost:3420/api/schedules -H \"Content-Type: application/json\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -d '{\"name\":\"egress-mérés\",\"description\":\"heti\",\"prompt\":\"mérés\",\"schedule\":\"0 8 * * 1\",\"agent\":\"ezermester\",\"type\":\"heartbeat\"}'","expect":"allow"}
+{"id":"E084","class":"E","group":"api","cmd":"curl -s -X POST http://localhost:3420/api/agents/hajcsar/start -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\"","expect":"allow"}
+{"id":"E085","class":"E","group":"api","cmd":"curl -s -X POST http://localhost:3420/api/agents/hajcsar/stop -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\"","expect":"allow"}
+{"id":"E086","class":"E","group":"api","cmd":"curl -sS -o /dev/null -w \"%{http_code}\\n\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/health","expect":"allow"}
+{"id":"E087","class":"E","group":"api","cmd":"curl -sS -o /dev/null -w \"%{http_code}\\n\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/agents","expect":"allow"}
+{"id":"E088","class":"E","group":"api","cmd":"curl -sS -o /dev/null -w \"%{http_code}\\n\" -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/kanban","expect":"allow"}
+{"id":"E089","class":"E","group":"api","cmd":"curl -s -m 5 --retry 2 -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://127.0.0.1:3420/api/health","expect":"allow"}
+{"id":"E090","class":"E","group":"api","cmd":"curl -s -m 5 --retry 2 -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://127.0.0.1:3420/api/agents","expect":"allow"}
+{"id":"E091","class":"E","group":"api","cmd":"curl -s -m 5 --retry 2 -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://127.0.0.1:3420/api/schedules","expect":"allow"}
+{"id":"E092","class":"E","group":"api","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -H \"Accept: application/json\" \"http://localhost:3420/api/memories?agent=brainy&limit=5\"","expect":"allow"}
+{"id":"E093","class":"E","group":"api","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -H \"Accept: application/json\" \"http://localhost:3420/api/memories?agent=iroda&limit=5\"","expect":"allow"}
+{"id":"E094","class":"E","group":"api","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" -H \"Accept: application/json\" \"http://localhost:3420/api/memories?agent=hajcsar&limit=5\"","expect":"allow"}
+{"id":"E095","class":"E","group":"api","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/agents | python3 -c \"import json,sys; print([a['name'] for a in json.load(sys.stdin)])\"","expect":"allow"}
+{"id":"E096","class":"E","group":"api","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/approvals/b748b55d | python3 -c \"import json,sys; print(json.load(sys.stdin).get('status'))\"","expect":"allow"}
+{"id":"E097","class":"E","group":"api","cmd":"for i in 1 2 3; do curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/approvals/b748b55d | python3 -c \"import json,sys; print(json.load(sys.stdin).get('status'))\"; sleep 60; done","expect":"allow"}
+{"id":"E098","class":"E","group":"api","cmd":"STATUS=$(curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/approvals/b748b55d | python3 -c \"import json,sys; print(json.load(sys.stdin)['status'])\"); echo \"$STATUS\"","expect":"allow"}
+{"id":"E099","class":"E","group":"local","cmd":"curl -s http://localhost:3420/api/health","expect":"allow"}
+{"id":"E100","class":"E","group":"local","cmd":"curl -s http://127.0.0.1:3420/api/health","expect":"allow"}
+{"id":"E101","class":"E","group":"local","cmd":"curl -s http://[::1]:3420/api/health","expect":"allow"}
+{"id":"E102","class":"E","group":"local","cmd":"curl -s http://localhost:4010/health","expect":"allow"}
+{"id":"E103","class":"E","group":"local","cmd":"curl -s http://127.0.0.1:11434/api/tags","expect":"allow"}
+{"id":"E104","class":"E","group":"local","cmd":"curl -s http://localhost:18899/status","expect":"allow"}
+{"id":"E105","class":"E","group":"local","cmd":"curl -s http://192.168.1.20:8080/status","expect":"allow"}
+{"id":"E106","class":"E","group":"local","cmd":"curl -s http://10.0.0.5/status","expect":"allow"}
+{"id":"E107","class":"E","group":"local","cmd":"curl -s http://172.16.4.2:9000/","expect":"allow"}
+{"id":"E108","class":"E","group":"local","cmd":"curl -s http://nas.local:5000/","expect":"allow"}
+{"id":"E109","class":"E","group":"local","cmd":"curl -s http://printer.local/status","expect":"allow"}
+{"id":"E110","class":"E","group":"local","cmd":"curl -s http://[fd12:3456::1]/status","expect":"allow"}
+{"id":"E111","class":"E","group":"local","cmd":"curl -sf --max-time 3 http://localhost:3420/api/health > /dev/null && echo up || echo down","expect":"allow"}
+{"id":"E112","class":"E","group":"local","cmd":"curl -sf --max-time 3 http://127.0.0.1:4010/health > /dev/null && echo up || echo down","expect":"allow"}
+{"id":"E113","class":"E","group":"local","cmd":"curl -sf --max-time 3 http://localhost:11434/api/tags > /dev/null && echo up || echo down","expect":"allow"}
+{"id":"E114","class":"E","group":"local","cmd":"PORT=3420; curl -s http://localhost:$PORT/api/health","expect":"allow"}
+{"id":"E115","class":"E","group":"local","cmd":"PORT=3420; BASE=http://localhost:$PORT; curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" \"$BASE/api/kanban\"","expect":"allow"}
+{"id":"E116","class":"E","group":"local","cmd":"BASE=http://127.0.0.1:3420 && curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" \"${BASE}/api/agents\"","expect":"allow"}
+{"id":"E117","class":"E","group":"local","cmd":"T=$(cat /Users/gyorgydecsi/marveen/store/.dashboard-token); curl -s -H \"Authorization: Bearer $T\" http://localhost:3420/api/agents","expect":"allow"}
+{"id":"E118","class":"E","group":"local","cmd":"TOKEN=$(cat store/.dashboard-token) && curl -s -H \"Authorization: Bearer ${TOKEN}\" http://localhost:3420/api/schedules","expect":"allow"}
+{"id":"E119","class":"E","group":"local","cmd":"for u in http://localhost:3420/api/health http://127.0.0.1:4010/health; do curl -s -o /dev/null -w \"$u %{http_code}\\n\" \"$u\"; done","expect":"allow"}
+{"id":"E120","class":"E","group":"local","cmd":"for id in 1 2 3 4 5; do curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" \"http://localhost:3420/api/messages/$id\"; echo; done","expect":"allow"}
+{"id":"E121","class":"E","group":"local","cmd":"for a in brainy iroda hajcsar; do echo \"== $a\"; curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" \"http://localhost:3420/api/memories?agent=$a&category=hot&limit=5\"; done","expect":"allow"}
+{"id":"E122","class":"E","group":"local","cmd":"while read -r id; do curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" \"http://localhost:3420/api/kanban/$id\" | head -c 200; echo; done <<'IDS'\nf0e9aee4\n369f6df0\nIDS","expect":"allow"}
+{"id":"E123","class":"E","group":"local","cmd":"curl -s --connect-timeout 2 http://localhost:3420/api/health || (echo \"dashboard nem fut\"; exit 1)","expect":"allow"}
+{"id":"E124","class":"E","group":"local","cmd":"curl -s http://localhost:3420/api/health | python3 -m json.tool","expect":"allow"}
+{"id":"E125","class":"E","group":"local","cmd":"curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3420/","expect":"allow"}
+{"id":"E126","class":"E","group":"local","cmd":"lsof -nP -iTCP:3420 -sTCP:LISTEN","expect":"allow"}
+{"id":"E127","class":"E","group":"local","cmd":"lsof -nP -i :4010 | head -3","expect":"allow"}
+{"id":"E128","class":"E","group":"local","cmd":"nc -z localhost 3420 && echo open","expect":"deny","note":"Q-D szándékos; curl -s localhost:<port> / lsof -iTCP:<port> -sTCP:LISTEN"}
+{"id":"E129","class":"E","group":"local","cmd":"nc -z 127.0.0.1 11434 && echo ollama-up","expect":"deny","note":"Q-D szándékos; curl -s localhost:<port> / lsof -iTCP:<port> -sTCP:LISTEN"}
+{"id":"E130","class":"E","group":"local","cmd":"ping -c1 -t2 192.168.1.1 > /dev/null && echo lan-ok","expect":"allow"}
+{"id":"E131","class":"E","group":"local","cmd":"curl -s http://localhost:3420/api/health && curl -s http://localhost:4010/health && echo ok","expect":"allow"}
+{"id":"E132","class":"E","group":"git","cmd":"git status","expect":"allow"}
+{"id":"E133","class":"E","group":"git","cmd":"git status --short","expect":"allow"}
+{"id":"E134","class":"E","group":"git","cmd":"git diff","expect":"allow"}
+{"id":"E135","class":"E","group":"git","cmd":"git diff --stat","expect":"allow"}
+{"id":"E136","class":"E","group":"git","cmd":"git diff --staged","expect":"allow"}
+{"id":"E137","class":"E","group":"git","cmd":"git log --oneline -10","expect":"allow"}
+{"id":"E138","class":"E","group":"git","cmd":"git log --oneline origin/develop..HEAD","expect":"allow"}
+{"id":"E139","class":"E","group":"git","cmd":"git branch -a","expect":"allow"}
+{"id":"E140","class":"E","group":"git","cmd":"git branch --show-current","expect":"allow"}
+{"id":"E141","class":"E","group":"git","cmd":"git remote -v","expect":"allow"}
+{"id":"E142","class":"E","group":"git","cmd":"git stash list","expect":"allow"}
+{"id":"E143","class":"E","group":"git","cmd":"git fetch origin","expect":"allow"}
+{"id":"E144","class":"E","group":"git","cmd":"git fetch --prune origin","expect":"allow"}
+{"id":"E145","class":"E","group":"git","cmd":"git pull --ff-only origin develop","expect":"allow"}
+{"id":"E146","class":"E","group":"git","cmd":"git rev-parse HEAD","expect":"allow"}
+{"id":"E147","class":"E","group":"git","cmd":"git rev-parse --short HEAD","expect":"allow"}
+{"id":"E148","class":"E","group":"git","cmd":"git worktree list","expect":"allow"}
+{"id":"E149","class":"E","group":"git","cmd":"git tag --list \"v1.*\"","expect":"allow"}
+{"id":"E150","class":"E","group":"git","cmd":"git diff --name-only 0016d35c..HEAD","expect":"allow"}
+{"id":"E151","class":"E","group":"git","cmd":"git show --stat HEAD","expect":"allow"}
+{"id":"E152","class":"E","group":"git","cmd":"git config user.name","expect":"allow"}
+{"id":"E153","class":"E","group":"git","cmd":"git -C /Volumes/8T/10_LOCAL/Brainy/f0e9aee4-egress-indirection status --short","expect":"allow"}
+{"id":"E154","class":"E","group":"git","cmd":"git -C /Volumes/8T/10_LOCAL/Brainy/f0e9aee4-egress-indirection log --oneline -5","expect":"allow"}
+{"id":"E155","class":"E","group":"git","cmd":"git -C /Volumes/8T/10_LOCAL/Brainy/f0e9aee4-egress-indirection --no-optional-locks status --short","expect":"allow"}
+{"id":"E156","class":"E","group":"git","cmd":"git -C /Volumes/8T/10_LOCAL/Brainy/f0e9aee4-egress-indirection rev-parse HEAD","expect":"allow"}
+{"id":"E157","class":"E","group":"git","cmd":"git -C /Users/gyorgydecsi/marveen status --short","expect":"allow"}
+{"id":"E158","class":"E","group":"git","cmd":"git -C /Users/gyorgydecsi/marveen log --oneline -5","expect":"allow"}
+{"id":"E159","class":"E","group":"git","cmd":"git -C /Users/gyorgydecsi/marveen --no-optional-locks status --short","expect":"allow"}
+{"id":"E160","class":"E","group":"git","cmd":"git -C /Users/gyorgydecsi/marveen rev-parse HEAD","expect":"allow"}
+{"id":"E161","class":"E","group":"git","cmd":"git add scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E162","class":"E","group":"git","cmd":"git add src/__tests__/bash-egress-parser.test.ts","expect":"allow"}
+{"id":"E163","class":"E","group":"git","cmd":"git add src/__tests__/fixtures/egress-corpus/","expect":"allow"}
+{"id":"E164","class":"E","group":"git","cmd":"git add -A","expect":"allow"}
+{"id":"E165","class":"E","group":"git","cmd":"git add -u","expect":"allow"}
+{"id":"E166","class":"E","group":"git","cmd":"git add docs/security-hardening.md src/__tests__/bash-egress-parser.test.ts","expect":"allow"}
+{"id":"E167","class":"E","group":"git","cmd":"git checkout -b fix/f0e9aee4-egress-indirection","expect":"allow"}
+{"id":"E168","class":"E","group":"git","cmd":"git checkout -b feat/canary-tool","expect":"allow"}
+{"id":"E169","class":"E","group":"git","cmd":"git checkout -b fix/hook-timeout","expect":"allow"}
+{"id":"E170","class":"E","group":"git","cmd":"git push -u origin fix/f0e9aee4-egress-indirection","expect":"allow"}
+{"id":"E171","class":"E","group":"git","cmd":"git push -u origin feat/canary-tool","expect":"allow"}
+{"id":"E172","class":"E","group":"git","cmd":"git worktree add /Volumes/8T/10_LOCAL/Brainy/f0e9aee4-egress-indirection -b fix/f0e9aee4-egress-indirection origin/develop","expect":"allow"}
+{"id":"E173","class":"E","group":"git","cmd":"git worktree add /Volumes/8T/10_LOCAL/Brainy/canary-tool -b feat/canary-tool origin/develop","expect":"allow"}
+{"id":"E174","class":"E","group":"git","cmd":"git commit -m \"$(cat <<'EOF'\nfix(egress): fail-closed on indirect network calls\n\nA function body that holds curl no longer hides the destination.\nRefs https://example.test/issues/12\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nEOF\n)\"","expect":"allow"}
+{"id":"E175","class":"E","group":"git","cmd":"git commit -m \"$(cat <<'EOF'\ntest(egress): add everyday corpus\nEOF\n)\"","expect":"allow"}
+{"id":"E176","class":"E","group":"git","cmd":"git commit -m \"docs: update hardening notes\"","expect":"allow"}
+{"id":"E177","class":"E","group":"git","cmd":"git commit --amend --no-edit","expect":"allow"}
+{"id":"E178","class":"E","group":"git","cmd":"git add -A && git commit -m \"chore: corpus\" && git push","expect":"allow"}
+{"id":"E179","class":"E","group":"git","cmd":"git diff 0016d35c..HEAD -- scripts/hooks/bash-egress-parser.mjs | wc -l","expect":"allow"}
+{"id":"E180","class":"E","group":"git","cmd":"git diff --binary --full-index 0016d35c HEAD -- scripts/hooks src/__tests__ > /tmp/f0e9aee4.patch","expect":"allow"}
+{"id":"E181","class":"E","group":"git","cmd":"git log --format='%h %s' -20 | grep -i egress","expect":"allow"}
+{"id":"E182","class":"E","group":"git","cmd":"git status --short | grep -v node_modules","expect":"allow"}
+{"id":"E183","class":"E","group":"git","cmd":"git remote add upstream https://git.example.test/org/repo.git","expect":"allow"}
+{"id":"E184","class":"E","group":"git","cmd":"git clone https://git.example.test/org/repo.git /tmp/repo-copy","expect":"allow"}
+{"id":"E185","class":"E","group":"git","cmd":"git clone git@git.example.test:org/repo.git /tmp/repo-copy2","expect":"allow"}
+{"id":"E186","class":"E","group":"git","cmd":"git ls-remote --heads origin | head -5","expect":"allow"}
+{"id":"E187","class":"E","group":"git","cmd":"git rebase origin/develop","expect":"allow"}
+{"id":"E188","class":"E","group":"git","cmd":"git merge-base HEAD origin/develop","expect":"allow"}
+{"id":"E189","class":"E","group":"git","cmd":"git cherry-pick 0016d35c","expect":"allow"}
+{"id":"E190","class":"E","group":"git","cmd":"git stash push -m \"wip\" && git pull --rebase origin develop && git stash pop","expect":"allow"}
+{"id":"E191","class":"E","group":"git","cmd":"git blame -L 100,120 scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E192","class":"E","group":"git","cmd":"git grep -n \"curl\" -- scripts/hooks | head -20","expect":"allow"}
+{"id":"E193","class":"E","group":"git","cmd":"git --no-optional-locks status --short | head -50","expect":"allow"}
+{"id":"E194","class":"E","group":"git","cmd":"git log -1 --format=%H -- scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E195","class":"E","group":"gh","cmd":"gh pr list","expect":"allow"}
+{"id":"E196","class":"E","group":"gh","cmd":"gh pr list --state open --json number,title","expect":"allow"}
+{"id":"E197","class":"E","group":"gh","cmd":"gh pr view 1883","expect":"allow"}
+{"id":"E198","class":"E","group":"gh","cmd":"gh pr view 1883 --json state,mergeable","expect":"allow"}
+{"id":"E199","class":"E","group":"gh","cmd":"gh pr checks 1883","expect":"allow"}
+{"id":"E200","class":"E","group":"gh","cmd":"gh pr diff 1883 --name-only","expect":"allow"}
+{"id":"E201","class":"E","group":"gh","cmd":"gh issue list --label bug","expect":"allow"}
+{"id":"E202","class":"E","group":"gh","cmd":"gh issue view 1872","expect":"allow"}
+{"id":"E203","class":"E","group":"gh","cmd":"gh run list --limit 5","expect":"allow"}
+{"id":"E204","class":"E","group":"gh","cmd":"gh repo view --json name","expect":"allow"}
+{"id":"E205","class":"E","group":"gh","cmd":"gh auth status","expect":"allow"}
+{"id":"E206","class":"E","group":"gh","cmd":"gh pr status","expect":"allow"}
+{"id":"E207","class":"E","group":"gh","cmd":"gh pr create --base develop --title \"fix(egress): indirect network calls\" --body \"$(cat <<'EOF'\n## Summary\n- fail-closed rule for indirect calls\n\n## Test plan\n- vitest run: 52 passed\nEOF\n)\"","expect":"allow"}
+{"id":"E208","class":"E","group":"gh","cmd":"gh pr create --base develop --head fix/f0e9aee4-egress-indirection --fill","expect":"allow"}
+{"id":"E209","class":"E","group":"gh","cmd":"gh pr comment 1883 --body \"Review: elfogadható, lásd https://example.test/review/1\"","expect":"allow"}
+{"id":"E210","class":"E","group":"gh","cmd":"gh pr view 1883 --comments | head -40","expect":"allow"}
+{"id":"E211","class":"E","group":"gh","cmd":"gh api repos/example-org/example-repo/pulls/1883 --jq .state","expect":"allow"}
+{"id":"E212","class":"E","group":"gh","cmd":"gh api repos/example-org/example-repo/pulls/1883/comments --jq '.[].body'","expect":"allow"}
+{"id":"E213","class":"E","group":"gh","cmd":"gh pr merge 1883 --squash --delete-branch","expect":"allow"}
+{"id":"E214","class":"E","group":"gh","cmd":"gh pr list --json number,title,headRefName | python3 -c \"import json,sys; [print(p['number'], p['title']) for p in json.load(sys.stdin)]\"","expect":"allow"}
+{"id":"E215","class":"E","group":"gh","cmd":"gh run view 1234567 --log-failed | tail -30","expect":"allow"}
+{"id":"E216","class":"E","group":"gh","cmd":"gh release list --limit 3","expect":"allow"}
+{"id":"E217","class":"E","group":"node","cmd":"npm test","expect":"allow"}
+{"id":"E218","class":"E","group":"node","cmd":"npm run build","expect":"allow"}
+{"id":"E219","class":"E","group":"node","cmd":"npm run lint","expect":"allow"}
+{"id":"E220","class":"E","group":"node","cmd":"npm run typecheck","expect":"allow"}
+{"id":"E221","class":"E","group":"node","cmd":"npm ci","expect":"allow"}
+{"id":"E222","class":"E","group":"node","cmd":"npm ls --depth=0","expect":"allow"}
+{"id":"E223","class":"E","group":"node","cmd":"npm outdated","expect":"allow"}
+{"id":"E224","class":"E","group":"node","cmd":"npm audit --omit=dev","expect":"allow"}
+{"id":"E225","class":"E","group":"node","cmd":"npm run dev","expect":"allow"}
+{"id":"E226","class":"E","group":"node","cmd":"npm test -- --reporter=dot","expect":"allow"}
+{"id":"E227","class":"E","group":"node","cmd":"npm pack --dry-run","expect":"allow"}
+{"id":"E228","class":"E","group":"node","cmd":"npx vitest run","expect":"allow"}
+{"id":"E229","class":"E","group":"node","cmd":"npx vitest run src/__tests__/bash-egress-parser.test.ts","expect":"allow"}
+{"id":"E230","class":"E","group":"node","cmd":"npx vitest run src/__tests__/bash-egress-parser.test.ts --reporter=verbose","expect":"allow"}
+{"id":"E231","class":"E","group":"node","cmd":"npx tsc --noEmit","expect":"allow"}
+{"id":"E232","class":"E","group":"node","cmd":"npx tsc -p tsconfig.json --noEmit","expect":"allow"}
+{"id":"E233","class":"E","group":"node","cmd":"npx eslint src --max-warnings 0","expect":"allow"}
+{"id":"E234","class":"E","group":"node","cmd":"npx prettier --check src","expect":"allow"}
+{"id":"E235","class":"E","group":"node","cmd":"npx tsx scripts/graph-mail.ts --help","expect":"allow"}
+{"id":"E236","class":"E","group":"node","cmd":"npx playwright test --reporter=line","expect":"allow"}
+{"id":"E237","class":"E","group":"node","cmd":"node --check scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E238","class":"E","group":"node","cmd":"node --version","expect":"allow"}
+{"id":"E239","class":"E","group":"node","cmd":"node scripts/skill-lint.mjs .claude/skills/egress-corpus","expect":"allow"}
+{"id":"E240","class":"E","group":"node","cmd":"node scripts/recipient-ledger.mjs list","expect":"allow"}
+{"id":"E241","class":"E","group":"node","cmd":"node --test src/__tests__/x.test.mjs","expect":"allow"}
+{"id":"E242","class":"E","group":"node","cmd":"node -p \"process.version\"","expect":"allow"}
+{"id":"E243","class":"E","group":"node","cmd":"node src/__tests__/fixtures/egress-corpus/measure.mjs","expect":"allow"}
+{"id":"E244","class":"E","group":"node","cmd":"node -e 'console.log(JSON.stringify({ok:true}))'","expect":"allow"}
+{"id":"E245","class":"E","group":"node","cmd":"node -e \"console.log(require('./package.json').version)\"","expect":"allow"}
+{"id":"E246","class":"E","group":"node","cmd":"node -e \"const fs=require('fs'); console.log(fs.readdirSync('scripts/hooks').length)\"","expect":"allow"}
+{"id":"E247","class":"E","group":"node","cmd":"echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"}}' | node scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E248","class":"E","group":"node","cmd":"echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"curl -s http://localhost:3420/api/health\"}}' | BASH_EGRESS_BLOCK_LOG=/tmp/blocks.jsonl node scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E249","class":"E","group":"node","cmd":"NODE_OPTIONS=\"--require /tmp/guard.cjs\" node scripts/measure.mjs","expect":"allow"}
+{"id":"E250","class":"E","group":"node","cmd":"CI=1 npx vitest run --reporter=dot 2>&1 | tail -15","expect":"allow"}
+{"id":"E251","class":"E","group":"node","cmd":"npm test 2>&1 | tail -20","expect":"allow"}
+{"id":"E252","class":"E","group":"node","cmd":"cd /Volumes/8T/10_LOCAL/Brainy/f0e9aee4-egress-indirection && npx vitest run src/__tests__/bash-egress-parser.test.ts","expect":"allow"}
+{"id":"E253","class":"E","group":"node","cmd":"npm install --save-dev vitest@latest","expect":"allow"}
+{"id":"E254","class":"E","group":"node","cmd":"npm install --registry https://registry.example.test/ left-pad","expect":"allow"}
+{"id":"E255","class":"E","group":"node","cmd":"npm config get registry","expect":"allow"}
+{"id":"E256","class":"E","group":"node","cmd":"npx --no-install tsc --version","expect":"allow"}
+{"id":"E257","class":"E","group":"node","cmd":"time npx vitest run","expect":"allow"}
+{"id":"E258","class":"E","group":"py","cmd":"python3 -c \"import sys; print(sys.version)\"","expect":"allow"}
+{"id":"E259","class":"E","group":"py","cmd":"python3 -c \"import json; print(json.load(open(\"package.json\"))[\"version\"])\"","expect":"allow"}
+{"id":"E260","class":"E","group":"py","cmd":"python3 -c \"import os; print(os.getcwd())\"","expect":"allow"}
+{"id":"E261","class":"E","group":"py","cmd":"python3 -c \"import datetime; print(datetime.datetime.now().isoformat())\"","expect":"allow"}
+{"id":"E262","class":"E","group":"py","cmd":"python3 -c \"import hashlib,sys; print(hashlib.sha256(open(sys.argv[1] if len(sys.argv)>1 else \"package.json\",\"rb\").read()).hexdigest()[:16])\"","expect":"allow"}
+{"id":"E263","class":"E","group":"py","cmd":"python3 -c \"print(sum(1 for _ in open(\"scripts/hooks/bash-egress-parser.mjs\")))\"","expect":"allow"}
+{"id":"E264","class":"E","group":"py","cmd":"python3 -c \"import re; print(re.findall(r\"\\d+\", \"a1b22c333\"))\"","expect":"allow"}
+{"id":"E265","class":"E","group":"py","cmd":"python3 scripts/kontextus-profil.py --allapot","expect":"allow"}
+{"id":"E266","class":"E","group":"py","cmd":"python3 .claude/tools/findings_log.py list","expect":"allow"}
+{"id":"E267","class":"E","group":"py","cmd":"python3 .claude/tools/findings_log.py open","expect":"allow"}
+{"id":"E268","class":"E","group":"py","cmd":"python3 scripts/mio-feed-post.py --help","expect":"allow"}
+{"id":"E269","class":"E","group":"py","cmd":"python3 -m json.tool package.json","expect":"allow"}
+{"id":"E270","class":"E","group":"py","cmd":"python3 -I scripts/hooks/marveen-commands.py --help","expect":"allow"}
+{"id":"E271","class":"E","group":"py","cmd":"python3 --version","expect":"allow"}
+{"id":"E272","class":"E","group":"py","cmd":"python3 - <<'PY'\nimport json\nrows = [json.loads(l) for l in open('src/__tests__/fixtures/egress-corpus/everyday.jsonl')]\nprint(len(rows))\nPY","expect":"allow"}
+{"id":"E273","class":"E","group":"py","cmd":"python3 - <<'PY'\nimport json, collections\nc = collections.Counter()\nfor l in open('/tmp/blocks.jsonl'):\n    c[json.loads(l)['reason']] += 1\nprint(dict(c))\nPY","expect":"allow"}
+{"id":"E274","class":"E","group":"py","cmd":"python3 - <<'PY'\nnote = \"Lásd https://example.test/doc és a curl -s http://localhost:3420/api/health hívást\"\nopen('/tmp/jegyzet.txt', 'w').write(note)\nPY","expect":"allow"}
+{"id":"E275","class":"E","group":"py","cmd":"python3 - <<'PY'\nimport pathlib\nfor p in sorted(pathlib.Path('scripts/hooks').glob('*.mjs')):\n    print(p.name, p.stat().st_size)\nPY","expect":"allow"}
+{"id":"E276","class":"E","group":"py","cmd":"python3 - <<'PY'\n# reads the own dashboard only\nimport urllib.request\nreq = urllib.request.Request('http://localhost:3420/api/health')\nprint(urllib.request.urlopen(req).read()[:100])\nPY","expect":"allow"}
+{"id":"E277","class":"E","group":"py","cmd":"python3 -c \"import json,sys; d=json.load(sys.stdin); print(d['status'])\" < /tmp/approval.json","expect":"allow"}
+{"id":"E278","class":"E","group":"py","cmd":"cat package.json | python3 -c \"import json,sys; print(json.load(sys.stdin)['name'])\"","expect":"allow"}
+{"id":"E279","class":"E","group":"py","cmd":"python3 -c \"import urllib.request; print(urllib.request.urlopen('http://localhost:3420/api/health').status)\"","expect":"allow"}
+{"id":"E280","class":"E","group":"py","cmd":"python3 -c \"import requests; print(requests.get('http://127.0.0.1:3420/api/health').status_code)\"","expect":"allow"}
+{"id":"E281","class":"E","group":"py","cmd":"python3 -I /Users/gyorgydecsi/marveen/agents/ezermester/.claude/hooks/subagent-sandbox-gate.py < /dev/null","expect":"allow"}
+{"id":"E282","class":"E","group":"py","cmd":"python3 -m py_compile scripts/hooks/marveen-commands.py","expect":"allow"}
+{"id":"E283","class":"E","group":"py","cmd":"python3 -m unittest discover -s scripts/__tests__ -p \"*.py\"","expect":"allow"}
+{"id":"E284","class":"E","group":"py","cmd":"python3 scripts/hooks/marveen-commands.py < /tmp/payload.json","expect":"allow"}
+{"id":"E285","class":"E","group":"py","cmd":"python3 /Volumes/8T/10_LOCAL/Brainy/f0e9aee4-egress-indirection/.claude/tools/findings_log.py add --severity high --text \"A függvénytörzs curl-je nem látszik\"","expect":"allow"}
+{"id":"E286","class":"E","group":"py","cmd":"python3 -c \"print('https://example.test/x'.split('/')[2])\"","expect":"allow"}
+{"id":"E287","class":"E","group":"py","cmd":"python3 -c 'import json; print(json.dumps({\"url\":\"https://example.test/a\",\"n\":1}))'","expect":"allow"}
+{"id":"E288","class":"E","group":"fs","cmd":"ls -la","expect":"allow"}
+{"id":"E289","class":"E","group":"fs","cmd":"ls -la scripts/hooks","expect":"allow"}
+{"id":"E290","class":"E","group":"fs","cmd":"ls -1 src/__tests__ | head -20","expect":"allow"}
+{"id":"E291","class":"E","group":"fs","cmd":"ls -lt /Volumes/8T/10_LOCAL/Brainy | head","expect":"allow"}
+{"id":"E292","class":"E","group":"fs","cmd":"ls /Volumes/8T/10_LOCAL/Brainy/_ezermester/f0e9aee4","expect":"allow"}
+{"id":"E293","class":"E","group":"fs","cmd":"ls -d /Volumes/8T","expect":"allow"}
+{"id":"E294","class":"E","group":"fs","cmd":"ls -la store | head -5","expect":"allow"}
+{"id":"E295","class":"E","group":"fs","cmd":"cat package.json","expect":"allow"}
+{"id":"E296","class":"E","group":"fs","cmd":"cat scripts/hooks/bash-egress-parser.mjs | head -80","expect":"allow"}
+{"id":"E297","class":"E","group":"fs","cmd":"cat /tmp/h.txt","expect":"allow"}
+{"id":"E298","class":"E","group":"fs","cmd":"cat .claude/REVIEW.md","expect":"allow"}
+{"id":"E299","class":"E","group":"fs","cmd":"cat docs/security-hardening.md | sed -n \"1,40p\"","expect":"allow"}
+{"id":"E300","class":"E","group":"fs","cmd":"head -5 src/__tests__/bash-egress-parser.test.ts","expect":"allow"}
+{"id":"E301","class":"E","group":"fs","cmd":"head -5 scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E302","class":"E","group":"fs","cmd":"head -20 src/__tests__/bash-egress-parser.test.ts","expect":"allow"}
+{"id":"E303","class":"E","group":"fs","cmd":"head -20 scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E304","class":"E","group":"fs","cmd":"head -100 src/__tests__/bash-egress-parser.test.ts","expect":"allow"}
+{"id":"E305","class":"E","group":"fs","cmd":"head -100 scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E306","class":"E","group":"fs","cmd":"tail -5 /tmp/blocks.jsonl","expect":"allow"}
+{"id":"E307","class":"E","group":"fs","cmd":"tail -5 ~/Library/Logs/brainy-mem-guard.log","expect":"allow"}
+{"id":"E308","class":"E","group":"fs","cmd":"tail -30 /tmp/blocks.jsonl","expect":"allow"}
+{"id":"E309","class":"E","group":"fs","cmd":"tail -30 ~/Library/Logs/brainy-mem-guard.log","expect":"allow"}
+{"id":"E310","class":"E","group":"fs","cmd":"wc -l scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E311","class":"E","group":"fs","cmd":"wc -l src/__tests__/bash-egress-parser.test.ts","expect":"allow"}
+{"id":"E312","class":"E","group":"fs","cmd":"wc -l src/__tests__/fixtures/egress-corpus/*.jsonl","expect":"allow"}
+{"id":"E313","class":"E","group":"fs","cmd":"wc -l /tmp/blocks.jsonl","expect":"allow"}
+{"id":"E314","class":"E","group":"fs","cmd":"grep -n \"classify\" scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E315","class":"E","group":"fs","cmd":"grep -n \"classify\" src/__tests__/bash-egress-parser.test.ts","expect":"allow"}
+{"id":"E316","class":"E","group":"fs","cmd":"grep -n \"curl\" scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E317","class":"E","group":"fs","cmd":"grep -n \"curl\" src/__tests__/bash-egress-parser.test.ts","expect":"allow"}
+{"id":"E318","class":"E","group":"fs","cmd":"grep -n \"export function\" scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E319","class":"E","group":"fs","cmd":"grep -n \"export function\" src/__tests__/bash-egress-parser.test.ts","expect":"allow"}
+{"id":"E320","class":"E","group":"fs","cmd":"grep -n \"TODO\" scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E321","class":"E","group":"fs","cmd":"grep -n \"TODO\" src/__tests__/bash-egress-parser.test.ts","expect":"allow"}
+{"id":"E322","class":"E","group":"fs","cmd":"grep -n \"NET_PRIMITIVE\" scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E323","class":"E","group":"fs","cmd":"grep -n \"NET_PRIMITIVE\" src/__tests__/bash-egress-parser.test.ts","expect":"allow"}
+{"id":"E324","class":"E","group":"fs","cmd":"grep -rn \"curl\" scripts/ | head -20","expect":"allow"}
+{"id":"E325","class":"E","group":"fs","cmd":"grep -rn \"curl\" docs/ | head -20","expect":"allow"}
+{"id":"E326","class":"E","group":"fs","cmd":"grep -rn \"curl\" .claude/ | head -20","expect":"allow"}
+{"id":"E327","class":"E","group":"fs","cmd":"grep -rn \"dashboard-token\" scripts/ | head -20","expect":"allow"}
+{"id":"E328","class":"E","group":"fs","cmd":"grep -rn \"dashboard-token\" docs/ | head -20","expect":"allow"}
+{"id":"E329","class":"E","group":"fs","cmd":"grep -rn \"dashboard-token\" .claude/ | head -20","expect":"allow"}
+{"id":"E330","class":"E","group":"fs","cmd":"grep -rn \"agent-msg.sh\" scripts/ | head -20","expect":"allow"}
+{"id":"E331","class":"E","group":"fs","cmd":"grep -rn \"agent-msg.sh\" docs/ | head -20","expect":"allow"}
+{"id":"E332","class":"E","group":"fs","cmd":"grep -rn \"agent-msg.sh\" .claude/ | head -20","expect":"allow"}
+{"id":"E333","class":"E","group":"fs","cmd":"grep -rn \"https://\" scripts/ | head -20","expect":"allow"}
+{"id":"E334","class":"E","group":"fs","cmd":"grep -rn \"https://\" docs/ | head -20","expect":"allow"}
+{"id":"E335","class":"E","group":"fs","cmd":"grep -rn \"https://\" .claude/ | head -20","expect":"allow"}
+{"id":"E336","class":"E","group":"fs","cmd":"grep -rln \"egress\" scripts docs","expect":"allow"}
+{"id":"E337","class":"E","group":"fs","cmd":"grep -rln \"curl\" scripts docs","expect":"allow"}
+{"id":"E338","class":"E","group":"fs","cmd":"grep -rln \"wget\" scripts docs","expect":"allow"}
+{"id":"E339","class":"E","group":"fs","cmd":"find scripts -name \"*.mjs\"","expect":"allow"}
+{"id":"E340","class":"E","group":"fs","cmd":"find scripts -name \"*.test.ts\"","expect":"allow"}
+{"id":"E341","class":"E","group":"fs","cmd":"find scripts -name \"*.md\"","expect":"allow"}
+{"id":"E342","class":"E","group":"fs","cmd":"find src -name \"*.mjs\"","expect":"allow"}
+{"id":"E343","class":"E","group":"fs","cmd":"find src -name \"*.test.ts\"","expect":"allow"}
+{"id":"E344","class":"E","group":"fs","cmd":"find src -name \"*.md\"","expect":"allow"}
+{"id":"E345","class":"E","group":"fs","cmd":"find docs -name \"*.mjs\"","expect":"allow"}
+{"id":"E346","class":"E","group":"fs","cmd":"find docs -name \"*.test.ts\"","expect":"allow"}
+{"id":"E347","class":"E","group":"fs","cmd":"find docs -name \"*.md\"","expect":"allow"}
+{"id":"E348","class":"E","group":"fs","cmd":"find . -name node_modules -prune -o -name \"*.jsonl\" -print","expect":"allow"}
+{"id":"E349","class":"E","group":"fs","cmd":"find src -type f -name \"*.ts\" | wc -l","expect":"allow"}
+{"id":"E350","class":"E","group":"fs","cmd":"find /tmp -maxdepth 1 -name \"mem-fejlec-*.txt\" -mtime +1","expect":"allow"}
+{"id":"E351","class":"E","group":"fs","cmd":"find scripts -name \"*.sh\" -exec shellcheck {} +","expect":"allow"}
+{"id":"E352","class":"E","group":"fs","cmd":"find scripts -name \"*.sh\" -exec chmod +x {} \\;","expect":"allow"}
+{"id":"E353","class":"E","group":"fs","cmd":"find . -name \"*.log\" -mtime +7 | wc -l","expect":"allow"}
+{"id":"E354","class":"E","group":"fs","cmd":"sed -n '1,40p' scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E355","class":"E","group":"fs","cmd":"sed -n '664,700p' scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E356","class":"E","group":"fs","cmd":"awk '{print $1}' /tmp/blocks.jsonl | sort | uniq -c | sort -rn | head","expect":"allow"}
+{"id":"E357","class":"E","group":"fs","cmd":"sort -u /tmp/hosts.txt | wc -l","expect":"allow"}
+{"id":"E358","class":"E","group":"fs","cmd":"cut -d, -f1 /tmp/list.csv | head","expect":"allow"}
+{"id":"E359","class":"E","group":"fs","cmd":"tr -d '\\r' < /tmp/in.txt > /tmp/out.txt","expect":"allow"}
+{"id":"E360","class":"E","group":"fs","cmd":"mkdir -p /Volumes/8T/10_LOCAL/Brainy/_ezermester/f0e9aee4/proof","expect":"allow"}
+{"id":"E361","class":"E","group":"fs","cmd":"cp /tmp/n0a-report.md /Volumes/8T/10_LOCAL/Brainy/_ezermester/f0e9aee4/","expect":"allow"}
+{"id":"E362","class":"E","group":"fs","cmd":"mv /tmp/old.txt /tmp/new.txt","expect":"allow"}
+{"id":"E363","class":"E","group":"fs","cmd":"touch /tmp/marker && chmod 600 /tmp/marker","expect":"allow"}
+{"id":"E364","class":"E","group":"fs","cmd":"diff -u /tmp/a.txt /tmp/b.txt","expect":"allow"}
+{"id":"E365","class":"E","group":"fs","cmd":"diff <(sort /tmp/a.txt) <(sort /tmp/b.txt)","expect":"allow"}
+{"id":"E366","class":"E","group":"fs","cmd":"shasum -a 256 scripts/hooks/bash-egress-parser.mjs | cut -c1-16","expect":"allow"}
+{"id":"E367","class":"E","group":"fs","cmd":"stat -f \"%z %m\" scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E368","class":"E","group":"fs","cmd":"du -sh /Volumes/8T/10_LOCAL/Brainy/* 2>/dev/null | sort -h | tail -5","expect":"allow"}
+{"id":"E369","class":"E","group":"fs","cmd":"df -h /Volumes/8T","expect":"allow"}
+{"id":"E370","class":"E","group":"fs","cmd":"readlink -f .claude-config/skills","expect":"allow"}
+{"id":"E371","class":"E","group":"fs","cmd":"date +%Y-%m-%dT%H:%M:%S","expect":"allow"}
+{"id":"E372","class":"E","group":"fs","cmd":"date; memory_pressure -Q","expect":"allow"}
+{"id":"E373","class":"E","group":"fs","cmd":"ps aux | grep -c \"[n]ode\"","expect":"allow"}
+{"id":"E374","class":"E","group":"fs","cmd":"pgrep -fl vitest","expect":"allow"}
+{"id":"E375","class":"E","group":"fs","cmd":"uname -a","expect":"allow"}
+{"id":"E376","class":"E","group":"fs","cmd":"which node npm npx python3 git gh","expect":"allow"}
+{"id":"E377","class":"E","group":"fs","cmd":"echo $PATH | tr ':' '\\n' | head","expect":"allow"}
+{"id":"E378","class":"E","group":"fs","cmd":"export LC_ALL=C; sort /tmp/words.txt | uniq -d","expect":"allow"}
+{"id":"E379","class":"E","group":"fs","cmd":"tmux ls","expect":"allow"}
+{"id":"E380","class":"E","group":"fs","cmd":"tmux capture-pane -p -t ezermester | tail -20","expect":"allow"}
+{"id":"E381","class":"E","group":"fs","cmd":"launchctl list | grep brainy","expect":"allow"}
+{"id":"E382","class":"E","group":"fs","cmd":"rm -f /tmp/mem-fejlec-ezermester.txt","expect":"allow"}
+{"id":"E383","class":"E","group":"fs","cmd":"[ -d /Volumes/8T ] && echo mounted || echo missing","expect":"allow"}
+{"id":"E384","class":"E","group":"fs","cmd":"test -f store/bash-egress-blocks.jsonl && wc -l store/bash-egress-blocks.jsonl","expect":"allow"}
+{"id":"E385","class":"E","group":"fs","cmd":"xargs wc -l < /tmp/filelist.txt","expect":"allow"}
+{"id":"E386","class":"E","group":"fs","cmd":"ls src/__tests__/*.test.ts | xargs -n1 basename | head","expect":"allow"}
+{"id":"E387","class":"E","group":"fs","cmd":"ls scripts/hooks/*.mjs | xargs grep -l \"classify\"","expect":"allow"}
+{"id":"E388","class":"E","group":"fs","cmd":"cat /tmp/files.txt | xargs -I{} cp {} /tmp/backup/","expect":"allow"}
+{"id":"E389","class":"E","group":"fs","cmd":"tar -czf /tmp/proof.tgz proof/ && ls -la /tmp/proof.tgz","expect":"allow"}
+{"id":"E390","class":"E","group":"fs","cmd":"unzip -l /tmp/x.zip | tail -3","expect":"allow"}
+{"id":"E391","class":"E","group":"fs","cmd":"jq --version","expect":"allow"}
+{"id":"E392","class":"E","group":"fs","cmd":"open -a TextEdit /tmp/note.txt","expect":"allow"}
+{"id":"E393","class":"E","group":"fs","cmd":"osascript -e 'display notification \"kész\" with title \"Ezermester\"'","expect":"allow"}
+{"id":"E394","class":"E","group":"text","cmd":"echo \"A curl -s http://localhost:3420/api/health parancs a dashboard állapotát kérdezi le\"","expect":"allow"}
+{"id":"E395","class":"E","group":"text","cmd":"echo 'wget és curl: lásd https://example.test/manual'","expect":"allow"}
+{"id":"E396","class":"E","group":"text","cmd":"printf '%s\\n' \"eval és function szavak szövegben\" > /tmp/jegyzet.txt","expect":"allow"}
+{"id":"E397","class":"E","group":"text","cmd":"echo \"function api() { curl -s http://localhost:3420\\$1; }\" >> /tmp/example.sh","expect":"allow"}
+{"id":"E398","class":"E","group":"text","cmd":"cat > /tmp/HANDOFF.md <<'EOF'\n# Handoff\n- teszt: npx vitest run\n- hívás: `curl -s http://localhost:3420/api/health`\n- doksi: https://example.test/docs\n- eval(x) és bash -c 'curl example.test' csak példa\nEOF","expect":"allow"}
+{"id":"E399","class":"E","group":"text","cmd":"cat > /tmp/note.md <<'EOF'\napi() { curl -s \"http://localhost:3420$1\"; }\nalias dash='curl -s http://localhost:3420'\nEOF","expect":"allow"}
+{"id":"E400","class":"E","group":"text","cmd":"cat > scripts/probe.sh <<'SH'\n#!/bin/bash\nset -euo pipefail\ncurl -s http://localhost:3420/api/health\nSH\nchmod +x scripts/probe.sh","expect":"allow"}
+{"id":"E401","class":"E","group":"text","cmd":"cat > /tmp/spec.md <<'EOF'\n## Rés\nA parser nem fogja meg a függvénybe csomagolt hívást.\nPélda szöveg: nc, socat, telnet, curl, wget szóként.\nEOF","expect":"allow"}
+{"id":"E402","class":"E","group":"text","cmd":"cat <<'EOF' > /tmp/readme.txt\nHasználat: bash scripts/agent-msg.sh ezermester brainy \"szöveg\"\nHálózat: https://example.test/net\nEOF","expect":"allow"}
+{"id":"E403","class":"E","group":"text","cmd":"cat <<'EOF'\nA kapu tiltja a curl http://example.test/x hívást, de a szöveg csak idézet.\nEOF","expect":"allow"}
+{"id":"E404","class":"E","group":"text","cmd":"cat <<EOF > /tmp/dated.txt\nMai dátum: $(date +%F)\nEOF","expect":"allow"}
+{"id":"E405","class":"E","group":"text","cmd":"cat <<EOF\nPort: ${PORT:-3420}\nEOF","expect":"allow"}
+{"id":"E406","class":"E","group":"text","cmd":"echo \"https://example.test/a\" >> /tmp/urls-to-review.txt","expect":"allow"}
+{"id":"E407","class":"E","group":"text","cmd":"echo \"TODO: curl example.test/x\" >> notes.md","expect":"allow"}
+{"id":"E408","class":"E","group":"text","cmd":"echo 'curl http://localhost:3420/api/health' > /tmp/cmd.txt","expect":"allow"}
+{"id":"E409","class":"E","group":"text","cmd":"grep -n 'curl' /tmp/cmd.txt","expect":"allow"}
+{"id":"E410","class":"E","group":"text","cmd":"grep -c \"https://\" docs/security-hardening.md","expect":"allow"}
+{"id":"E411","class":"E","group":"text","cmd":"grep -rn \"eval\" scripts/*.sh | head","expect":"allow"}
+{"id":"E412","class":"E","group":"text","cmd":"grep -rn \"function \" scripts/hooks | wc -l","expect":"allow"}
+{"id":"E413","class":"E","group":"text","cmd":"sed -i '' 's#http://localhost:3420#http://127.0.0.1:3420#g' /tmp/cmd.txt","expect":"allow"}
+{"id":"E414","class":"E","group":"text","cmd":"sed 's/curl/CURL/g' /tmp/cmd.txt","expect":"allow"}
+{"id":"E415","class":"E","group":"text","cmd":"printf 'sor1\\nsor2\\n' | tee /tmp/two.txt","expect":"allow"}
+{"id":"E416","class":"E","group":"text","cmd":"cat /tmp/cmd.txt | tr a-z A-Z","expect":"allow"}
+{"id":"E417","class":"E","group":"text","cmd":"awk '/curl/ {print FILENAME\": \"$0}' scripts/*.sh","expect":"allow"}
+{"id":"E418","class":"E","group":"text","cmd":"echo \"$(date +%H:%M) -- kész\" >> /tmp/napló.txt","expect":"allow"}
+{"id":"E419","class":"E","group":"text","cmd":"echo \"Szia! Mi újság?\" | wc -w","expect":"allow"}
+{"id":"E420","class":"E","group":"text","cmd":"mkdir -p /tmp/x && echo \"nc és telnet szavak\" > /tmp/x/t.txt && cat /tmp/x/t.txt","expect":"allow"}
+{"id":"E421","class":"E","group":"sandbox","cmd":"/Users/gyorgydecsi/marveen/agents/ezermester/.claude/sandbox/run-sandboxed.sh node --check scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E422","class":"E","group":"sandbox","cmd":"/Users/gyorgydecsi/marveen/agents/ezermester/.claude/sandbox/run-sandboxed.sh npx vitest run src/__tests__/bash-egress-parser.test.ts","expect":"allow"}
+{"id":"E423","class":"E","group":"sandbox","cmd":"/Users/gyorgydecsi/marveen/agents/ezermester/.claude/sandbox/run-sandboxed.sh git status --short","expect":"allow"}
+{"id":"E424","class":"E","group":"sandbox","cmd":"/Users/gyorgydecsi/marveen/agents/ezermester/.claude/sandbox/run-sandboxed.sh ls -la","expect":"allow"}
+{"id":"E425","class":"E","group":"sandbox","cmd":"/Users/gyorgydecsi/marveen/agents/ezermester/.claude/sandbox/run-sandboxed.sh npx tsc --noEmit","expect":"allow"}
+{"id":"E426","class":"E","group":"sandbox","cmd":"/Users/gyorgydecsi/marveen/agents/ezermester/.claude/sandbox/run-sandboxed.sh python3 .claude/tools/findings_log.py list","expect":"allow"}
+{"id":"E427","class":"E","group":"sandbox","cmd":"/Users/gyorgydecsi/marveen/agents/ezermester/.claude/sandbox/run-sandboxed.sh wc -l scripts/hooks/bash-egress-parser.mjs","expect":"allow"}
+{"id":"E428","class":"E","group":"sandbox","cmd":"/Users/gyorgydecsi/marveen/agents/ezermester/.claude/sandbox/run-sandboxed.sh git log --oneline -3","expect":"allow"}
+{"id":"E429","class":"E","group":"sandbox","cmd":"/Users/gyorgydecsi/marveen/agents/ezermester/.claude/sandbox/run-sandboxed.sh node src/__tests__/fixtures/egress-corpus/measure.mjs","expect":"allow"}
+{"id":"E430","class":"E","group":"sandbox","cmd":"/Users/gyorgydecsi/marveen/agents/ezermester/.claude/sandbox/run-sandboxed.sh bash -c 'cd /Volumes/8T/10_LOCAL/Brainy/f0e9aee4-egress-indirection && git status --short'","expect":"allow"}
+{"id":"E431","class":"E","group":"sandbox","cmd":"/Users/gyorgydecsi/marveen/agents/ezermester/.claude/sandbox/run-sandboxed.sh bash -c 'ls src/__tests__ | head -5'","expect":"allow"}
+{"id":"E432","class":"E","group":"sandbox","cmd":"/Users/gyorgydecsi/marveen/agents/ezermester/.claude/sandbox/run-sandboxed.sh bash -c 'npx vitest run 2>&1 | tail -5'","expect":"allow"}
+{"id":"E433","class":"E","group":"sandbox","cmd":"/Users/gyorgydecsi/marveen/agents/ezermester/.claude/sandbox/run-sandboxed.sh bash -c 'wc -l src/__tests__/*.ts | tail -1'","expect":"allow"}
+{"id":"E434","class":"E","group":"sandbox","cmd":"cd /Volumes/8T/10_LOCAL/Brainy/f0e9aee4-egress-indirection && /Users/gyorgydecsi/marveen/agents/ezermester/.claude/sandbox/run-sandboxed.sh npx vitest run","expect":"allow"}
+{"id":"E435","class":"E","group":"sandbox","cmd":"cd /Volumes/8T/10_LOCAL/Brainy/f0e9aee4-egress-indirection && /Users/gyorgydecsi/marveen/agents/ezermester/.claude/sandbox/run-sandboxed.sh git diff --stat","expect":"allow"}
+{"id":"E436","class":"E","group":"script","cmd":"bash scripts/agent-msg.sh ezermester brainy \"ok\"","expect":"allow"}
+{"id":"E437","class":"E","group":"script","cmd":"bash scripts/pre-pr-review.sh","expect":"allow"}
+{"id":"E438","class":"E","group":"script","cmd":"bash scripts/channels.sh status","expect":"allow"}
+{"id":"E439","class":"E","group":"script","cmd":"bash scripts/watchdog.sh --dry-run","expect":"allow"}
+{"id":"E440","class":"E","group":"script","cmd":"bash scripts/morning-briefing.sh --help","expect":"allow"}
+{"id":"E441","class":"E","group":"script","cmd":"bash scripts/stuck-modal-guard.sh","expect":"allow"}
+{"id":"E442","class":"E","group":"script","cmd":"bash /Users/gyorgydecsi/.brainy-ops/mem-guard.sh --status","expect":"allow"}
+{"id":"E443","class":"E","group":"script","cmd":"bash -n scripts/agent-msg.sh","expect":"allow"}
+{"id":"E444","class":"E","group":"script","cmd":"bash -n scripts/channels.sh","expect":"allow"}
+{"id":"E445","class":"E","group":"script","cmd":"bash -n scripts/watchdog.sh","expect":"allow"}
+{"id":"E446","class":"E","group":"script","cmd":"bash scripts/__tests__/telegram-fallback-dedup.test.sh","expect":"allow"}
+{"id":"E447","class":"E","group":"script","cmd":"node scripts/skill-lint.mjs .claude/skills/egress-corpus --json","expect":"allow"}
+{"id":"E448","class":"E","group":"script","cmd":"node /Users/gyorgydecsi/marveen/scripts/skill-lint.mjs /Users/gyorgydecsi/marveen/agents/ezermester/.claude/skills/egress-corpus","expect":"allow"}
+{"id":"E449","class":"E","group":"script","cmd":"python3 scripts/kontextus-profil.py tuzvedelem --feladat \"tervellenorzes\" docs/","expect":"allow"}
+{"id":"E450","class":"E","group":"script","cmd":"node /Users/gyorgydecsi/marveen/scripts/recipient-ledger.mjs add info.test --source owner --note \"teszt\"","expect":"allow"}
+{"id":"E451","class":"E","group":"script","cmd":"bash /Volumes/8T/10_LOCAL/Brainy/_ezermester/f0e9aee4/local-patch/verify.sh","expect":"allow"}
+{"id":"E452","class":"E","group":"script","cmd":"bash /Volumes/8T/10_LOCAL/Brainy/_ezermester/f0e9aee4/local-patch/apply.sh","expect":"allow"}
+{"id":"E453","class":"E","group":"script","cmd":"./scripts/channel-watchdog.sh","expect":"allow"}
+{"id":"E454","class":"E","group":"odd","cmd":"curl -s http://localhost:3420/api/health # it's the dashboard","expect":"allow"}
+{"id":"E455","class":"E","group":"odd","cmd":"ls -la # don't forget the hidden files","expect":"allow"}
+{"id":"E456","class":"E","group":"odd","cmd":"git status --short # what's changed","expect":"allow"}
+{"id":"E457","class":"E","group":"odd","cmd":"echo \"ok\" ; # Gyuri's rule","expect":"allow"}
+{"id":"E458","class":"E","group":"odd","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/kanban # list the board's cards","expect":"allow"}
+{"id":"E459","class":"E","group":"odd","cmd":"echo it's fine","expect":"allow"}
+{"id":"E460","class":"E","group":"odd","cmd":"echo \"unterminated","expect":"allow"}
+{"id":"E461","class":"E","group":"odd","cmd":"git commit -m \"fix: don't deny localhost","expect":"allow"}
+{"id":"E462","class":"E","group":"odd","cmd":"cat <<EOF\nA backtick: `ls` and $(date)\nEOF","expect":"allow"}
+{"id":"E463","class":"E","group":"odd","cmd":"cat <<EOF > /tmp/out.txt\nrun `git status` now\nEOF","expect":"allow"}
+{"id":"E464","class":"E","group":"odd","cmd":"grep -n \"it's\" docs/security-hardening.md","expect":"allow"}
+{"id":"E465","class":"E","group":"odd","cmd":"echo \"a \\\"quoted\\\" word\" | wc -c","expect":"allow"}
+{"id":"E466","class":"E","group":"odd","cmd":"echo $'tab\\there'","expect":"allow"}
+{"id":"E467","class":"E","group":"odd","cmd":"printf '%s' \"sor1\\nsor2\" | head -1","expect":"allow"}
+{"id":"E468","class":"E","group":"odd","cmd":"ls \"/Volumes/8T/00 CLOUD/MAC_MINI/00 PROJEKTEK\"","expect":"allow"}
+{"id":"E469","class":"E","group":"odd","cmd":"ls /Volumes/8T/00\\ CLOUD/MAC_MINI/","expect":"allow"}
+{"id":"E470","class":"E","group":"odd","cmd":"cd \"/Volumes/8T/00 CLOUD/MAC_MINI/08 FIREENG FOLYAMATOK\" && ls","expect":"allow"}
+{"id":"E471","class":"E","group":"flow","cmd":"cd /Volumes/8T/10_LOCAL/Brainy/f0e9aee4-egress-indirection && git status --short && npx vitest run src/__tests__/bash-egress-parser.test.ts","expect":"allow"}
+{"id":"E472","class":"E","group":"flow","cmd":"if [ -f package.json ]; then npm test; else echo \"nincs package.json\"; fi","expect":"allow"}
+{"id":"E473","class":"E","group":"flow","cmd":"if curl -sf http://localhost:3420/api/health > /dev/null; then echo up; else echo down; fi","expect":"allow"}
+{"id":"E474","class":"E","group":"flow","cmd":"for f in src/__tests__/*.test.ts; do echo \"$f\"; done | head -5","expect":"allow"}
+{"id":"E475","class":"E","group":"flow","cmd":"for f in scripts/hooks/*.mjs; do node --check \"$f\" && echo \"ok $f\"; done","expect":"allow"}
+{"id":"E476","class":"E","group":"flow","cmd":"for a in brainy ezermester iroda; do bash scripts/agent-msg.sh ezermester $a \"ping\"; done","expect":"allow"}
+{"id":"E477","class":"E","group":"flow","cmd":"for a in brainy ezermester iroda; do curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" \"http://localhost:3420/api/memories?agent=$a&limit=1\" | head -c 100; echo; done","expect":"allow"}
+{"id":"E478","class":"E","group":"flow","cmd":"until curl -sf http://localhost:3420/api/health > /dev/null; do sleep 2; done; echo ready","expect":"allow"}
+{"id":"E479","class":"E","group":"flow","cmd":"sleep 60 && curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/approvals/b748b55d","expect":"allow"}
+{"id":"E480","class":"E","group":"flow","cmd":"timeout 30 curl -s http://localhost:3420/api/health","expect":"allow"}
+{"id":"E481","class":"E","group":"flow","cmd":"timeout 120 npx vitest run","expect":"allow"}
+{"id":"E482","class":"E","group":"flow","cmd":"nohup node scripts/long-job.mjs > /tmp/job.log 2>&1 &","expect":"allow"}
+{"id":"E483","class":"E","group":"flow","cmd":"env FOO=1 node scripts/x.mjs","expect":"allow"}
+{"id":"E484","class":"E","group":"flow","cmd":"NODE_ENV=test npx vitest run","expect":"allow"}
+{"id":"E485","class":"E","group":"flow","cmd":"set -euo pipefail; cd src && ls | head -3","expect":"allow"}
+{"id":"E486","class":"E","group":"flow","cmd":"cd /tmp && mkdir -p w && cd w && pwd","expect":"allow"}
+{"id":"E487","class":"E","group":"flow","cmd":"echo start; sleep 1; echo end","expect":"allow"}
+{"id":"E488","class":"E","group":"flow","cmd":"true && false || echo fallback","expect":"allow"}
+{"id":"E489","class":"E","group":"flow","cmd":"ls /nonexistent 2>/dev/null || echo \"nincs\"","expect":"allow"}
+{"id":"E490","class":"E","group":"flow","cmd":"(cd scripts && ls | head -3)","expect":"allow"}
+{"id":"E491","class":"E","group":"flow","cmd":"{ echo a; echo b; } > /tmp/ab.txt","expect":"allow"}
+{"id":"E492","class":"E","group":"flow","cmd":"curl -s -o /tmp/out.json -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/kanban && python3 -c \"import json; print(len(json.load(open('/tmp/out.json'))))\"","expect":"allow"}
+{"id":"E493","class":"E","group":"flow","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/kanban | grep -c '\"status\":\"done\"'","expect":"allow"}
+{"id":"E494","class":"E","group":"flow","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/agents | tee /tmp/agents.json | head -c 300","expect":"allow"}
+{"id":"E495","class":"E","group":"flow","cmd":"read -r LINE < /tmp/one.txt && echo \"$LINE\"","expect":"allow"}
+{"id":"E496","class":"E","group":"flow","cmd":"X=$(wc -l < /tmp/blocks.jsonl); echo \"sorok: $X\"","expect":"allow"}
+{"id":"E497","class":"E","group":"flow","cmd":"RES=$(curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/health) && echo \"$RES\"","expect":"allow"}
+{"id":"E498","class":"E","group":"flow","cmd":"export BASH_EGRESS_BLOCK_LOG=/tmp/blocks.jsonl BASH_EGRESS_VENDOR_HOSTS=/nonexistent && node scripts/hooks/bash-egress-parser.mjs < /tmp/payload.json","expect":"allow"}
+{"id":"E499","class":"E","group":"flow","cmd":"diff <(git show 0016d35c:scripts/hooks/bash-egress-parser.mjs) scripts/hooks/bash-egress-parser.mjs | head -50","expect":"allow"}
+{"id":"E500","class":"E","group":"flow","cmd":"git diff --stat | tail -1","expect":"allow"}
+{"id":"E501","class":"E","group":"other","cmd":"ssh -T git@git.example.test","expect":"allow"}
+{"id":"E502","class":"E","group":"other","cmd":"scp /tmp/proof.tgz user@backup.example.test:/srv/backup/","expect":"allow"}
+{"id":"E503","class":"E","group":"other","cmd":"rsync -a /Volumes/8T/10_LOCAL/Brainy/_ezermester/ /Volumes/Backup/_ezermester/","expect":"allow"}
+{"id":"E504","class":"E","group":"other","cmd":"pip install --upgrade pip","expect":"allow"}
+{"id":"E505","class":"E","group":"other","cmd":"pip3 list | head","expect":"allow"}
+{"id":"E506","class":"E","group":"other","cmd":"brew list --versions node","expect":"allow"}
+{"id":"E507","class":"E","group":"other","cmd":"docker ps","expect":"allow"}
+{"id":"E508","class":"E","group":"other","cmd":"dig +short example.test","expect":"allow"}
+{"id":"E509","class":"E","group":"other","cmd":"host example.test","expect":"allow"}
+{"id":"E510","class":"E","group":"other","cmd":"curl --version | head -1","expect":"allow"}
+{"id":"E511","class":"E","group":"other","cmd":"curl -h | head -5","expect":"allow"}
+{"id":"E512","class":"E","group":"other","cmd":"which curl wget nc","expect":"allow"}
+{"id":"E513","class":"E","group":"other","cmd":"command -v curl","expect":"allow"}
+{"id":"E514","class":"E","group":"other","cmd":"type curl","expect":"allow"}
+{"id":"E515","class":"E","group":"other","cmd":"man curl | head -5","expect":"allow"}
