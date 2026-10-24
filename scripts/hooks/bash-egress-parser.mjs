@@ -1794,7 +1794,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
           // curl or wget is denied for it.
           if (depth >= MAX_DEPTH - 1 && !fetches) continue
           if (depth >= MAX_DEPTH) return NESTING_LIMIT
-          const body = directFunctionBody(fbody, [word, ...args], text)
+          const body = directFunctionBody(fbody, [word, ...args], orig.slice(a, b))
           if (body === null) return { deny: true, reason: 'function-positional', hosts: [`<curl/wget argument of ${word}() from $1..$9, $@ or $*>`] }
           const r = judgeBody(withDefs(body), depth + 1, vendorHosts, vendorDomains, fetches || stdinTainted)
           if (r.deny) return { ...r, reason: `function-${r.reason}` }
