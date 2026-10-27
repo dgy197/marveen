@@ -32,7 +32,7 @@ export const PAGE_KEYS = [
 ] as const
 export const CARD_KEYS = ['seq', 'id', 'title', 'status', 'assignee', 'parent_id', 'created_at', 'last_status_at', 'archived', 'events'] as const
 export const CARD_EVENT_KEYS = ['from_status', 'to_status', 'actor', 'created_at'] as const
-export const MESSAGE_ROW_KEYS = ['id', 'from_agent', 'to_agent', 'status', 'created_at', 'completed_at', 'reason', 'content_preview', 'result_preview'] as const
+export const MESSAGE_ROW_KEYS = ['id', 'from_agent', 'to_agent', 'status', 'created_at', 'completed_at', 'reason', 'content_excerpt', 'result_excerpt'] as const
 export const MESSAGE_FULL_KEYS = ['id', 'from_agent', 'to_agent', 'status', 'created_at', 'completed_at', 'content', 'result'] as const
 export const COMMIT_KEYS = ['repo', 'hash', 'date', 'author', 'subject', 'pr', 'reason'] as const
 export const TEST_KEYS = ['repo', 'path', 'last_commit', 'last_date'] as const
@@ -67,8 +67,8 @@ export interface MessageRowOut {
   created_at: number
   completed_at: number | null
   reason: 'card' | 'hex' | 'tag'
-  content_preview: string
-  result_preview: string | null
+  content_excerpt: string
+  result_excerpt: string | null
 }
 export interface MessageFullOut {
   id: number
@@ -260,8 +260,8 @@ function loadMessages(ctx: MessageMatchCtx): MessageRowOut[] {
       created_at: r.created_at,
       completed_at: r.completed_at,
       reason,
-      content_preview: maskedPreview(r.content, MESSAGE_PREVIEW_CHARS) ?? '',
-      result_preview: maskedPreview(r.result, MESSAGE_PREVIEW_CHARS),
+      content_excerpt: maskedPreview(r.content, MESSAGE_PREVIEW_CHARS) ?? '',
+      result_excerpt: maskedPreview(r.result, MESSAGE_PREVIEW_CHARS),
     })
     if (out.length >= MESSAGE_MAX_ROWS) break
   }
