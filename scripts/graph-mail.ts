@@ -491,8 +491,10 @@ type GateCheck = { ok: true } | { ok: false; reason: string; commentFile?: true 
 function gateKnowsForward(repoRoot: string, opts: { commentFile: boolean }): GateCheck {
   const binding = settingsBindingProblem(join(repoRoot, '.claude', 'settings.json'))
   if (binding) return { ok: false, reason: binding }
+  const python = trustedPython()
+  if (!python) return { ok: false, reason: 'no trusted python3 for the gate probe' }
   const run = spawnSync(
-    'python3',
+    python,
     ['-I', '-c', PROBE_PY, join(repoRoot, 'scripts', 'hooks'), PROBE_COMMAND, PROBE_ID, PROBE_SUBJECT],
     {
       encoding: 'utf-8',

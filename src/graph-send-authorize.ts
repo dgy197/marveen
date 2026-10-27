@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { realpathSync } from 'node:fs'
+import { realpathSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
 
 // The CLI side of the send authorization (card efa58ad2, cli-send-enforce).
@@ -23,7 +23,8 @@ import { basename, join } from 'node:path'
 // module elsewhere is the `repoRoot` argument and the `options` object, which
 // scripts/graph-mail.ts never passes (only the tests do).
 
-export const HELPER_REL = ['scripts', 'hooks', 'email_send_authorize.py'] as const
+export const TRUSTED_PYTHONS = ['/usr/bin/python3', '/opt/homebrew/bin/python3', '/usr/local/bin/python3']
+const HELPER_REL = ['scripts', 'hooks', 'email_send_authorize.py'] as const
 export const HELPER_TIMEOUT_MS = 10_000
 
 /** One attachment as the hook's extractor yields it. */
@@ -210,7 +211,12 @@ export function authorizeSend(
   delete env.EMAIL_APPROVAL_GATE_STORE
   delete env.OUTGOING_COPY_GATE_RULES
   const request = { mode: 'consume', tool: 'graph-mail', ...envelope }
-  const run = spawnSync('python3', ['-I', helper], {
+  // BE-B1 (c3c32903): the interpreter by absolute path, never from PATH, and no PYTHON*
+  // variable: a python3 shim earlier on PATH would otherwise answer "allow".
+  const python = TRUSTED_PYTHONS.find((c) => { try { return statSync(c).isFile() } catch { return false } })
+  if (!python) return failed('no trusted python3 (/usr/bin, /opt/homebrew/bin, /usr/local/bin) for the authorizer')
+  for (const k of Object.keys(env)) if (k.toUpperCase().startsWith('PYTHON')) delete env[k]
+  const run = spawnSync(python, ['-I', helper], {
     input: asciiJson(request),
     encoding: 'utf-8',
     timeout: options.timeoutMs ?? HELPER_TIMEOUT_MS,

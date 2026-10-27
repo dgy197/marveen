@@ -168,7 +168,9 @@ export function carriesOwnerSessionCookie(req?: http.IncomingMessage): boolean {
 // real effect on the routes that do not go through mayIssueCredentials
 // (bridge-service-ports).
 export function bareTokenNeedsSwitch(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
-  return auth?.kind === 'token' && !carriesOwnerSessionCookie(req) && countDashboardUsers(true) > 0
+  // BE-B2 (c3c32903): the local switch applies at first run too; upstream's rule adds the
+  // owner-session requirement once a user exists (mayIssueCredentials), it does not replace the switch.
+  return auth?.kind === 'token' && !carriesOwnerSessionCookie(req)
 }
 
 export const CLI_RECOVERY_ONLY = {
