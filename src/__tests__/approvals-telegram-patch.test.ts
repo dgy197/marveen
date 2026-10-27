@@ -49,7 +49,7 @@ vi.mock('../db.js', async (importOriginal) => {
 import {
   initDatabase, getDb, createApproval, getApproval, resolveApproval,
   setApprovalCallbackNonceHashes, setApprovalTelegramMessageId, resolveApprovalFromTelegram,
-  expireTimedOutApprovals, consumeApproval,
+  expireTimedOutApprovals, consumeApproval, createDashboardUser,
 } from '../db.js'
 import { logger } from '../logger.js'
 import { tryHandleApprovals, claimsTelegramOwner, isAttributionText } from '../web/routes/approvals.js'
@@ -69,7 +69,14 @@ const storedHashes = (id: string) =>
 const UNBOUND = { approved: null, rejected: null }
 const LEGACY_RESERVED = { error: 'resolved_by may not use the reserved owner:telegram: prefix' }
 
-function fakeCall(method: string, path: string, rawBody: string): { ctx: RouteContext; out: { status: number; body: any; raw: string } } {
+// v1.45.0 (kanban 80d0e3c6): PATCH status=approved and the born-approved POST take an
+// owner credential. The legacy-PATCH cases below are about the legacy branch's own
+// rules, so they call it as the dashboard owner (a session); the button route is NOT
+// behind that rule and is called with no credential, or the bare token, as the plugin does.
+type TestAuth = { kind: 'token' | 'session'; user?: string; agent?: string }
+const OWNER_SESSION: TestAuth = { kind: 'session', user: 'owner' }
+
+function fakeCall(method: string, path: string, rawBody: string, auth?: TestAuth): { ctx: RouteContext; out: { status: number; body: any; raw: string } } {
   const out: { status: number; body: any; raw: string } = { status: 0, body: null, raw: '' }
   const res: any = {
     writeHead(status: number) { out.status = status; return res },
@@ -82,11 +89,11 @@ function fakeCall(method: string, path: string, rawBody: string): { ctx: RouteCo
       if (event === 'end') cb()
     },
   }
-  return { ctx: { req, res, path, method, url } as RouteContext, out }
+  return { ctx: { req, res, path, method, url, auth } as RouteContext, out }
 }
 
-function fakePatch(id: string, body: unknown) {
-  return fakeCall('PATCH', `/api/approvals/${id}`, JSON.stringify(body))
+function fakePatch(id: string, body: unknown, auth: TestAuth = OWNER_SESSION) {
+  return fakeCall('PATCH', `/api/approvals/${id}`, JSON.stringify(body), auth)
 }
 
 // The button press as the plugin sends it: POST /api/approvals/:id/telegram.
@@ -114,8 +121,8 @@ async function post(body: unknown): Promise<{ status: number; body: any }> {
   return out
 }
 
-async function patch(id: string, body: unknown) {
-  const { ctx, out } = fakePatch(id, body)
+async function patch(id: string, body: unknown, auth?: TestAuth) {
+  const { ctx, out } = fakePatch(id, body, auth)
   expect(await tryHandleApprovals(ctx)).toBe(true)
   return out
 }
@@ -197,6 +204,27 @@ describe('owner button: success', () => {
     const { id, nonce } = bound()
     const out = await decide(id, press(nonce))
     expect(out.status).toBe(200)
+  })
+
+  it('the button route is independent of the owner-session rule: with a dashboard login present, the bearer token + owner id + nonce still decides, while the token PATCH approve is 403', async () => {
+    createDashboardUser('owner', 'x'.repeat(60))
+    const { id, nonce } = bound()
+    const { ctx, out } = fakeCall('POST', `/api/approvals/${id}/telegram`, JSON.stringify(press(nonce)), { kind: 'token', agent: 'plugin' })
+    expect(await tryHandleApprovals(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(getApproval(id)?.status).toBe('approved')
+    // the same shared token on the legacy PATCH approve: upstream's owner-session rule
+    const other = pending()
+    const refused = await patch(other, { status: 'approved', resolved_by: 'dashboard' }, { kind: 'token', agent: 'plugin' })
+    expect(refused.status).toBe(403)
+    expect(refused.body.code).toBe('owner_session_required')
+    expect(getApproval(other)?.status).toBe('pending')
+    // and a wrong nonce through the token is still no decision
+    const b2 = bound()
+    const bad = fakeCall('POST', `/api/approvals/${b2.id}/telegram`, JSON.stringify(press(newNonce())), { kind: 'token', agent: 'plugin' })
+    expect(await tryHandleApprovals(bad.ctx)).toBe(true)
+    expect(bad.out.status).toBe(403)
+    expect(getApproval(b2.id)?.status).toBe('pending')
   })
 
   it('the outcome text follows EMAIL_APPROVAL_WINDOW_S', async () => {

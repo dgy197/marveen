@@ -250,7 +250,11 @@ async function route(method: string, path: string, raw: string): Promise<{ statu
     end(chunk?: string) { if (chunk) { out.raw = chunk; out.body = JSON.parse(chunk) } },
   }
   const url = new URL(`http://localhost:3420${path}`)
-  expect(await tryHandleApprovals({ req: fakeReq(raw), res, path, method, url } as unknown as RouteContext)).toBe(true)
+  // v1.45.0 (kanban 80d0e3c6): the legacy PATCH approve takes an owner credential, so the PATCH
+  // cases here (which test the credit_gate_* rules behind it) run as the dashboard owner's session.
+  // The button route (POST .../telegram) is not behind that rule and carries no credential.
+  const auth = method === 'PATCH' ? { kind: 'session', user: 'owner' } : undefined
+  expect(await tryHandleApprovals({ req: fakeReq(raw), res, path, method, url, auth } as unknown as RouteContext)).toBe(true)
   return out
 }
 
