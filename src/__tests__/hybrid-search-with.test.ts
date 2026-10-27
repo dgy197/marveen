@@ -183,7 +183,10 @@ function hashVec(word: string): number[] {
   let h = 2166136261
   for (const ch of word) h = Math.imul(h ^ ch.codePointAt(0)!, 16777619) >>> 0
   const r = mulberry32(h)
-  return Array.from({ length: DIMS }, () => Math.round((r() * 2 - 1) * 1000) / 1000)
+  // v1.45.0 (c3c32903, test setup): non-negative coordinates, so every cosine is >= 0. Upstream's vector
+  // floor keeps a hit only at score >= floor, and its settings cannot go below 0 (the suite pins them to 0
+  // above): a negative cosine would still be dropped, which the frozen pre-R0 reference never did.
+  return Array.from({ length: DIMS }, () => Math.round(r() * 1000) / 1000)
 }
 
 const WORD_VEC = new Map(VOCAB.map(w => [w, hashVec(w)]))
@@ -330,7 +333,10 @@ describe('R0 equivalence: hybridSearch returns exactly what the pre-R0 code retu
         // Whole rows, not only ids: the same object shape (no stray rank or score keys).
         expect(newRows, where).toEqual(oldRows)
         expect(newRows.map(m => Object.keys(m)), where).toEqual(oldRows.map(m => Object.keys(m)))
-        expect({ ...newTrace, topCos: undefined, secondCos: undefined, overlap: undefined }, where)
+        // v1.45.0: the trace also carries upstream's vectorDropped; with the floor off nothing is dropped, which is
+        // pinned here, and the field is peeled off for the comparison with the frozen pre-R0 trace.
+        expect(newTrace.vectorDropped, where).toBe(0)
+        expect({ ...newTrace, topCos: undefined, secondCos: undefined, overlap: undefined, vectorDropped: undefined }, where)
           .toEqual({ ...oldTrace, topCos: undefined, secondCos: undefined, overlap: undefined })
         expect(newWarns, where).toEqual(oldWarns)
         expect(fetchNew.mock.calls.length, where).toBe(oldFetches)
