@@ -16,7 +16,7 @@ import {
   sendText,
   type SendEnvelope,
 } from '../graph-send-authorize.js'
-import { makeCliRoot, stubRequests } from './graph-cli-root.js'
+import { makeCliRoot, setStubEnv, stubRequests } from './graph-cli-root.js'
 
 // Card efa58ad2 (cli-send-enforce), node N2: scripts/graph-mail.ts `send` and
 // `forward` ask scripts/hooks/email_send_authorize.py of their own checkout before
@@ -142,20 +142,14 @@ describe('envelope builders', () => {
 
 // --- authorizeSend in-process, stub helper ----------------------------------------------
 
-function withMode<T>(mode: string, fn: () => T, extra: Record<string, string> = {}): T {
-  const keys = { GS_MODE: mode, ...extra }
-  const old: Record<string, string | undefined> = {}
-  for (const [k, v] of Object.entries(keys)) {
-    old[k] = process.env[k]
-    process.env[k] = v
-  }
+// BE2-1 (card c3c32903, test setup): the helper child gets an allowlisted environment, so the
+// stub's GS_* knobs go through its gs-env.json (setStubEnv), no longer through process.env.
+function withMode<T>(root: string, mode: string, fn: () => T, extra: Record<string, string> = {}): T {
+  setStubEnv(root, { GS_MODE: mode, ...extra })
   try {
     return fn()
   } finally {
-    for (const k of Object.keys(keys)) {
-      if (old[k] === undefined) delete process.env[k]
-      else process.env[k] = old[k]
-    }
+    setStubEnv(root, {})
   }
 }
 
@@ -164,7 +158,7 @@ const ENV: SendEnvelope = buildSendEnvelope({ argv: ['--subject', SUBJ, '--body'
 describe('authorizeSend (stub helper)', () => {
   it('exit 0 + allow -> allowed; the request is consume mode and ASCII-only on the wire', () => {
     const root = makeCliRoot(REPO, BASE)
-    const a = withMode('allow', () => authorizeSend(ENV, root))
+    const a = withMode(root, 'allow', () => authorizeSend(ENV, root))
     expect(a.allowed).toBe(true)
     const raw = readFileSync(join(root, 'scripts', 'hooks', 'stub-requests.jsonl'), 'utf-8')
     // eslint-disable-next-line no-control-regex
@@ -175,7 +169,7 @@ describe('authorizeSend (stub helper)', () => {
 
   it('a reason from the helper is passed on (exit 2 + refuse)', () => {
     const root = makeCliRoot(REPO, BASE)
-    const a = withMode('refuse', () => authorizeSend(ENV, root), { GS_REASON: 'consumed' })
+    const a = withMode(root, 'refuse', () => authorizeSend(ENV, root), { GS_REASON: 'consumed' })
     expect(a).toMatchObject({ allowed: false, reason: 'consumed' })
   })
 
@@ -183,7 +177,7 @@ describe('authorizeSend (stub helper)', () => {
     'helper misbehaviour %s -> refused as authorizer_failed',
     (mode) => {
       const root = makeCliRoot(REPO, BASE)
-      const a = withMode(mode, () => authorizeSend(ENV, root))
+      const a = withMode(root, mode, () => authorizeSend(ENV, root))
       expect(a.allowed).toBe(false)
       if (!a.allowed) expect(a.reason).toBe('authorizer_failed')
     },
@@ -192,7 +186,7 @@ describe('authorizeSend (stub helper)', () => {
   it('a helper that hangs is killed at the timeout and refused', () => {
     const root = makeCliRoot(REPO, BASE)
     const t0 = Date.now()
-    const a = withMode('hang', () => authorizeSend(ENV, root, { timeoutMs: 600 }))
+    const a = withMode(root, 'hang', () => authorizeSend(ENV, root, { timeoutMs: 600 }))
     expect(a).toMatchObject({ allowed: false, reason: 'authorizer_failed' })
     expect(Date.now() - t0).toBeLessThan(8000)
   })
@@ -270,6 +264,7 @@ function runCli(root: string, args: string[], scenario: Scenario, extraEnv: Reco
   const scenarioPath = join(BASE, `scenario-${n}.json`)
   const logPath = join(BASE, `fetch-${n}.jsonl`)
   writeFileSync(scenarioPath, JSON.stringify(scenario))
+  setStubEnv(root, extraEnv) // GS_* reach the stub helper through its gs-env.json (BE2-1)
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
     NODE_ENV: 'production',

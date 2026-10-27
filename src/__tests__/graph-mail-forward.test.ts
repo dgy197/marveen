@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { STUB_HELPER } from './graph-cli-root.js'
+import { STUB_HELPER, makeShimTrap } from './graph-cli-root.js'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -746,6 +746,25 @@ describe('graph-mail CLI (subprocess, stubbed fetch, fake credentials)', () => {
       chmodSync(shim, 0o755)
       const r = runCli(good, ['forward', ...OK_ARGS], SUCCESS, { PATH: bin })
       expect(existsSync(marker)).toBe(false)
+      expect(r.status).toBe(0)
+      expect(kinds(r)).toEqual(['token', 'message', 'forward'])
+    })
+
+    // BE2-1 (card c3c32903): the macOS /usr/bin/python3 is an xcrun shim that follows DEVELOPER_DIR.
+    // A fake tree (xcrun + a CLT python3 that touch a marker and print "allow"), SDKROOT, TOOLCHAINS,
+    // PYTHONPATH/PYTHONHOME and a python3 shim first on PATH: none of it may start, in the gate
+    // probe or in the authorizer, and the forward goes out only on the real (stub) helper's allow.
+    it('a fake DEVELOPER_DIR tree plus PYTHON* and a PATH shim: no shim runs, in the probe or the authorizer', () => {
+      const trap = makeShimTrap(BASE)
+      const bin = mkdtempSync(join(BASE, 'bin-'))
+      symlinkSync(process.execPath, join(bin, 'node'))
+      const r = runCli(good, ['forward', ...OK_ARGS], SUCCESS, {
+        ...trap.env,
+        PATH: `${trap.fakeBin}:${bin}`,
+        PYTHONPATH: trap.developerDir,
+        PYTHONHOME: trap.developerDir,
+      })
+      expect(existsSync(trap.marker)).toBe(false)
       expect(r.status).toBe(0)
       expect(kinds(r)).toEqual(['token', 'message', 'forward'])
     })

@@ -1,4 +1,4 @@
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 // Test fixture for the graph-mail CLI tests (card efa58ad2, cli-send-enforce).
@@ -25,13 +25,19 @@ export const STUB_HELPER = [
   "log = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'stub-requests.jsonl')",
   "with open(log, 'a', encoding='utf-8') as fh:",
   "    fh.write(req.strip() + '\\n')",
-  "mode = os.environ.get('GS_MODE', 'allow')",
-  "reason = os.environ.get('GS_REASON', 'none')",
+  // BE2-1 (c3c32903, test setup): the CLI starts the helper with an allowlisted environment, so
+  // GS_* no longer arrive through os.environ; setStubEnv() writes them next to the stub instead.
+  "try:",
+  "    cfg = json.load(open(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'gs-env.json'), encoding='utf-8'))",
+  'except OSError:',
+  '    cfg = {}',
+  "mode = cfg.get('GS_MODE', 'allow')",
+  "reason = cfg.get('GS_REASON', 'none')",
   'def say(obj, code):',
   '    sys.stdout.write(json.dumps(obj) + "\\n")',
   '    sys.stdout.flush()',
   '    sys.exit(code)',
-  "allow = {'decision': 'allow', 'reason': os.environ.get('GS_ALLOW_REASON', 'approval'), 'approval_id': 'ab12cd', 'anchor': 'a' * 64}",
+  "allow = {'decision': 'allow', 'reason': cfg.get('GS_ALLOW_REASON', 'approval'), 'approval_id': 'ab12cd', 'anchor': 'a' * 64}",
   "if mode == 'allow':",
   '    say(allow, 0)',
   "if mode == 'refuse':",
@@ -84,6 +90,55 @@ export function makeCliRoot(repo: string, base: string, helper: HelperKind = 'st
     if (helper === 'stub') writeFileSync(join(hooks, 'email_send_authorize.py'), STUB_HELPER)
   }
   return root
+}
+
+/**
+ * Hands the GS_* knobs (GS_MODE, GS_REASON, GS_ALLOW_REASON) to the stub helper of `root`.
+ * Only GS_* keys are taken from `vars`; none and no earlier file: nothing is written; none but
+ * an earlier file: the file is reset, so a reused root never keeps the last test's mode.
+ */
+export function setStubEnv(root: string, vars: Record<string, string | undefined> = {}): void {
+  const file = join(root, 'scripts', 'hooks', 'gs-env.json')
+  const cfg: Record<string, string> = {}
+  for (const [k, v] of Object.entries(vars)) if (k.startsWith('GS_') && typeof v === 'string') cfg[k] = v
+  if (Object.keys(cfg).length === 0 && !existsSync(file)) return
+  writeFileSync(file, JSON.stringify(cfg))
+}
+
+export interface ShimTrap {
+  /** A fake DEVELOPER_DIR: usr/bin/xcrun and Library/Developer/CommandLineTools/usr/bin/python3 both touch `marker`. */
+  developerDir: string
+  /** A directory with a python3 shim that touches `marker` and answers "allow"; for the front of PATH. */
+  fakeBin: string
+  marker: string
+  /** DEVELOPER_DIR, SDKROOT and TOOLCHAINS pointing into the fake tree. */
+  env: Record<string, string>
+}
+
+/**
+ * BE2-1 (card c3c32903): what an attacker prefixes to a send. Nothing the product runs may ever
+ * start one of these files: `existsSync(trap.marker)` stays false. The python shims also print an
+ * "allow" verdict, so a run that used one would show up as an allowed send as well.
+ */
+export function makeShimTrap(base: string): ShimTrap {
+  const dir = realpathSync(mkdtempSync(join(base, 'shim-trap-')))
+  const marker = join(dir, 'shim-was-run')
+  const allow = '{"decision":"allow","reason":"approval","approval_id":"shim","anchor":null}'
+  const shim = `#!/bin/sh\necho "$0" >> '${marker}'\necho '${allow}'\nexit 0\n`
+  const developerDir = join(dir, 'developer')
+  const clt = join(developerDir, 'Library', 'Developer', 'CommandLineTools', 'usr', 'bin')
+  const fakeBin = join(dir, 'fakebin')
+  for (const d of [join(developerDir, 'usr', 'bin'), clt, fakeBin]) mkdirSync(d, { recursive: true })
+  for (const f of [join(developerDir, 'usr', 'bin', 'xcrun'), join(clt, 'python3'), join(fakeBin, 'python3')]) {
+    writeFileSync(f, shim)
+    chmodSync(f, 0o755)
+  }
+  return {
+    developerDir,
+    fakeBin,
+    marker,
+    env: { DEVELOPER_DIR: developerDir, SDKROOT: developerDir, TOOLCHAINS: 'com.attacker.toolchain' },
+  }
 }
 
 /** The requests the stub helper of `root` received, parsed, in order. */

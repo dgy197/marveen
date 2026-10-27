@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { realpathSync, statSync } from 'node:fs'
+import { realpathSync } from 'node:fs'
 import { basename, join } from 'node:path'
+import { NO_TRUSTED_PYTHON_MESSAGE, resolveTrustedPython, trustedPythonEnv } from './trusted-python.js'
 
 // The CLI side of the send authorization (card efa58ad2, cli-send-enforce).
 //
@@ -23,7 +24,6 @@ import { basename, join } from 'node:path'
 // module elsewhere is the `repoRoot` argument and the `options` object, which
 // scripts/graph-mail.ts never passes (only the tests do).
 
-export const TRUSTED_PYTHONS = ['/usr/bin/python3', '/opt/homebrew/bin/python3', '/usr/local/bin/python3']
 const HELPER_REL = ['scripts', 'hooks', 'email_send_authorize.py'] as const
 export const HELPER_TIMEOUT_MS = 10_000
 
@@ -206,16 +206,14 @@ export function authorizeSend(
   } catch {
     return failed('the send authorizer (scripts/hooks/email_send_authorize.py) is missing')
   }
-  const env = { ...process.env }
-  // The helper drops these itself; not handing them over is the first line.
-  delete env.EMAIL_APPROVAL_GATE_STORE
-  delete env.OUTGOING_COPY_GATE_RULES
   const request = { mode: 'consume', tool: 'graph-mail', ...envelope }
-  // BE-B1 (c3c32903): the interpreter by absolute path, never from PATH, and no PYTHON*
-  // variable: a python3 shim earlier on PATH would otherwise answer "allow".
-  const python = TRUSTED_PYTHONS.find((c) => { try { return statSync(c).isFile() } catch { return false } })
-  if (!python) return failed('no trusted python3 (/usr/bin, /opt/homebrew/bin, /usr/local/bin) for the authorizer')
-  for (const k of Object.keys(env)) if (k.toUpperCase().startsWith('PYTHON')) delete env[k]
+  // BE-B1 / BE2-1 (c3c32903): a root-owned, non-shim interpreter by its real path, never
+  // from PATH, and an environment built from an allowlist (src/trusted-python.ts): a python3
+  // shim on PATH, or a DEVELOPER_DIR for the macOS xcrun shim, would otherwise answer "allow".
+  // EMAIL_APPROVAL_GATE_STORE / OUTGOING_COPY_GATE_RULES are not on the list, so they never arrive.
+  const python = resolveTrustedPython()
+  if (!python) return failed(NO_TRUSTED_PYTHON_MESSAGE)
+  const env = trustedPythonEnv()
   const run = spawnSync(python, ['-I', helper], {
     input: asciiJson(request),
     encoding: 'utf-8',

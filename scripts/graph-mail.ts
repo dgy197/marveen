@@ -125,6 +125,7 @@ import {
 } from '../src/graph-mail.js'
 import { parseForwardArgv, parseSendArgv, parseShowArgv, quoteForDisplay } from '../src/graph-forward-validate.js'
 import { readForwardCommentFile, readSendBodyFile, resolveOutboxRoot } from '../src/graph-forward-comment-file.js'
+import { NO_TRUSTED_PYTHON_MESSAGE, resolveTrustedPython, trustedPythonEnv } from '../src/trusted-python.js'
 import {
   authorizeSend,
   buildForwardEnvelope,
@@ -135,7 +136,7 @@ import {
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { readFileSync, realpathSync, statSync } from 'node:fs'
-import { basename, dirname, join, resolve, sep } from 'node:path'
+import { basename, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)))
@@ -203,27 +204,11 @@ function has(name: string): boolean {
   return process.argv.includes(`--${name}`)
 }
 
-// The interpreters the ledger check may run under, by ABSOLUTE path (the
-// Linux system python first, then the two macOS Homebrew prefixes), never
-// resolved from PATH, and in isolated mode (-I) with every PYTHON* variable
-// stripped: otherwise a `PATH=/x` or `PYTHONPATH=/x` prefix in front of the
-// send could swap in a "check" that always passes.
-const TRUSTED_PYTHONS = ['/usr/bin/python3', '/opt/homebrew/bin/python3', '/usr/local/bin/python3']
-function trustedPython(): string | null {
-  for (const p of TRUSTED_PYTHONS) {
-    try {
-      if (statSync(p).isFile()) return p
-    } catch { /* not there, try the next one */ }
-  }
-  return null
-}
-function envWithoutPython(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {}
-  for (const [k, v] of Object.entries(process.env)) {
-    if (!k.toUpperCase().startsWith('PYTHON')) env[k] = v
-  }
-  return env
-}
+// The interpreter of every python step here (ledger check, gate probe) and its
+// environment come from src/trusted-python.ts (BE-B1 / BE2-1, card c3c32903): a root-owned,
+// non-shim python3 by its real path, never resolved from PATH, in isolated mode (-I), with
+// an environment built from an allowlist: a `PATH=/x`, `PYTHONPATH=/x` or `DEVELOPER_DIR=/x`
+// prefix in front of the send must not be able to swap in a "check" that always passes.
 
 // The ledger half of scripts/hooks/sender_check.py, and nothing else: the level, the
 // standing list, the copy audit and the one-shot approval belong to the authorizer
@@ -275,18 +260,13 @@ function ledgerOptedIn(): boolean {
  */
 function ledgerCheckOrExit(kind: string, letter: Record<string, unknown>): void {
   if (!ledgerOptedIn()) return
-  const python = trustedPython()
+  const python = resolveTrustedPython()
   if (!python) {
-    console.error(`${kind}: REFUSED -- no trusted python3 for the recipient-ledger check ` +
-      `(looked for: ${TRUSTED_PYTHONS.join(', ')}); PATH is not searched, fail-closed. Nothing was sent.`)
+    console.error(`${kind}: REFUSED -- ${NO_TRUSTED_PYTHON_MESSAGE}; PATH is not searched, fail-closed. Nothing was sent.`)
     process.exit(2)
   }
-  // The authorizer (src/graph-send-authorize.ts) and the gate probe start a bare
-  // `python3`, resolved through PATH: a `PATH=/x` prefix in front of the send must not
-  // choose it. Pin PATH to the trusted interpreter's directory and the system ones.
-  process.env.PATH = [dirname(python), '/usr/bin', '/bin'].join(':')
   const r = spawnSync(python, ['-I', '-c', LEDGER_PY, resolve(REPO_ROOT, 'scripts', 'hooks')],
-    { input: JSON.stringify(letter), encoding: 'utf-8', timeout: 30_000, env: envWithoutPython() })
+    { input: JSON.stringify(letter), encoding: 'utf-8', timeout: 30_000, env: trustedPythonEnv() })
   if (r.status !== 0) {
     const said = (r.stderr || '').trim()
     console.error(`${kind}: REFUSED -- ${said || (r.error ? String(r.error) : `exit ${r.status}`)}. Nothing was sent.`)
@@ -491,8 +471,8 @@ type GateCheck = { ok: true } | { ok: false; reason: string; commentFile?: true 
 function gateKnowsForward(repoRoot: string, opts: { commentFile: boolean }): GateCheck {
   const binding = settingsBindingProblem(join(repoRoot, '.claude', 'settings.json'))
   if (binding) return { ok: false, reason: binding }
-  const python = trustedPython()
-  if (!python) return { ok: false, reason: 'no trusted python3 for the gate probe' }
+  const python = resolveTrustedPython()
+  if (!python) return { ok: false, reason: NO_TRUSTED_PYTHON_MESSAGE }
   const run = spawnSync(
     python,
     ['-I', '-c', PROBE_PY, join(repoRoot, 'scripts', 'hooks'), PROBE_COMMAND, PROBE_ID, PROBE_SUBJECT],
@@ -502,7 +482,7 @@ function gateKnowsForward(repoRoot: string, opts: { commentFile: boolean }): Gat
       // The copy gate loads its local name-rules file at import time and logs
       // when that file is absent. Not needed for classification, so point it
       // at a path that cannot exist: no read of the rules, no log line.
-      env: { ...process.env, OUTGOING_COPY_GATE_RULES: '/dev/null/graph-mail-gate-probe' },
+      env: trustedPythonEnv(process.env, { OUTGOING_COPY_GATE_RULES: '/dev/null/graph-mail-gate-probe' }),
     },
   )
   if (run.error || run.status !== 0) return { ok: false, reason: 'the gate probe did not run (python3 -I)' }
@@ -583,6 +563,9 @@ async function forward(argv: string[]): Promise<number> {
     comment = args.comment
   }
   const { id, to, origSubject } = args
+  // Opt-in verified-recipient ledger, before any network call and before anything is spent
+  // (see LEDGER_PY): it only needs the address, not the message.
+  ledgerCheckOrExit('forward', { to: [to], cc: [], raw_to: to, raw_cc: null })
   let actual: string | null
   try {
     const m = await getMessage(id)
@@ -600,8 +583,6 @@ async function forward(argv: string[]): Promise<number> {
     )
     return 2
   }
-  // Opt-in verified-recipient ledger, before anything is spent (see LEDGER_PY).
-  ledgerCheckOrExit('forward', { to: [to], cc: [], raw_to: to, raw_cc: null })
   // The token comes BEFORE the authorizer: a credential or token failure must not
   // spend an approval. The envelope carries the real subject (== --orig-subject
   // here) and the comment exactly as it will be sent.

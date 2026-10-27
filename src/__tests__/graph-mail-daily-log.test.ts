@@ -6,7 +6,7 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import { makeCliRoot, stubRequests } from './graph-cli-root.js'
+import { makeCliRoot, setStubEnv, stubRequests } from './graph-cli-root.js'
 
 // Card f90928e3 part B: after a SUCCESSFUL `graph-mail.ts send` or `forward` one
 // daily-log entry is posted for agent brainy. The shipped CLI runs in a throwaway
@@ -75,6 +75,7 @@ function makeRoot(kind: 'real' | 'stub'): string {
 }
 
 function run(root: string, verb: 'send' | 'forward', args: string[], env: NodeJS.ProcessEnv = {}): Promise<Run> {
+  setStubEnv(root, env) // BE2-1 (c3c32903, test setup): GS_* reach the stub helper through its gs-env.json
   return new Promise((done) => {
     const child = spawn(TSX, [join(root, 'scripts', 'graph-mail.ts'), verb, ...args], {
       env: { ...process.env, ...env, WEB_PORT: '' },

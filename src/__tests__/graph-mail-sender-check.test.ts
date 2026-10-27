@@ -4,7 +4,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, re
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { STUB_HELPER, makeCliRoot } from './graph-cli-root.js'
+import { STUB_HELPER, makeCliRoot, makeShimTrap } from './graph-cli-root.js'
 
 // scripts/graph-mail.ts `send` and `forward` run the opt-in verified-recipient
 // ledger (MAIN_AGENT_RECIPIENT_LEDGER=1 in the install .env) before the token
@@ -237,10 +237,18 @@ describe('graph-mail.ts and the recipient ledger, when the install turns it on',
     const site = join(BASE, 'fakesite')
     mkdirSync(site, { recursive: true })
     writeFileSync(join(site, 'sitecustomize.py'), 'import os\nos._exit(0)\n')
-    for (const env of [{ ...process.env, PATH: `${fake}:${process.env.PATH}` }, { ...process.env, PYTHONPATH: site }]) {
+    // BE2-1 (card c3c32903): and neither can a DEVELOPER_DIR tree (the macOS xcrun shim follows it),
+    // SDKROOT/TOOLCHAINS or PYTHONHOME; the marker would show a shim that ran.
+    const trap = makeShimTrap(BASE)
+    for (const env of [
+      { ...process.env, PATH: `${fake}:${process.env.PATH}` },
+      { ...process.env, PYTHONPATH: site },
+      { ...process.env, ...trap.env, PATH: `${trap.fakeBin}:${process.env.PATH}`, PYTHONHOME: trap.developerDir },
+    ]) {
       const r = send(LETTER, env)
       expect(r.status, r.stderr).toBe(2)
       expect(r.kinds).toEqual([])
     }
+    expect(existsSync(trap.marker)).toBe(false)
   })
 })
