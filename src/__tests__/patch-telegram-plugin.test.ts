@@ -889,7 +889,9 @@ describe('kbd: the callback branch and the delivery of a tap (c67f5f34, card 267
   })
 
   it('AC-C10: data that is not kbd: keeps the old behaviour (perm branch, empty toast); kbd: lookalikes in case or with a prefix are not kbd', async () => {
-    const h = callbackHarness(patched)
+    // The merged script also applies our apv patch, which takes `apv:` before the perm regex (covered by the apv suite and the
+    // next test). This test is about a plugin WITHOUT an apv hook, where `apv:abc` is just another unknown press.
+    const h = callbackHarness(patchedWithout(readFileSync(FIXTURE, 'utf-8'), 'apv'))
     // perm:allow by a paired user: the structured permission event, the old toast, the message text edited
     h.pendingPermissions.set('abcde', { tool_name: 'Bash', description: 'd', input_preview: '{}' })
     const allow = await h.press({ data: 'perm:allow:abcde' })
@@ -1101,7 +1103,9 @@ describe('apv: email-approval buttons (345f34e2)', () => {
   it('the perm: branch is byte-identical, and taking the patch back (BEGIN..END, snapshot and call line) gives the file patched without it', () => {
     run()
     const text = readFileSync(server, 'utf-8')
-    expect(callbackHandler(text).replace(CALL_LINE, '')).toBe(callbackHandler(readFileSync(FIXTURE, 'utf-8')))
+    // v1.45.0 merge (c3c32903, test setup): the kbd patch now has lines inside the handler, so "byte-identical" is
+    // measured against the handler of the file patched without apv, not the raw fixture.
+    expect(callbackHandler(text).replace(CALL_LINE, '')).toBe(callbackHandler(patchedWithout(readFileSync(FIXTURE, 'utf-8'), 'apv')))
     const back = text.replace(/^\/\/ MARVEEN-PATCH\(345f34e2-apv\) BEGIN[^\n]*\n[\s\S]*?^\/\/ MARVEEN-PATCH\(345f34e2-apv\) END\n/m, '').replace(SNAP_LINE, '').replace(CALL_LINE, '')
     expect(back).not.toContain(APV)
     expect(back).toBe(patchedWithout(readFileSync(FIXTURE, 'utf-8'), 'apv'))
