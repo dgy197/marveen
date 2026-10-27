@@ -926,6 +926,32 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // Card d7b2d5c8 (S1): which git repos the "Fejlesztes > Funkciok" page may run
+  // `git log` on. The function registry (store/funkciok/*.json) names repo paths;
+  // a path that is not on this list (by realpath) gets no git process at all.
+  {
+    key: 'FUNKCIO_REPO_ALLOWLIST',
+    type: 'string',
+    default: '',
+    // Adding a repo LOOSENS the fence (the fleet token must not widen it for the
+    // agents it constrains); removing one tightens it.
+    loosens: (oldValue, newValue) => {
+      const paths = (v: string) => new Set(v.split(/[\s,]+/).map((w) => w.trim()).filter(Boolean))
+      const before = paths(oldValue)
+      return [...paths(newValue)].some((p) => !before.has(p))
+    },
+    validate: (v) => {
+      const t = v.trim()
+      if (t === '') return null
+      const ok = t.split(/[\s,]+/).filter(Boolean).every((p) =>
+        p.startsWith('/') && p.length <= 500 && !p.split('/').includes('..') && !/[\u0000-\u001f\u007f]/.test(p))
+      return ok ? null : 'Abszolút útvonalak vesszővel vagy szóközzel elválasztva (pl. /Users/me/projekt), ".." nélkül.'
+    },
+    description: 'A "Fejlesztés > Funkciók" lap ezeken a git-repókon futtathat `git log`-ot, a telepítés gyökerén kívül (az mindig engedélyezett). Vesszővel vagy szóközzel elválasztott abszolút útvonalak, pl. /Volumes/8T/10_LOCAL/Brainy/main/projects/invoice-archive. A funkció-regiszter (store/funkciok/*.json) repó-útja akkor számít, ha a valódi útja (realpath) pontosan egyezik egy bejegyzéssel; ha nem, a lap git nélkül, hibajelzéssel jelenik meg. Üresen csak a telepítés gyökere. Repót hozzáadni a közös tokennel nem lehet (azt minden ágens is birtokolja), csak bejelentkezett gazda-session vagy teljes jogú eszközkulcs; szűkíteni bárki tud. A módosítás azonnal él.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
   // Opt-in (#1705 maintainer decision, 2026-10-14): read per spawn by
   // agent-scaffold.ts (ytDlpIngestOnly / bashEgressDeny). Off == the generated
   // settings are byte-identical to an install without the switch.
