@@ -71,6 +71,9 @@ describe('mail-tool action: python and JS agree with the shared contract', () =>
   })
 })
 
+/** Vector class 'draft', but ranked as a send by the (stricter) name classifier: Brainy 4952. */
+const STRICTER_THAN_VECTOR = new Set(['mcp__gmail__create_draft_reply'])
+
 describe('sub-agent hard gate (gateDecision) on every case', () => {
   const allVerified = () => true
   const noneVerified = () => false
@@ -85,6 +88,14 @@ describe('sub-agent hard gate (gateDecision) on every case', () => {
         expect(bad.deny).toBe(true)
         expect(ok.kind).not.toBe('unverified-recipient')
         expect(ok.kind).not.toBe('draft-required')
+      } else if (STRICTER_THAN_VECTOR.has(c.tool)) {
+        // Brainy 4952: the name classifier merged from v1.45.0 ranks a "...reply" on a gmail server as a
+        // connector send, which this gate denies unconditionally. Proof it is not looser than the vector's
+        // 'draft' class: it denies in the cases where the draft class denies (a bad ledger) AND where it
+        // does not (all verified); nothing the vector lets through is let through here.
+        expect(ok.deny).toBe(true)
+        expect(bad.deny).toBe(true)
+        expect(ok.kind).toBe('connector-send')
       } else if (c.expected === 'draft') {
         expect(ok).toEqual({ deny: false })
         if (hasRecipient(c.input)) {
@@ -103,7 +114,9 @@ describe('sub-agent hard gate (gateDecision) on every case', () => {
   it('the names the old patterns knew keep their old kind (G6)', () => {
     expect(gateDecision('mcp__gmail__send_email', {}, () => true).kind).toBe('send_email')
     expect(gateDecision('mcp__claude_ai_Gmail__send_message', {}, () => true).kind).toBe('connector-send')
-    expect(gateDecision('mcp__gmail-v2__v2_send_draft', { draftId: 'd' }, () => true).kind).toBe('mail-tool-send')
+    // v1.45.0 names send_draft itself: the same unconditional deny as the action classifier gave
+    // (Brainy 4952: the stricter-or-equal classification stays), under the kind 'send-draft'.
+    expect(gateDecision('mcp__gmail-v2__v2_send_draft', { draftId: 'd' }, () => true)).toEqual({ deny: true, kind: 'send-draft' })
   })
 
   it('a new draft tool ledger-checks every recipient field, like the old draft tools', () => {

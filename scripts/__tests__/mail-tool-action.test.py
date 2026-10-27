@@ -48,6 +48,8 @@ CASES = VECTORS["cases"]
 EDGES = VECTORS["classifier_edges"]
 AS_CLASS = {"send": "send", "draft": "draft", "nonsend": None}
 EM_DASH = chr(0x2014)
+# Vector class 'draft', ranked a send by the stricter name classifier (Brainy 4952).
+STRICTER_THAN_VECTOR = {"mcp__gmail__create_draft_reply"}
 NOW_S = "CAST(strftime('%s','now') AS INTEGER)"
 
 failed = []
@@ -185,6 +187,12 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
         if exp == "send":
             check(f"approval gate L1: {tool} is a send, DENIED", code == 2 and "szint 1" in err,
                   f"exit={code} err={err[:160]!r}")
+        elif tool in STRICTER_THAN_VECTOR:
+            # Brainy 4952: the name classifier merged from v1.45.0 ranks a "...reply" on a gmail server as
+            # a send, so level 1 denies it. That blocks MORE than the vector's 'draft' class (which passes),
+            # never less, so the expectation is the denial.
+            check(f"approval gate L1: {tool} is ranked a send by name (stricter than the vector), DENIED",
+                  code == 2 and "szint 1" in err, f"exit={code} err={err[:160]!r}")
         else:
             check(f"approval gate L1: {tool} is not a send, passes", code == 0, f"exit={code} err={err[:160]!r}")
         code, _, err = run(GATE, s3, tool, ti)
@@ -224,7 +232,11 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
              "a draft id in the input, whatever the key spelling"),
             ("mcp__gmail-v2__v2_forward", {"messageId": "msg-42", "to": ["a@b.hu"]}, "v2_forward with no text")):
         code, _, err = run(GATE, s2, tool, ti)
-        check(f"L2: {label} -> DENIED, nem horgonyozhato", code == 2 and "nem horgonyozhato" in err
+        # v2_forward is a connector send by NAME in v1.45.0, so its text-less call is refused by the
+        # name path's own reason ("nem nyerheto ki level-szoveg") instead of the stored-content one.
+        # Same strength: exit 2 and no anchor offered (c3c32903, tests); the other four keep the wording.
+        wording = ("nem horgonyozhato", "nem nyerheto ki level-szoveg") if tool.endswith("v2_forward") else ("nem horgonyozhato",)
+        check(f"L2: {label} -> DENIED, nem horgonyozhato", code == 2 and any(w in err for w in wording)
               and anchor_from(err) is None, f"exit={code} err={err[:200]!r}")
     env = ee.collect_email_envelope("mcp__gmail-v2__v2_send_draft", {"draftId": "draft-7"})
     check("envelope of v2_send_draft names the stored draft", "piszkozat" in (env["unreadable_reason"] or ""), repr(env))
