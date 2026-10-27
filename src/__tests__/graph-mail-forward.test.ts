@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest'
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -732,13 +733,21 @@ describe('graph-mail CLI (subprocess, stubbed fetch, fake credentials)', () => {
       expect(r.calls).toEqual([])
     })
 
-    it('no python3 on PATH: exit 2, no request', () => {
+    // BE-B1 (card c3c32903, test setup): the gate probe and the authorizer run python by absolute
+    // path, never from PATH. This used to be "no python3 on PATH: exit 2" (the probe resolved
+    // python3 through PATH); the safe behaviour is that a python3 shim first on PATH is never
+    // started, and that PATH has no say in the verdict.
+    it('a python3 shim first on PATH is never used: the probe and the authorizer run the trusted interpreter', () => {
       const bin = mkdtempSync(join(BASE, 'bin-'))
       symlinkSync(process.execPath, join(bin, 'node'))
+      const marker = join(bin, 'shim-was-run')
+      const shim = join(bin, 'python3')
+      writeFileSync(shim, `#!/bin/sh\necho ran > '${marker}'\nexit 1\n`)
+      chmodSync(shim, 0o755)
       const r = runCli(good, ['forward', ...OK_ARGS], SUCCESS, { PATH: bin })
-      expect(r.status).toBe(2)
-      expect(r.stderr).toContain('the gate probe did not run')
-      expect(r.calls).toEqual([])
+      expect(existsSync(marker)).toBe(false)
+      expect(r.status).toBe(0)
+      expect(kinds(r)).toEqual(['token', 'message', 'forward'])
     })
 
     it('the probe writes no copy-gate log line into the checkout store', () => {
