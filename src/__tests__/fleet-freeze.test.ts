@@ -14,6 +14,24 @@ const ROOT = mkdtempSync(join(tmpdir(), 'fleet-freeze-'))
 mkdirSync(join(ROOT, 'store'), { recursive: true })
 afterAll(() => rmSync(ROOT, { recursive: true, force: true }))
 
+// v1.45.0 merge (card c3c32903, test setup): the local bearer-credential-admin switch
+// (credential-admin.ts) also stands in front of the bare token's first-run issuing
+// (BE-B2). This file seeds its owner through POST /api/auth/users and is about lifting
+// the freeze, so it runs against a throwaway install whose .env opens the switch.
+// CLAUDECLAW_ENV_DIR must be set before any app module loads; notifySecurityEvent (the
+// owner notification of a token mint) is stubbed next to the existing notifyOwner spy.
+const ENV_DIR = await vi.hoisted(async () => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-freeze-env-')))
+  fs.writeFileSync(path.join(dir, '.env'), 'BEARER_CREDENTIAL_ADMIN_ENABLED=1\n')
+  process.env.CLAUDECLAW_ENV_DIR = dir
+  for (const k of ['BEARER_CREDENTIAL_ADMIN_ENABLED', 'BEARER_CREDENTIAL_ADMIN_UNTIL', 'BEARER_CREDENTIAL_ADMIN_NONCE']) delete process.env[k]
+  return dir
+})
+afterAll(() => rmSync(ENV_DIR, { recursive: true, force: true }))
+
 vi.mock('../config.js', async (orig) => ({ ...(await orig<typeof import('../config.js')>()), PROJECT_ROOT: ROOT, MAIN_AGENT_ID: 'marveen' }))
 const running = new Set<string>()
 const stopSpy = vi.hoisted(() => vi.fn())
@@ -26,7 +44,7 @@ vi.mock('../web/agent-process.js', () => ({
 }))
 vi.mock('../web/agent-config.js', async (orig) => ({ ...(await orig<typeof import('../web/agent-config.js')>()), listAgentNames: () => ['samu', 'zara', 'iris', 'marveen', 'kint'], readAgentRemoteHost: (n: string) => (n === 'kint' ? 'vps.example' : null) }))
 const notifySpy = vi.hoisted(() => vi.fn(async (_text: string) => {}))
-vi.mock('../notify.js', async (orig) => ({ ...(await orig<typeof import('../notify.js')>()), notifyOwner: notifySpy }))
+vi.mock('../notify.js', async (orig) => ({ ...(await orig<typeof import('../notify.js')>()), notifyOwner: notifySpy, notifySecurityEvent: async () => {} }))
 
 const { initDatabase, getDb } = await import('../db.js')
 const { tryHandleFleetFreeze } = await import('../web/routes/fleet-freeze.js')

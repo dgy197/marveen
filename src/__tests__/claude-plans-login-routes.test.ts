@@ -11,6 +11,27 @@ import { tmpdir } from 'node:os'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-claude-plans-login-test-'))
 
+// v1.45.0 merge (card c3c32903, test setup): the local bearer-credential-admin switch
+// (credential-admin.ts) also stands in front of the bare token's first-run issuing
+// (BE-B2). This file seeds its owner and keys through those routes and is about the
+// owner gate of the login routes, so it runs against a throwaway install whose .env
+// opens the switch. CLAUDECLAW_ENV_DIR must be set before any app module loads; the
+// owner notification of a token mint is stubbed so nothing reaches a live channel.
+const ENV_DIR = await vi.hoisted(async () => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-plans-login-env-')))
+  fs.writeFileSync(path.join(dir, '.env'), 'BEARER_CREDENTIAL_ADMIN_ENABLED=1\n')
+  process.env.CLAUDECLAW_ENV_DIR = dir
+  for (const k of ['BEARER_CREDENTIAL_ADMIN_ENABLED', 'BEARER_CREDENTIAL_ADMIN_UNTIL', 'BEARER_CREDENTIAL_ADMIN_NONCE']) delete process.env[k]
+  return dir
+})
+vi.mock('../notify.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../notify.js')>()),
+  notifySecurityEvent: async () => {},
+}))
+
 vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<object>()), PROJECT_ROOT: tmpRoot }))
 
 const vaultSecrets = new Map<string, string>()
@@ -89,6 +110,7 @@ beforeAll(() => {
 afterAll(() => {
   setClaudePlanLoginDepsForTest(null)
   rmSync(tmpRoot, { recursive: true, force: true })
+  rmSync(ENV_DIR, { recursive: true, force: true })
 })
 
 beforeEach(async () => {

@@ -1,8 +1,9 @@
 // DEVKEYMINT1022: once a dashboard login exists, issuing a credential (a device key,
 // a Bridge pairing) and adding or removing a dashboard user take the owner's
 // session; the bearer token keeps them only for the first-run setup (no user yet).
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import type http from 'node:http'
+import { rmSync } from 'node:fs'
 import { Readable } from 'node:stream'
 import { initDatabase, getDb, getDashboardUser } from '../db.js'
 import { resolveAuth } from '../web/auth-gate.js'
@@ -12,6 +13,28 @@ import { createDeviceKey, listDeviceKeys, _clearDeviceKeyCacheForTest } from '..
 import { _clearSessionCacheForTest, createSession } from '../web/auth-sessions.js'
 import { SESSION_COOKIE_NAME } from '../web/auth-gate.js'
 import type { RouteContext } from '../web/routes/types.js'
+
+// v1.45.0 merge (card c3c32903, test setup): the local bearer-credential-admin switch
+// (credential-admin.ts) also stands in front of the bare token's first-run issuing
+// (BE-B2). This file is about the owner-session rule, not about that gate, so it runs
+// against a throwaway install whose .env opens the switch. CLAUDECLAW_ENV_DIR must be
+// set before any app module loads; the owner notification of a token mint is stubbed
+// so nothing reaches a live channel.
+const ENV_DIR = await vi.hoisted(async () => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cred-issue-owner-env-')))
+  fs.writeFileSync(path.join(dir, '.env'), 'BEARER_CREDENTIAL_ADMIN_ENABLED=1\n')
+  process.env.CLAUDECLAW_ENV_DIR = dir
+  for (const k of ['BEARER_CREDENTIAL_ADMIN_ENABLED', 'BEARER_CREDENTIAL_ADMIN_UNTIL', 'BEARER_CREDENTIAL_ADMIN_NONCE']) delete process.env[k]
+  return dir
+})
+vi.mock('../notify.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../notify.js')>()),
+  notifySecurityEvent: async () => {},
+}))
+afterAll(() => rmSync(ENV_DIR, { recursive: true, force: true }))
 
 const TOKEN = 'b'.repeat(64)
 const TOKEN_AUTH: RouteContext['auth'] = { kind: 'token' }

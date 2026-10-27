@@ -11,6 +11,27 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
+// v1.45.0 merge (card c3c32903, test setup): the local bearer-credential-admin switch
+// (credential-admin.ts) also stands in front of the bare token's first-run issuing
+// (BE-B2). This file is about the owner-session rule, not about that gate, so it runs
+// against a throwaway install whose .env opens the switch. CLAUDECLAW_ENV_DIR must be
+// set before any app module loads; the owner notification of a token mint is stubbed
+// so nothing reaches a live channel.
+const ENV_DIR = await vi.hoisted(async () => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cred-issue-fed-env-')))
+  fs.writeFileSync(path.join(dir, '.env'), 'BEARER_CREDENTIAL_ADMIN_ENABLED=1\n')
+  process.env.CLAUDECLAW_ENV_DIR = dir
+  for (const k of ['BEARER_CREDENTIAL_ADMIN_ENABLED', 'BEARER_CREDENTIAL_ADMIN_UNTIL', 'BEARER_CREDENTIAL_ADMIN_NONCE']) delete process.env[k]
+  return dir
+})
+vi.mock('../notify.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../notify.js')>()),
+  notifySecurityEvent: async () => {},
+}))
+
 const h = vi.hoisted(() => ({ operatorAccess: null as unknown }))
 vi.mock('../web/operator-access.js', async (orig) => {
   const real = await orig<typeof import('../web/operator-access.js')>()
@@ -90,6 +111,7 @@ beforeEach(() => {
 
 afterAll(() => {
   rmSync(TMP, { recursive: true, force: true })
+  rmSync(ENV_DIR, { recursive: true, force: true })
 })
 
 describe('first-run setup (no dashboard user yet): the token still issues', () => {

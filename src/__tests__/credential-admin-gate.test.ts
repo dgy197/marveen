@@ -324,6 +324,8 @@ describe('token caller in the first-run state (no dashboard user): upstream\'s e
   })
 
   it('the first user exists afterwards: the very next token mint is owner_session_required', async () => {
+    // BE-B2 (c3c32903, test setup): the first-run token mint now needs the local switch open.
+    setEnv(`${ENABLED}=1`)
     expect((await call('POST', '/api/auth/users', { auth: TOKEN, body: ROUTES[0]!.body() })).status).toBe(201)
     const r = await call('POST', DEVICE_KEYS.path, { auth: TOKEN, body: DEVICE_KEYS.body() })
     expect(r.status).toBe(403)
