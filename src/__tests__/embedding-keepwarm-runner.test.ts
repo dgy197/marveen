@@ -744,7 +744,7 @@ describe('with the real db.ts activity (generateEmbedding counters, the outage l
     expect(ollama.pingCalls).toHaveLength(1)
     stubEmbeddings('ok')
     expect(await generateEmbedding('a search while the ping runs')).toEqual([1, 0, 0, 0])
-    expect(await backfillEmbeddings()).toBeGreaterThanOrEqual(0)
+    expect((await backfillEmbeddings()).embedded).toBeGreaterThanOrEqual(0)
     releasePing()
     expect(await tick).toBe('ping_ok')
   })

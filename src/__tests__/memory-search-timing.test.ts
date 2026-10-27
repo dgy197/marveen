@@ -2,6 +2,15 @@
 // answers with a Server-Timing header (stage times in ms, numbers only). It is
 // opt-in: without timing=1, or without q, the answer is the one it always was.
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest'
+
+// Upstream's vector similarity floor (v1.45.0) drops weak vector hits. This suite's seeded
+// vectors are not about the floor, so it is switched off here (a baseline no corpus reaches, an
+// absolute small-corpus threshold of 0); the floor itself is pinned in memory-search-precision.test.ts.
+vi.mock('../settings-store.js', async (orig) => {
+  const actual = await orig<typeof import('../settings-store.js')>()
+  const off: Record<string, string> = { MEMORY_VECTOR_BASELINE_MIN_ROWS: '1000000', MEMORY_VECTOR_SMALL_CORPUS_MIN_SIMILARITY: '0' }
+  return { ...actual, getEffectiveSettingValue: (key: string) => (key in off ? off[key] : actual.getEffectiveSettingValue(key)) }
+})
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -225,7 +234,7 @@ describe('GET /api/memories: Server-Timing is opt-in', () => {
     const plain = await get(`/api/memories?${HYB}`)
     expect(plain.setHeaderCalls).toEqual(['x-memory-search'])
     expect(Object.keys(plain.headers).sort()).toEqual(['cache-control', 'content-type', 'vary', 'x-memory-search'])
-    expect(plain.headers['x-memory-search']).toBe(`fts=${t.ftsHits}; vector=${t.vectorHits}; relaxed=${t.ftsRelaxed}; vector-only=${t.vectorOnly}`)
+    expect(plain.headers['x-memory-search']).toBe(`fts=${t.ftsHits}; vector=${t.vectorHits}; relaxed=${t.ftsRelaxed}; vector-only=${t.vectorOnly}; vector-dropped=${t.vectorDropped ?? 0}`)
     for (const extra of ['&timing=0', '&timing=true', '&timing=yes', '&timing=', '&timing=11']) {
       const out = await get(`/api/memories?${HYB}${extra}`)
       expect(out.headers['server-timing'], extra).toBeUndefined()

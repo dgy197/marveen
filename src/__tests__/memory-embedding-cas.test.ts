@@ -124,15 +124,15 @@ describe('backfillEmbeddings: compare-and-set write', () => {
     const ids = [seedRow('Row a', null), seedRow('Row b', 'kw'), seedRow('Row c', null)]
     const [first, second] = await Promise.all([backfillEmbeddings(), backfillEmbeddings()])
     expect(fake.prompts.slice().sort()).toEqual(['Row a', 'Row b kw', 'Row c'])
-    expect(first).toBe(3)
-    expect(second).toBe(3)
+    expect(first.embedded).toBe(3)
+    expect(second.embedded).toBe(3)
     for (const id of ids) expect(readEmbedding(id)).not.toBeNull()
   })
 
   it('positive control: without an edit the backfill still writes the vector of the text it embedded', async () => {
     const fake = installFakeEmbedder()
     const id = seedRow('Untouched', 'kw')
-    expect(await backfillEmbeddings()).toBe(1)
+    expect((await backfillEmbeddings()).embedded).toBe(1)
     expect(fake.prompts).toEqual(['Untouched kw'])
     expect(readEmbedding(id)).toBe(JSON.stringify(vectorFor('Untouched kw')))
   })

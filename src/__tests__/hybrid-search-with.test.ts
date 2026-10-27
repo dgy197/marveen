@@ -9,13 +9,22 @@
 // equivalence suite ran green against the unrefactored code first, which pins
 // the copy to the real old behaviour; it then has to stay green on the new code.
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
+
+// Upstream's vector similarity floor (v1.45.0) drops weak vector hits. This suite's seeded
+// vectors are not about the floor, so it is switched off here (a baseline no corpus reaches, an
+// absolute small-corpus threshold of 0); the floor itself is pinned in memory-search-precision.test.ts.
+vi.mock('../settings-store.js', async (orig) => {
+  const actual = await orig<typeof import('../settings-store.js')>()
+  const off: Record<string, string> = { MEMORY_VECTOR_BASELINE_MIN_ROWS: '1000000', MEMORY_VECTOR_SMALL_CORPUS_MIN_SIMILARITY: '0' }
+  return { ...actual, getEffectiveSettingValue: (key: string) => (key in off ? off[key] : actual.getEffectiveSettingValue(key)) }
+})
 import Database from 'better-sqlite3'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import {
-  initDatabase, getDb, hybridSearch, hybridSearchWith, fuseRanked, clearMemoryCache, generateEmbedding,
+  initDatabase, getDb, hybridSearch, hybridSearchWith, toHybridSearchHit, fuseRanked, clearMemoryCache, generateEmbedding,
   queryLogFields, buildFtsMatchExpression, HYBRID_RRF_K, HYBRID_OVERLAP_TOP,
   type Memory, type HybridSearchTrace,
 } from '../db.js'
@@ -274,6 +283,10 @@ function isZeroNorm(v: number[]): boolean {
   return v.every(x => x === 0)
 }
 
+function where0(mode: string, q: string, agent: string, limit: number, cat: unknown): string {
+  return JSON.stringify({ mode, q, agent, limit, cat })
+}
+
 function hybridWarns(spy: { mock: { calls: unknown[][] } }): unknown[] {
   return spy.mock.calls.filter((c: unknown[]) => String(c[1]).startsWith('hybrid search:'))
 }
@@ -304,7 +317,12 @@ describe('R0 equivalence: hybridSearch returns exactly what the pre-R0 code retu
 
         const fetchNew = stubEmbedder(mode)
         const newTrace = freshTrace()
-        const newRows = await hybridSearch(agent, q, limit, newTrace, cat)
+        // v1.45.0: hybridSearch now returns the route-facing hit (the Memory plus match_kind, score
+        // and, for a vector hit, similarity: upstream's shape, toHybridSearchHit). The rows themselves
+        // are compared here, so the annotation is peeled off; it is pinned by its own test below.
+        const newHits = await hybridSearch(agent, q, limit, newTrace, cat)
+        for (const h of newHits) expect(['lexical', 'vector', 'lexical+vector'], where0(mode, q, agent, limit, cat)).toContain(h.match_kind)
+        const newRows = newHits.map(({ match_kind: _k, score: _s, similarity: _c, ...m }) => m)
         const newWarns = hybridWarns(warn)
 
         const where = JSON.stringify({ mode, q, agent, limit, cat })
@@ -347,7 +365,7 @@ describe('R0 equivalence: hybridSearch returns exactly what the pre-R0 code retu
       const viaWrapper = await hybridSearch('eqa', q, 8)
       stubEmbedder(mode)
       const viaWith = await hybridSearchWith(getDb(), 'eqa', q, 8)
-      expect(viaWith.map(h => h.memory), JSON.stringify({ mode, q })).toEqual(viaWrapper)
+      expect(viaWith.map(toHybridSearchHit), JSON.stringify({ mode, q })).toEqual(viaWrapper)
     }
   })
 })
@@ -611,7 +629,7 @@ describe('R0 route: GET /api/memories?mode=hybrid answers and stamps exactly as 
       expect(out.status).toBe(200)
       expect((out.body as { id: number }[]).map(r => r.id)).toEqual(legacy.map(m => m.id))
       expect(out.headers['x-memory-search']).toBe(
-        `fts=${trace.ftsHits}; vector=${trace.vectorHits}; relaxed=${trace.ftsRelaxed}; vector-only=${trace.vectorOnly}`,
+        `fts=${trace.ftsHits}; vector=${trace.vectorHits}; relaxed=${trace.ftsRelaxed}; vector-only=${trace.vectorOnly}; vector-dropped=${trace.vectorDropped ?? 0}`,
       )
       const returned = new Set(legacy.map(m => m.id))
       const after = main.prepare('SELECT id, accessed_at FROM memories').all() as { id: number; accessed_at: number }[]

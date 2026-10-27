@@ -16,6 +16,15 @@
  * cosine exactly 0, a text and a question mapped to it have cosine 1.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+// Upstream's vector similarity floor (v1.45.0) drops weak vector hits. This suite's seeded
+// vectors are not about the floor, so it is switched off here (a baseline no corpus reaches, an
+// absolute small-corpus threshold of 0); the floor itself is pinned in memory-search-precision.test.ts.
+vi.mock('../settings-store.js', async (orig) => {
+  const actual = await orig<typeof import('../settings-store.js')>()
+  const off: Record<string, string> = { MEMORY_VECTOR_BASELINE_MIN_ROWS: '1000000', MEMORY_VECTOR_SMALL_CORPUS_MIN_SIMILARITY: '0' }
+  return { ...actual, getEffectiveSettingValue: (key: string) => (key in off ? off[key] : actual.getEffectiveSettingValue(key)) }
+})
 import {
   initDatabase, getDb, updateMemory, hybridSearchWith, type HybridHit, type HybridSearchTrace,
 } from '../db.js'

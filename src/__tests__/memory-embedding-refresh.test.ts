@@ -275,7 +275,7 @@ describe('the runner', () => {
     fake.hold = false
     fake.release()
     await advance(1_000)
-    expect(await pass).toBe(1)
+    expect((await pass).embedded).toBe(1)
     expect(fake.prompts).toEqual(['Row C'])
     expect(readEmbedding(b)).toBe(elsewhere)
     expect(readEmbedding(c)).toBe(JSON.stringify(vectorFor('Row C')))
@@ -286,7 +286,7 @@ describe('the runner', () => {
     for (let i = 0; i < 60; i++) seedRow(`Row ${i}`, null)
     const pass = backfillEmbeddings()
     await advance(60 * 100 + 1_000)
-    expect(await pass).toBe(60)
+    expect((await pass).embedded).toBe(60)
     expect(fake.prompts).toHaveLength(60)
   })
 
@@ -295,7 +295,7 @@ describe('the runner', () => {
     seedRow('Healthy', null)
     const warm = backfillEmbeddings()
     await advance(500)
-    expect(await warm).toBe(1)
+    expect((await warm).embedded).toBe(1)
 
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
     const backfillWarns = () => warn.mock.calls.filter(c => String(c[1]).startsWith('Embedding backfill embedded 0')).length
@@ -401,8 +401,8 @@ describe('an uncapped caller behind a capped pass', () => {
     fake.hold = false
     fake.release()
     await advance(120 * 100 + 1_000)
-    expect(await capped).toBe(EMBEDDING_REFRESH_MAX_ROWS)
-    expect(await full).toBe(120 - EMBEDDING_REFRESH_MAX_ROWS)
+    expect((await capped).embedded).toBe(EMBEDDING_REFRESH_MAX_ROWS)
+    expect((await full).embedded).toBe(120 - EMBEDDING_REFRESH_MAX_ROWS)
     expect(allEmbedded(ids)).toBe(true)
     expect(new Set(fake.prompts).size).toBe(120)
     expect(fake.prompts).toHaveLength(120)
@@ -419,9 +419,9 @@ describe('an uncapped caller behind a capped pass', () => {
     fake.hold = false
     fake.release()
     await advance(80 * 100 + 1_000)
-    expect(await capped).toBe(EMBEDDING_REFRESH_MAX_ROWS)
-    expect(await first).toBe(30)
-    expect(await second).toBe(30)
+    expect((await capped).embedded).toBe(EMBEDDING_REFRESH_MAX_ROWS)
+    expect((await first).embedded).toBe(30)
+    expect((await second).embedded).toBe(30)
     expect(fake.prompts).toHaveLength(80)
     expect(allEmbedded(ids)).toBe(true)
   })
@@ -435,8 +435,8 @@ describe('an uncapped caller behind a capped pass', () => {
     fake.hold = false
     fake.release()
     await advance(60 * 100 + 1_000)
-    expect(await full).toBe(60)
-    expect(await capped).toBe(60)
+    expect((await full).embedded).toBe(60)
+    expect((await capped).embedded).toBe(60)
     expect(fake.prompts).toHaveLength(60)
   })
 
@@ -450,7 +450,7 @@ describe('an uncapped caller behind a capped pass', () => {
     await expect(capped).rejects.toThrow(/disk I\/O error/)
     prepare.mockRestore()
     await advance(1_000)
-    expect(await full).toBe(1)
+    expect((await full).embedded).toBe(1)
     expect(readEmbedding(id)).toBe(JSON.stringify(vectorFor('After the fault')))
   })
 })
@@ -611,7 +611,7 @@ describe('rows the backend refuses (per-row backoff)', () => {
     expect(asked(isPoison)).toBe(1)
     const full = backfillEmbeddings()
     await advance(1_000)
-    expect(await full).toBe(0)
+    expect((await full).embedded).toBe(0)
     expect(asked(isPoison)).toBe(2)
   })
 

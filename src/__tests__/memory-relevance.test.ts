@@ -4,6 +4,15 @@
 // non-finite cosine (zero-norm stored vector) counts as 0 before the vector
 // sort; MR3: a zero-norm or non-finite query vector empties the vector branch.
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest'
+
+// Upstream's vector similarity floor (v1.45.0) drops weak vector hits. This suite's seeded
+// vectors are not about the floor, so it is switched off here (a baseline no corpus reaches, an
+// absolute small-corpus threshold of 0); the floor itself is pinned in memory-search-precision.test.ts.
+vi.mock('../settings-store.js', async (orig) => {
+  const actual = await orig<typeof import('../settings-store.js')>()
+  const off: Record<string, string> = { MEMORY_VECTOR_BASELINE_MIN_ROWS: '1000000', MEMORY_VECTOR_SMALL_CORPUS_MIN_SIMILARITY: '0' }
+  return { ...actual, getEffectiveSettingValue: (key: string) => (key in off ? off[key] : actual.getEffectiveSettingValue(key)) }
+})
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -298,7 +307,7 @@ describe('MR3: a zero-norm or non-finite QUERY vector is an embedding failure, n
     vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ embedding: [0, 0, 0, 0] }) })))
     vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
     const out = await get(`/api/memories?agent=${AGENT}&q=sprinkler&mode=hybrid&limit=4&abstain=1`)
-    expect(out.headers['x-memory-search']).toMatch(/^fts=\d+; vector=0; relaxed=false; vector-only=false; top-cos=none; overlap=0; relevance=unknown$/)
+    expect(out.headers['x-memory-search']).toMatch(/^fts=\d+; vector=0; relaxed=false; vector-only=false; vector-dropped=0; top-cos=none; overlap=0; relevance=unknown$/)
     expect(out.body.length).toBeGreaterThan(0)
   })
 })
@@ -313,7 +322,7 @@ describe('GET /api/memories abstain=1: a label in the header, the rows unchanged
     await hybridSearch(AGENT, 'sprinkler', 4, t)
     for (const extra of ['', '&abstain=0', '&abstain=true', '&abstain=yes']) {
       const out = await get(`/api/memories?${Q}${extra}`)
-      expect(out.headers['x-memory-search'], extra).toBe(`fts=${t.ftsHits}; vector=${t.vectorHits}; relaxed=${t.ftsRelaxed}; vector-only=${t.vectorOnly}`)
+      expect(out.headers['x-memory-search'], extra).toBe(`fts=${t.ftsHits}; vector=${t.vectorHits}; relaxed=${t.ftsRelaxed}; vector-only=${t.vectorOnly}; vector-dropped=${t.vectorDropped ?? 0}`)
     }
   })
 
@@ -321,7 +330,7 @@ describe('GET /api/memories abstain=1: a label in the header, the rows unchanged
     stubEmbedder('ok')
     const t: HybridSearchTrace = { ftsHits: 0, vectorHits: 0, ftsRelaxed: false, vectorOnly: false }
     await hybridSearch(AGENT, 'sprinkler', 4, t)
-    const base = `fts=${t.ftsHits}; vector=${t.vectorHits}; relaxed=${t.ftsRelaxed}; vector-only=${t.vectorOnly}`
+    const base = `fts=${t.ftsHits}; vector=${t.vectorHits}; relaxed=${t.ftsRelaxed}; vector-only=${t.vectorOnly}; vector-dropped=${t.vectorDropped ?? 0}`
     const plain = await get(`/api/memories?${Q}`)
     for (const [minCos, rel] of [[0.999, 'low'], [0.5, 'ok'], [null, 'unknown']] as const) {
       abstainState.minCos = minCos
@@ -348,7 +357,7 @@ describe('GET /api/memories abstain=1: a label in the header, the rows unchanged
     vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
     vi.spyOn(logger, 'debug').mockImplementation(() => undefined as never)
     const out = await get(`/api/memories?${Q}&abstain=1`)
-    expect(out.headers['x-memory-search']).toMatch(/^fts=\d+; vector=0; relaxed=false; vector-only=false; top-cos=none; overlap=0; relevance=unknown$/)
+    expect(out.headers['x-memory-search']).toMatch(/^fts=\d+; vector=0; relaxed=false; vector-only=false; vector-dropped=0; top-cos=none; overlap=0; relevance=unknown$/)
     expect(out.body.length).toBeGreaterThan(0)
   })
 

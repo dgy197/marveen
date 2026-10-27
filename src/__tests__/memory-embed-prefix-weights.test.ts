@@ -19,9 +19,14 @@ vi.mock('../settings-store.js', async (orig) => {
 
 import {
   initDatabase, getDb, saveMemory, saveAgentMemory, hybridSearch, generateEmbedding, clearMemoryCache,
-  backfillEmbeddings, parseEmbedKeepAlive,
+  backfillEmbeddings,
 } from '../db.js'
 import { getSettingDefinition, validateSettingValue } from '../config-registry.js'
+// Our local keep_alive rule (card 94f8d99f): resolved ONCE at boot in config.ts (default 24h;
+// 0 and -1 refused), not read per request, so the request tests use the boot value and the
+// parsing is tested on resolveEmbedKeepAlive. (The dropped upstream parseEmbedKeepAlive read the
+// setting per request and accepted 0/-1.)
+import { EMBED_KEEP_ALIVE, EMBED_KEEP_ALIVE_DEFAULT, resolveEmbedKeepAlive } from '../config.js'
 
 let queryVector: number[] = [1, 0, 0]
 let bodies: Array<Record<string, unknown>> = []
@@ -40,14 +45,15 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('embedding request', () => {
-  it('with nothing set: the prompt is the text, and no keep_alive is sent (as before)', async () => {
+  it('with nothing set: the prompt is the text, and the default keep_alive (24h) is sent', async () => {
     await generateEmbedding('hello', 'query')
     await generateEmbedding('hello', 'document')
     await generateEmbedding('hello')
     for (const b of bodies) {
       expect(b.prompt).toBe('hello')
-      expect('keep_alive' in b).toBe(false)
-      expect(Object.keys(b).sort()).toEqual(['model', 'prompt'])
+      expect(b.keep_alive).toBe(EMBED_KEEP_ALIVE)
+      expect(EMBED_KEEP_ALIVE).toBe(EMBED_KEEP_ALIVE_DEFAULT)
+      expect(Object.keys(b).sort()).toEqual(['keep_alive', 'model', 'prompt'])
     }
   })
 
@@ -83,28 +89,25 @@ describe('embedding request', () => {
     expect(validateSettingValue(def, 'search_query: ')).toEqual({ ok: true, value: 'search_query: ' })
   })
 
-  it('EMBED_KEEP_ALIVE: a duration goes as a string, a bare integer as a number', async () => {
-    settingValues.EMBED_KEEP_ALIVE = '30m'
-    await generateEmbedding('a')
-    settingValues.EMBED_KEEP_ALIVE = '-1'
-    await generateEmbedding('b')
-    settingValues.EMBED_KEEP_ALIVE = '  '
-    await generateEmbedding('c')
-    expect(bodies[0].keep_alive).toBe('30m')
-    expect(bodies[1].keep_alive).toBe(-1)
-    expect('keep_alive' in bodies[2]).toBe(false)
+  it('EMBED_KEEP_ALIVE (boot value): a duration is a string, a bare integer a number, empty is the 24h default', () => {
+    expect(resolveEmbedKeepAlive('30m')).toEqual({ value: '30m' })
+    expect(resolveEmbedKeepAlive('3600')).toEqual({ value: 3600 })
+    expect(resolveEmbedKeepAlive('  ')).toEqual({ value: '24h' })
+    expect(resolveEmbedKeepAlive(undefined)).toEqual({ value: '24h' })
   })
 
-  it('an unusable keep_alive is not sent (it would fail every request) and the registry refuses it', async () => {
-    for (const bad of ['30 min', '+5', 'abc', '99999999999999999999']) {
-      bodies = []
-      settingValues.EMBED_KEEP_ALIVE = bad
-      await generateEmbedding('x')
-      expect('keep_alive' in bodies[0], bad).toBe(false)
-      expect(parseEmbedKeepAlive(bad), bad).toBeUndefined()
+  it('0 and -1 are refused (0 unloads after every request, -1 never frees the model): the default is used and the raw value is reported', () => {
+    for (const bad of ['0', '0s', '0ms', '-1']) {
+      expect(resolveEmbedKeepAlive(bad), bad).toEqual({ value: EMBED_KEEP_ALIVE_DEFAULT, invalid: bad })
+    }
+  })
+
+  it('an unusable keep_alive falls back to the default (it would fail every request) and the registry refuses it', () => {
+    for (const bad of ['30 min', '+5', 'abc', '99999999999999999999', '0', '-1', '1h30m', '1.5h']) {
+      expect(resolveEmbedKeepAlive(bad), bad).toEqual({ value: EMBED_KEEP_ALIVE_DEFAULT, invalid: bad })
       expect(getSettingDefinition('EMBED_KEEP_ALIVE')!.validate!(bad), bad).not.toBeNull()
     }
-    for (const ok of ['', '0', '-1', '300', '30m', '1h30m', '1.5h']) {
+    for (const ok of ['', '300', '30m', '24h', '500ms']) {
       expect(getSettingDefinition('EMBED_KEEP_ALIVE')!.validate!(ok), ok).toBeNull()
     }
   })
@@ -169,9 +172,10 @@ describe('hybrid search fusion weights', () => {
     expect(hits[0].score).toBeCloseTo(1 / 61 + 1 / 62, 12)
   })
 
-  it('the three embedding settings exist and default to empty (nothing changes until set)', () => {
-    for (const key of ['EMBED_QUERY_PREFIX', 'EMBED_DOCUMENT_PREFIX', 'EMBED_KEEP_ALIVE']) {
+  it('the two prefix settings default to empty (nothing changes until set); EMBED_KEEP_ALIVE defaults to our 24h', () => {
+    for (const key of ['EMBED_QUERY_PREFIX', 'EMBED_DOCUMENT_PREFIX']) {
       expect(getSettingDefinition(key)?.default, key).toBe('')
     }
+    expect(getSettingDefinition('EMBED_KEEP_ALIVE')?.default).toBe(EMBED_KEEP_ALIVE_DEFAULT)
   })
 })

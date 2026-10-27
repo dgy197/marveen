@@ -402,7 +402,7 @@ describe('the embedding backend is down while the memory is edited', () => {
     seedRow('Healthy warm-up', null, { embedding: null })
     const warm = backfillEmbeddings()
     await advance(500)
-    expect(await warm).toBe(1)
+    expect((await warm).embedded).toBe(1)
     vi.mocked(logger.warn).mockClear()
 
     const id = seedRow('Old words here', null)
