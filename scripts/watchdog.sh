@@ -90,6 +90,109 @@ if [ "${1:-}" = "--launch-env" ]; then
   exit 0
 fi
 
+# INTERACTIVE_ANTHROPIC_KEY_POLICY (fec6335f), the same rule as
+# src/web/interactive-key-guard.ts: absent, empty or `allow` -> allow (the
+# launch below is unchanged); any other value -> forbid (fail-closed). The .env
+# is read like policyFromEnvText() in that file (BE-1 parity, pinned by
+# src/__tests__/interactive-key-guard-main.test.ts): see the function body.
+interactive_key_policy() {
+  local f="$INSTALL_DIR/.env" text raw bom
+  # No .env at all: allow (upstream default). One that exists but cannot be
+  # read as a regular file: forbid -- a check that cannot read its input must
+  # not pass (BE-1).
+  [ -e "$f" ] || { echo allow; return; }
+  if [ ! -f "$f" ] || [ ! -r "$f" ]; then echo forbid; return; fi
+  # Byte-wise in the C locale, so the answer does not depend on the caller's
+  # LANG; a UTF-8 BOM in front of line 1 is dropped first.
+  bom="$(printf '\357\273\277')"
+  text="$(LC_ALL=C sed "1s/^$bom//" "$f" 2>/dev/null)" || { echo forbid; return; }
+  # A non-comment line that names the key but is not a plain `KEY=value` line
+  # (Unicode space around the key, an `export ` prefix, ...) is forbid: the TS
+  # reader and this one would otherwise disagree, possibly in the open direction.
+  if printf '%s\n' "$text" | LC_ALL=C grep -F 'INTERACTIVE_ANTHROPIC_KEY_POLICY' | LC_ALL=C grep -Ev '^[[:space:]]*#' \
+    | LC_ALL=C grep -Evq '^[[:space:]]*INTERACTIVE_ANTHROPIC_KEY_POLICY[[:space:]]*='; then
+    echo forbid; return
+  fi
+  raw="$(printf '%s\n' "$text" | LC_ALL=C grep -E '^[[:space:]]*INTERACTIVE_ANTHROPIC_KEY_POLICY[[:space:]]*=' | tail -1 | cut -d= -f2-)"
+  raw="$(printf '%s' "$raw" | LC_ALL=C sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$raw" in
+    \"*) case "$raw" in *\") raw="${raw#\"}"; raw="${raw%\"}" ;; esac ;;
+    \'*) case "$raw" in *\') raw="${raw#\'}"; raw="${raw%\'}" ;; esac ;;
+  esac
+  # Trimmed again inside the quotes, as the TS reader does: `" allow "` is allow in both.
+  raw="$(printf '%s' "$raw" | LC_ALL=C sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$raw" in
+    ''|allow) echo allow ;;
+    *) echo forbid ;;
+  esac
+}
+
+# The launch decision for one agent, printed as one word: `allow` (not forbid:
+# no change), `unset` (prepend the unset to the pane command) or
+# `refuse:<reason>` (do not start).
+# This launcher exports no provider URL, so under forbid EVERY agent it starts
+# reaches Anthropic directly, whatever the model name (an alias like `opus`
+# too) and whatever customProvider says: the key names are always unset.
+# An auth key name in the settings this session loads refuses, for every model
+# name -- the user config dir of THIS launch (the isolated .claude-config when
+# agent_launch_env exports it, else ~/.claude) and the agent's project
+# settings -- because a settings `env` wins over any shell unset. authMode api
+# refuses for a claude- model, the same isClaude test as the dashboard
+# launcher, which only then puts the agent's own key in the launch (this
+# launcher never does). Names only, values are never read out. An unreadable
+# or broken agent-config.json reads as the defaults, like the TS readers; a
+# settings file that exists but cannot be read refuses (the CLI would have
+# read it).
+interactive_key_decision() {
+  local agent_dir="$1" model="$2" cfg_dir
+  if [ "$(interactive_key_policy)" != forbid ]; then echo allow; return; fi
+  if [ -n "$(agent_launch_env "$agent_dir")" ]; then cfg_dir="$agent_dir/.claude-config"; else cfg_dir="$HOME/.claude"; fi
+  python3 - "$model" "$agent_dir/agent-config.json" "$cfg_dir/settings.json" \
+    "$agent_dir/.claude/settings.json" "$agent_dir/.claude/settings.local.json" <<'PY' 2>/dev/null || echo "refuse:guard-error"
+import json, re, sys
+try:
+    d = json.load(open(sys.argv[2]))
+    if not isinstance(d, dict):
+        d = {}
+except Exception:
+    d = {}
+if sys.argv[1].startswith('claude-') and d.get('authMode') == 'api':
+    print('refuse:auth-mode-api')
+    sys.exit()
+NAMES = ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN')
+for path in sys.argv[3:]:
+    try:
+        text = open(path, encoding='utf-8').read()
+    except (FileNotFoundError, NotADirectoryError):
+        continue
+    except Exception:
+        print('refuse:settings-unreadable')
+        sys.exit()
+    try:
+        s = json.loads(text)
+        env = s.get('env') if isinstance(s, dict) else None
+        found = [n for n in NAMES if isinstance(env, dict) and n in env]
+        if isinstance(s, dict) and 'apiKeyHelper' in s:
+            found.append('apiKeyHelper')
+    except ValueError:
+        # Unparseable: scan for the quoted names, so a broken file can only add a finding.
+        found = [n for n in NAMES + ('apiKeyHelper',) if re.search('"%s"\\s*:' % n, text)]
+    if found:
+        print('refuse:settings-auth-key')
+        sys.exit()
+print('unset')
+PY
+}
+
+# Self-test hook, mirroring the others: print the decision and exit before
+# touching tmux, so the contract is testable from fixtures
+# (src/__tests__/interactive-key-guard-paths.test.ts).
+if [ "${1:-}" = "--interactive-key-decision" ]; then
+  [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "usage: watchdog.sh --interactive-key-decision <agent-dir> <model>" >&2; exit 2; }
+  interactive_key_decision "$2" "$3"
+  exit 0
+fi
+
 # An agent is READY to be started only once both personality files exist. The
 # dashboard wizard creates the directory first and generates CLAUDE.md /
 # SOUL.md afterwards through an LLM call that can take minutes
@@ -255,6 +358,18 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
   FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$LOG")"
 
   CMD="${ISO_ENV}export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official$(agent_sandbox_flag "$AGENT_ID")"
+
+  # fec6335f: under INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid every agent
+  # starts with the key names unset (the pane inherits the tmux server env); one
+  # whose settings carry a key name (any model name), or an api-mode claude-
+  # one, is not started here at all -- the dashboard refuses it too.
+  KEY_DECISION="$(interactive_key_decision "$AGENT_DIR" "$MODEL")"
+  case "$KEY_DECISION" in
+    refuse:*)
+      echo "$(timestamp) [watchdog] $AGENT_ID: interactive-key-guard ${KEY_DECISION#refuse:} (INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid), not starting" >> "$LOG"
+      continue ;;
+    unset) CMD="unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN && ${CMD}" ;;
+  esac
 
   tmux new-session -d -s "$SESSION_NAME" "$CMD" 2>/dev/null
   sleep 2

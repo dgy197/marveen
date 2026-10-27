@@ -56,6 +56,8 @@ const REGISTRATION_SURFACES = [...SEEDING_SURFACES, ...CHECKOUT_SURFACES]
 // name -> why it is allowed to be unregistered. Keep every reason concrete;
 // "misc" entries defeat the lint.
 const EXEMPT: Record<string, string> = {
+  'email-draft-log.py':
+    'wiring is GO-gated: registered at the card f90928e3 deploy, when this exemption is removed',
   'ledger_lib.py':
     'shared library imported by the ledger hooks; not itself a hook',
   'command_prompt.py':
@@ -82,6 +84,8 @@ const EXEMPT: Record<string, string> = {
     'agent-invoked CLI (manual Bot API fallback sender, see scripts/lib/send-telegram.sh), not a settings hook; since #1305 the progress installer no longer copies or names it',
   'channel-process-gate.py':
     'scheduled/CLI gate (--only / --notify / --json), not a settings hook: it compares the channels a session DECLARES against the plugin processes actually alive under it, which is a periodic check rather than a per-tool-call one',
+  'email_send_authorize.py':
+    'CLI-spawned helper, not a settings hook: scripts/graph-mail.ts runs it as the send authorizer before every `send` / `forward` (card efa58ad2); it is invoked per CLI call, never per tool call',
   'mio-orszem-precheck.sh':
     'scheduler preCheck for the HOST-LOCAL marveen-io-kozosseg-orszem task (ORSICTX912): the mio community sentinel is this install\'s own and deliberately NOT seeded (a repo seed would ship it to every customer install), so its registration lives in the host ~/.claude/scheduled-tasks task-config -- outside this corpus by design. Wiring is gated on the ORSICTX912 activation order (host restart -> verify -> merge -> build+restart); the hermetic fail-direction tests are scripts/__tests__/mio-orszem-precheck.test.py.',
 }

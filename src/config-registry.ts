@@ -112,13 +112,6 @@ function validAgentNameList(v: string): string | null {
     : 'Ügynöknevek vesszővel elválasztva (pl. pm vagy pm,reviewer).'
 }
 
-function validKeepAlive(v: string): string | null {
-  const t = v.trim()
-  if (t === '') return null
-  if (/^-?\d+$/.test(t)) return Number.isSafeInteger(Number(t)) ? null : 'Túl nagy szám.'
-  return /^-?(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/.test(t) ? null : 'Egész szám (másodperc) vagy időtartam szükséges, pl. 30m, 1h, -1.'
-}
-
 function validFusionWeight(v: string): string | null {
   const t = v.trim()
   if (t === '') return null
@@ -430,6 +423,41 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'EMBED_KEEP_ALIVE',
+    type: 'string',
+    default: '24h',
+    // The same two shapes resolveEmbedKeepAlive (config.ts) accepts, so a value
+    // the boot would discard is refused at save time instead of surfacing as a
+    // WARN after the next restart. Inline: importing config.ts here would be
+    // circular. Empty = unset, the default applies. Zero is refused too: to
+    // Ollama it means "unload after every request".
+    validate: (v) => {
+      const text = v.trim()
+      if (text === '') return null
+      if (/^0+(ms|s|m|h)?$/.test(text)) return 'A 0 nem elfogadott: az Ollama ekkor minden kérés után kiüríti a modellt, így minden keresés hidegindítással indul.'
+      if (/^[0-9]{1,5}(ms|s|m|h)$/.test(text) || /^[0-9]{1,9}$/.test(text)) return null
+      return 'Érvénytelen időtartam: Ollama-formátum (pl. 24h, 30m, 90s, 500ms) vagy egész másodperc. A -1, a tört és az összetett érték (1h30m) nem elfogadott.'
+    },
+    description: 'Mennyi ideig tartsa az Ollama betöltve az embedding-modellt az utolsó kérés után. Ollama időtartam (pl. 24h, 30m, 90s, 500ms) vagy egész másodperc. A -1 (örökre) NEM elfogadott, és a 0 sem: az Ollama a 0-t úgy érti, hogy minden kérés után kiüríti a modellt, így minden keresés hidegindítással (1-2 s) indulna, pont az, ami ellen ez a beállítás van. Hibás érték esetén az alapérték (24h) érvényes, és egyszer WARN kerül a naplóba.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'EMBED_KEEPWARM_MINUTES',
+    type: 'int',
+    default: 5,
+    // Exactly the values resolveEmbedKeepWarmMinutes (config.ts) accepts, so a
+    // value the boot would discard is refused at save time. A value set, not
+    // min/max: 1-4 are not valid. Inline: importing config.ts here would be
+    // circular.
+    valueSet: ['0', '5', '6', '7', '8', '9', '10'],
+    description: 'Hány perc tétlenség (embedding-hívás nélküli idő) után "pingelje" meg a dashboard a már betöltött embedding-modellt, hogy az első keresés ne legyen lassú. A ping keep_alive-ja a modell HÁTRALÉVŐ ideje, így az EMBED_KEEP_ALIVE ablakát nem hosszabbítja; nem betöltött modellnél, leállt Ollamánál és nem loopback EMBED_URL-nél nincs ping. 0 = kikapcsolva. Hibás érték esetén az alapérték (5) érvényes, és egyszer WARN kerül a naplóba.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'AGENT_LOCAL_BASE_URL',
     type: 'string',
     default: '',
@@ -486,16 +514,6 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: false,
-  },
-  {
-    key: 'EMBED_KEEP_ALIVE',
-    type: 'string',
-    default: '',
-    description: 'Az embedding-kéréssel küldött Ollama keep_alive (pl. "30m", "-1" = mindig betöltve, "0" = minden kérés után kirakja). Üres = nem küldjük, az Ollama alapértéke érvényes. Megosztott GPU-n a hosszabb érték megspórolja a modell újratöltését keresésenként, cserébe a modell tovább foglalja a memóriát.',
-    module: 'system',
-    secret: false,
-    requiresRestart: false,
-    validate: (v) => validKeepAlive(v),
   },
   {
     key: 'MEMORY_RRF_FTS_WEIGHT',

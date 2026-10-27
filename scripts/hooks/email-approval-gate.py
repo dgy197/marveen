@@ -90,6 +90,31 @@ Anchor semantics (Marveen msg 17900, 5+1 conditions):
      the approval's action_description is human-readable and the resend can
      only succeed with byte-identical content.
 
+graph-forward (Brainy 2958): the Graph CLI's `forward` has its own rules, which
+hold at EVERY level, before the level is read: one simple command, one plain
+@fireeng.hu recipient, no cc/bcc/attachment/HTML, exactly one comment source
+(inline, or a file pinned by its sha256), and the regex and shlex readings of
+every value must agree (email_extract.parse_forward_command). After that the
+usual level / standing / anchor flow decides; the anchor also covers the
+forwarded message's id and subject.
+
+graph-forward r3 (Brainy 3092, 3094): the rules above are one verb of a WHITELIST that
+covers every Bash command mentioning graph-mail (email_extract.classify_graph_mail).
+It runs FIRST, before is_send_invocation and before any level, standing-list or
+approval branch: a command it cannot prove simple (operator, substitution, newline,
+wrapper, any head but the strict CLI form or one of cat grep head tail wc ls) is a deny
+at every level; a read (list, show, verify, cat/grep/...) exits 0; a send or a forward
+goes on to the level, standing and anchor flow below. If the extractor does not load and
+the command mentions graph-mail, the answer is a deny.
+
+cli-send-enforce (card efa58ad2): the decision lives in authorize(env, mode, ...), which
+the Graph CLI's authorizer (email_send_authorize.py) calls too. For a command that
+mentions graph-mail (any case) this hook only PEEKS (mode "peek": nothing consumed, no
+standing trace): the CLI is the one consumer, at the moment of sending. Every other send
+path (MCP send_email, connectors, other Bash senders) still consumes here, as before.
+find_and_consume() consumes under BEGIN IMMEDIATE and fills consumed_by/consumed_ref and
+approval_events where the schema has them.
+
 Exit codes (PreToolUse contract): 0 = allow, 2 = block. A crash must never
 exit 1 (non-blocking) -- the __main__ net converts it to 2 on send paths.
 The net only covers main(), so only the standard library loads at module
@@ -150,8 +175,50 @@ WINDOW_S, _WINDOW_ERR = _window_from_env()
 # one of these words, so this is a superset of it, and a read-only call never
 # needs the module (classify_tool below).
 _MAYBE_MAIL_TOOL = re.compile(
-    r"send|reply|forward|draft|manage_email|update[-_]mail[-_]message|update[-_]shared[-_]mailbox[-_]message",
+    r"send|reply|forward|fwd|draft|manage_email|update[-_]mail[-_]message|update[-_]shared[-_]mailbox[-_]message",
     re.I)
+
+# Compat shim, NOT used by main() any more (the scope test above is the shared
+# classifier). The local helper scripts/approval-envelope.py (pinned, 345f34e2) and
+# scripts/__tests__/mail-tool-action.test.py still call gate._SEND_TOOL.search and
+# gate._MULTIPLEX_TOOL, so both stay defined; a miss there is only a refusal to BUILD
+# an approval request, never a send let through.
+_MULTIPLEX_TOOL = re.compile(r"manage_email", re.I)
+_LEGACY_SEND_TOOL = re.compile(r"send_email|manage_email|gmail__(reply|reply_all|send_message|forward)$", re.I)
+
+
+class _SendToolMatcher:
+    """The send-tool test: the name pattern above, then the action classifier.
+
+    graph-forward N1b (spec G1-G6): a send under a name the pattern does not
+    list (mcp__gmail-v2__v2_send_draft, __v2_reply_all, __replyAll) reached
+    this hook through the "[Gg]mail" matcher and left with exit 0, unapproved.
+    email_extract.mail_tool_action reads the OPERATION instead of the name.
+    The pattern is asked FIRST and is unchanged, so every name it matched keeps
+    its verdict byte for byte (golden). Kept as an object with .search(tool):
+    scripts/approval-envelope.py (pinned, 345f34e2) calls gate._SEND_TOOL.search.
+
+    Only an MCP tool name loads the extractor, from main() where the deny net
+    covers it (HOOKDEPLOAD1008); Bash and the built-in tools never do. A module
+    that does not load (or predates the classifier) makes an unlisted MCP tool
+    a send: fail-closed, and at level 2 the extractor load then denies naming
+    the broken file."""
+
+    def search(self, tool):
+        hit = _LEGACY_SEND_TOOL.search(tool)
+        if hit:
+            return hit
+        if str(tool)[:5].lower() != "mcp__":
+            return None
+        try:
+            sys.path.insert(0, _HERE)
+            from email_extract import mail_tool_action
+        except Exception:  # noqa: BLE001 -- SyntaxError, ImportError, anything: fail-closed
+            return True
+        return True if mail_tool_action(tool) == "send" else None
+
+
+_SEND_TOOL = _SendToolMatcher()
 
 # manage_email is a MULTIPLEXER, not a send tool: the same MCP tool searches the
 # mailbox, reads a thread, writes a draft AND sends. Scoping this gate on the
@@ -381,12 +448,25 @@ def _load_is_send_invocation():
              "eszkozokon fut.")
 
 
-def read_email_level():
+def default_paths():
+    """The gate's own file locations (store dir from the env override or the
+    repo root). The CLI authorizer (email_send_authorize.py) never uses this:
+    it passes explicit paths derived from its own location, so no env variable
+    can point the decision at a different DB."""
+    return {"db": DB_PATH, "config": CONFIG_PATH, "standing": STANDING_PATH,
+            "log": STANDING_LOG, "store": STORE_DIR}
+
+
+def read_email_level(config_path=None, unreadable_level=2):
     """Return (level, note). Missing category / unreadable config -> level 2:
     fail-closed but recoverable through an approval, instead of a hard lockout
-    on an install whose config never listed the category."""
+    on an install whose config never listed the category.
+
+    unreadable_level: the CLI authorizer passes 1 -- a config it cannot read
+    must never let a letter out (a missing CATEGORY in a readable config is
+    still 2, as for the hook)."""
     try:
-        with open(CONFIG_PATH, encoding="utf-8") as fh:
+        with open(config_path or CONFIG_PATH, encoding="utf-8") as fh:
             cfg = json.load(fh)
         for cat in cfg.get("categories") or []:
             if cat.get("key") == "email_send":
@@ -397,10 +477,11 @@ def read_email_level():
                 return max(1, min(3, level)), None
         return 2, "az email_send kategoria hianyzik az autonomy-configbol -> level 2 (fail-closed)"
     except Exception as exc:  # noqa: BLE001 -- unreadable config is a fail-closed input
-        return 2, f"az autonomy-config nem olvashato ({exc!r}) -> level 2 (fail-closed)"
+        return (unreadable_level,
+                f"az autonomy-config nem olvashato ({exc!r}) -> level {unreadable_level} (fail-closed)")
 
 
-def read_standing():
+def read_standing(path=None):
     """Return (addresses, note). A MISSING file means no standing rights, which
     is the normal state and not a fault. A CORRUPT or wrongly shaped file also
     yields no rights -- fail-closed -- but returns a note, because an empty set
@@ -410,10 +491,11 @@ def read_standing():
     Accepted shapes: {"recipients": [...]} or a bare list. Each entry is either
     an address string or {"address": ..., "note": ...}; the note is for the
     human reading the file, the gate ignores it."""
-    if not os.path.exists(STANDING_PATH):
+    path = path or STANDING_PATH
+    if not os.path.exists(path):
         return set(), None
     try:
-        with open(STANDING_PATH, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except Exception as exc:  # noqa: BLE001 -- unreadable list grants nothing
         return set(), (f"az allando cimzett-lista nem olvashato ({exc!r}) -> "
@@ -544,23 +626,23 @@ def ledger_enabled() -> bool:
     return _env_file_setting(LEDGER_SWITCH).lower() in ("1", "true", "yes", "on")
 
 
-def _standing_log_append(line: str) -> None:
+def _standing_log_append(line: str, log_path=None) -> None:
     """Append ONE timestamped line. Deliberately lets OSError out: the caller
     turns it into a deny. Local time with offset, never UTC -- same reason as
     the copy gate's log (an entry that cannot be placed in time checks
     nothing)."""
     from datetime import datetime
     stamp = datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
-    with open(STANDING_LOG, "a", encoding="utf-8") as fh:
+    with open(log_path or STANDING_LOG, "a", encoding="utf-8") as fh:
         fh.write(f"{stamp} {line}\n")
 
 
-def _post_daily_log(text: str):
+def _post_daily_log(text: str, store_dir=None):
     """Best-effort daily-log entry on the dashboard. Returns (ok, detail).
     Never raises: its failure is data for the local log, not an exception."""
     import urllib.request
     try:
-        with open(os.path.join(STORE_DIR, ".dashboard-token"), encoding="utf-8") as fh:
+        with open(os.path.join(store_dir or STORE_DIR, ".dashboard-token"), encoding="utf-8") as fh:
             token = fh.read().strip()
         if not token:
             return False, "ures dashboard-token"
@@ -579,12 +661,15 @@ def _post_daily_log(text: str):
         return False, repr(exc)
 
 
-def standing_trace(addr: str, env: dict):
+def standing_trace(addr: str, env: dict, paths=None):
     """Record an approval-free send. Returns None when the owner was reached,
     otherwise the reason he was not -- which the caller puts into the
     systemMessage, so the sending agent cannot believe the owner saw it.
 
     Raises OSError when the LOCAL append fails; the caller denies on that."""
+    paths = paths or default_paths()
+    if env.get("forward"):
+        return _forward_standing_trace(addr, env, paths)
     from datetime import datetime
     head = env.get("text", "").replace("\n", " ").strip()[:120] or "(nincs szoveg)"
     owner_entry = (
@@ -594,11 +679,50 @@ def standing_trace(addr: str, env: dict):
         f"Level eleje: {head}\n"
         "Ez a level az allando cimzett-lista alapjan ment ki, per-level jovahagyas "
         "nelkul. Ha erre a cimre nem akarod ezt, vedd ki a cimet a listabol.")
-    ok, detail = _post_daily_log(owner_entry)
+    ok, detail = _post_daily_log(owner_entry, paths["store"])
     _standing_log_append(
         f"allando cimzett, jovahagyas nelkuli kuldes | cimzett={addr} | "
         f"level-eleje={head!r} | gazda-ertesites="
-        + ("ok" if ok else f"NEM MENT KI ({detail})"))
+        + ("ok" if ok else f"NEM MENT KI ({detail})"), paths["log"])
+    return None if ok else detail
+
+
+def _comment_facts(env: dict):
+    """(source, full sha256, characters, lines) of a forward's comment. The sha256
+    is the one the command pinned (file) or of the comment's UTF-8 bytes (inline)."""
+    text = env.get("text", "")
+    sha = env.get("comment_sha256") or hashlib.sha256(text.encode("utf-8")).hexdigest()
+    lines = text.count("\n") + (0 if not text or text.endswith("\n") else 1)
+    return env.get("comment_source") or "inline", sha, len(text), lines
+
+
+def _forward_standing_trace(addr: str, env: dict, paths=None):
+    """standing_trace for a forward (spec C7, spec-delta KC5). The gate runs
+    BEFORE the CLI, and the CLI can still refuse (subject or hash mismatch), so
+    the trace says the forward was ALLOWED, never that a letter went out; the
+    CLI's own output is the proof of sending. Same two records and the same
+    failure handling as a send."""
+    paths = paths or default_paths()
+    from datetime import datetime
+    fwd = env["forward"]
+    src, sha, chars, _lines = _comment_facts(env)
+    head = env.get("text", "").replace("\n", " ").strip()[:120] or "(nincs szoveg)"
+    owner_entry = (
+        f"## {datetime.now().astimezone().strftime('%H:%M')} -- Tovabbitas engedelyezve jovahagyas "
+        "nelkul (allando cimzett); a tenyleges kuldest a CLI kimenete igazolja\n"
+        f"Cimzett: {addr}\n"
+        f"Tovabbitott level: {fwd['subject']} | id: {fwd['message_id'][:16]}...\n"
+        f"Komment: komment-forras={src} | komment-sha256={sha} | komment-hossz={chars}\n"
+        f"Komment eleje: {head}\n"
+        "A kapu a CLI futasa ELOTT ir: ha a CLI utana elutasitotta a hivast (targy- vagy "
+        "hash-elteres), level nem ment ki. Ha erre a cimre nem akarod ezt, vedd ki a cimet a listabol.")
+    ok, detail = _post_daily_log(owner_entry, paths["store"])
+    _standing_log_append(
+        "allando cimzett, tovabbitas engedelyezve jovahagyas nelkul; a tenyleges kuldest a CLI "
+        f"kimenete igazolja | cimzett={addr} | tovabbitott-targy={fwd['subject']!r} | "
+        f"id={fwd['message_id'][:16]}... | komment-forras={src} | komment-sha256={sha} | "
+        f"komment-hossz={chars} | komment-eleje={head!r} | gazda-ertesites="
+        + ("ok" if ok else f"NEM MENT KI ({detail})"), paths["log"])
     return None if ok else detail
 
 # --- BIRALOI KERES 3: a lista felvetel, nem elesites -----------------------
@@ -629,15 +753,17 @@ def standing_anchor(addr: str) -> str:
     return hashlib.sha256(addr.strip().lower().encode("utf-8")).hexdigest()
 
 
-def standing_authorized(addr: str):
+def standing_authorized(addr: str, db_path=None):
     """Return (ok, detail) for THIS address. Raises on any DB problem -- the
     caller turns that into a fail-closed deny, exactly as the per-letter path
     does: "cannot decide" never means "allowed"."""
-    if not os.path.exists(DB_PATH):
-        raise OSError(f"approvals DB hianyzik ({DB_PATH})")
+    db_path = db_path or DB_PATH
+    if not os.path.exists(db_path):
+        raise OSError(f"approvals DB hianyzik ({db_path})")
     anchor = standing_anchor(addr)
-    con = sqlite3.connect(DB_PATH, timeout=5)
+    con = sqlite3.connect(db_path, timeout=5)
     try:
+        con.execute("PRAGMA query_only=ON")
         con.execute("PRAGMA busy_timeout=5000")
         # The LAST resolved decision wins, so a later rejection revokes an
         # earlier approval. rowid breaks same-second ties deterministically.
@@ -684,7 +810,14 @@ def content_anchor(env: dict) -> str:
     in (send.py --html / --html-wrap, graph-mail.ts --html), set by the
     senders' own check (sender_check.py) and absent for a plain letter, so an
     approved plain letter cannot go out as HTML. A separate field, so no body
-    text can forge it."""
+    text can forge it.
+
+    graph-forward (spec C1): a forward adds {"message_id", "subject"} under
+    "forward", ONLY on a forward -- the extractor builds that key for nothing
+    else -- so every send anchor stays byte-identical (C2), an approval for one
+    message cannot forward another (C3), and a send approval with the same to and
+    text cannot authorise a forward or the other way round (C4). The envelope's
+    comment_* keys are deliberately NOT in this list (spec-delta KC2)."""
     fields = {"to": env["to"], "cc": env["cc"], "text": env["text"]}
     if env.get("bcc"):
         fields["bcc"] = env["bcc"]
@@ -700,6 +833,8 @@ def content_anchor(env: dict) -> str:
     for key in ("account", "reply_to", "body_format"):
         if env.get(key):
             fields[key] = env[key]
+    if env.get("forward"):
+        fields["forward"] = {"message_id": env["forward"]["message_id"], "subject": env["forward"]["subject"]}
     canon = json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
@@ -719,37 +854,89 @@ def content_anchor(env: dict) -> str:
 NOW_S = "CAST(strftime('%s','now') AS INTEGER)"
 
 
-def find_and_consume(anchor: str):
-    """Return (verdict, detail). verdict: 'allowed' (consumed approval id),
-    'pending', 'consumed', 'expired', 'none', 'race'. Raises on any DB problem
-    -- the caller turns that into a fail-closed deny."""
-    if not os.path.exists(DB_PATH):
-        raise OSError(f"approvals DB hianyzik ({DB_PATH})")
-    con = sqlite3.connect(DB_PATH, timeout=5)
+def _consume_row(con, row_id, anchor, window, consumer, ref):
+    """The one conditional UPDATE that decides a consumption (same conditions
+    as src/db.ts consumeApproval). consumed_by / consumed_ref and the
+    approval_events row are written when the schema has them: the installs the
+    hook tests build carry only consumed_at, a real DB carries all of it."""
+    cols = {r[1] for r in con.execute("PRAGMA table_info(approvals)")}
+    sets, args = [f"consumed_at={NOW_S}"], []
+    if "consumed_by" in cols:
+        sets.append("consumed_by=?")
+        args.append(consumer)
+    if "consumed_ref" in cols:
+        sets.append("consumed_ref=?")
+        args.append(ref)
+    cur = con.execute(
+        f"UPDATE approvals SET {', '.join(sets)} WHERE id=? AND category='email_send'"
+        " AND status='approved' AND consumed_at IS NULL AND content_hash=?"
+        f" AND resolved_at IS NOT NULL AND resolved_at >= {NOW_S}-?",
+        args + [row_id, anchor, window])
+    if cur.rowcount > 0 and con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='approval_events'").fetchone():
+        con.execute("INSERT INTO approval_events (approval_id, event, reason, actor, ref)"
+                    " VALUES (?, 'consumed', NULL, ?, ?)", (row_id, consumer, ref))
+    return cur.rowcount > 0
+
+
+def find_and_consume(anchor: str, db_path=None, window_s=None, consume=True,
+                     consumer="email-approval-gate", ref=None):
+    """Return (verdict, detail). verdict: 'allowed' (the approval id; consumed
+    when consume=True, only looked at when False), 'pending', 'consumed',
+    'expired', 'none', 'race'. Raises on any DB problem -- the caller turns
+    that into a fail-closed deny.
+
+    consume=True runs SELECT + conditional UPDATE inside BEGIN IMMEDIATE, so
+    two processes on one row serialise on the write lock and exactly one gets
+    'allowed'. consume=False ("peek") is read-only (query_only): it writes
+    nothing, not a consumed_at, not an event."""
+    db_path = db_path or DB_PATH
+    window = WINDOW_S if window_s is None else window_s
+    if not os.path.exists(db_path):
+        raise OSError(f"approvals DB hianyzik ({db_path})")
+    con = sqlite3.connect(db_path, timeout=5, isolation_level=None)
     try:
         con.execute("PRAGMA busy_timeout=5000")
-        row = con.execute(
-            "SELECT id FROM approvals WHERE category='email_send' AND status='approved'"
-            f" AND content_hash=? AND consumed_at IS NULL AND resolved_at >= {NOW_S}-?"
-            " ORDER BY resolved_at DESC LIMIT 1", (anchor, WINDOW_S)).fetchone()
-        if row:
-            # Atomic one-shot: only the UPDATE that flips NULL->now wins.
-            cur = con.execute(
-                f"UPDATE approvals SET consumed_at={NOW_S}"
-                " WHERE id=? AND consumed_at IS NULL", (row[0],))
-            con.commit()
-            return ("allowed", row[0]) if cur.rowcount > 0 else ("race", row[0])
-        for verdict, cond in (
-            ("pending", "status='pending'"),
-            ("consumed", "status='approved' AND consumed_at IS NOT NULL"),
-            ("expired", f"status='approved' AND consumed_at IS NULL AND resolved_at < {NOW_S}-{int(WINDOW_S)}"),
-        ):
-            hit = con.execute(
-                f"SELECT id FROM approvals WHERE category='email_send' AND content_hash=? AND {cond} LIMIT 1",
-                (anchor,)).fetchone()
-            if hit:
-                return (verdict, hit[0])
-        return ("none", None)
+        if consume:
+            con.execute("BEGIN IMMEDIATE")
+        else:
+            con.execute("PRAGMA query_only=ON")
+        try:
+            row = con.execute(
+                "SELECT id FROM approvals WHERE category='email_send' AND status='approved'"
+                f" AND content_hash=? AND consumed_at IS NULL AND resolved_at >= {NOW_S}-?"
+                " ORDER BY resolved_at DESC LIMIT 1", (anchor, window)).fetchone()
+            result = None
+            if row and not consume:
+                result = ("allowed", row[0])
+            elif row:
+                # Atomic one-shot: only the UPDATE that flips NULL->now wins.
+                won = _consume_row(con, row[0], anchor, window, consumer, ref)
+                result = ("allowed", row[0]) if won else ("race", row[0])
+            else:
+                for verdict, cond in (
+                    ("pending", "status='pending'"),
+                    ("consumed", "status='approved' AND consumed_at IS NOT NULL"),
+                    ("expired", f"status='approved' AND consumed_at IS NULL AND resolved_at < {NOW_S}-{int(window)}"),
+                ):
+                    hit = con.execute(
+                        f"SELECT id FROM approvals WHERE category='email_send' AND content_hash=? AND {cond} LIMIT 1",
+                        (anchor,)).fetchone()
+                    if hit:
+                        result = (verdict, hit[0])
+                        break
+                else:
+                    result = ("none", None)
+            if consume:
+                con.execute("COMMIT")
+            return result
+        except BaseException:
+            if consume:
+                try:
+                    con.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+            raise
     finally:
         con.close()
 
@@ -1121,6 +1308,122 @@ def canonical_forms_text() -> str:
             "literal, vagy <<'EOF' heredoc, utana semmi mas parancs")
 
 
+def _qa_problems(text: str):
+    """Hungarian copy QA before any consumption: the same audit() the
+    outgoing-copy-gate hook runs, loaded from its file. Returns a list of
+    problems; a gate that does not load, or a rules file that exists but is
+    unusable, is itself a problem (fail-closed)."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "outgoing_copy_gate", os.path.join(_HERE, "outgoing-copy-gate.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        if mod.RULES_STATE == mod.RULES_INVALID:
+            return ["a nev-szabaly fajl letezik, de ervenytelen -- fail-closed"]
+        return list(mod.audit(text))
+    except Exception as exc:  # noqa: BLE001 -- QA that cannot run is a refusal
+        return [f"a masolat-ellenorzes (outgoing-copy-gate.py) nem futtathato ({exc!r}) -- fail-closed"]
+
+
+def authorize(env: dict, mode: str, paths=None, consumer="email-approval-gate", ref=None,
+              level_info=None, run_qa=False, unreadable_level=2, window=None,
+              bare_recipients=False, no_standing=False):
+    """The whole decision for one outgoing letter, as data (no exit, no print).
+    mode "consume": an approval is spent / a standing send is traced.
+    mode "peek": nothing is written -- no consumption, no standing trace.
+    no_standing: the call names its original (a connector reply, reply_all or
+    forward by messageId): it is never a standing-list send, whatever `to` says
+    (PR #2098), so the list is not consulted.
+
+    Result keys: decision ("allow"|"refuse"), reason, approval_id, anchor,
+    standing (the standing recipient or None), detail, note (config notes to
+    put in front of a message), owner_gap (None = owner reached), level, exc.
+    Reasons: allow -> level3, standing, approval; refuse -> level1, qa_failed,
+    config_invalid, unreadable, no_text, no_recipient, standing_not_live,
+    trace_unwritable, db_unavailable, none, pending, consumed, expired, race."""
+    paths = paths or default_paths()
+    window_s, window_err = window if window is not None else (WINDOW_S, _WINDOW_ERR)
+    out = {"decision": "refuse", "reason": None, "approval_id": None, "anchor": None,
+           "standing": None, "detail": None, "note": "", "owner_gap": None,
+           "level": None, "exc": None, "mode": mode}
+
+    def done(decision, reason, **kw):
+        out.update(decision=decision, reason=reason, **kw)
+        return out
+
+    if bare_recipients:
+        # Card efa58ad2 (S2), graph-mail only: the CLI splits --to/--cc on ',' while this
+        # gate reads them with getaddresses. Only a bare address list reads the same in
+        # both, so anything else is refused here at EVERY level, before any approval or
+        # standing recipient is looked at (peek and consume alike).
+        try:
+            sys.path.insert(0, _HERE)
+            from email_extract import bare_address_list_ok
+        except Exception as exc:  # noqa: BLE001 -- cannot decide = refuse
+            return done("refuse", "bad_request", detail=f"email_extract nem toltheto be ({exc!r})")
+        for field in ("to", "cc", "bcc"):
+            entries = env.get(field) or []
+            if not all(isinstance(v, str) and bare_address_list_ok(v) for v in entries):
+                return done("refuse", "bad_request",
+                            detail=f"a {field} nem sima cimek vesszovel elvalasztott listaja (S2)")
+
+    level, note = level_info or read_email_level(paths["config"], unreadable_level)
+    out["level"] = level
+    prefix = f"({note})\n" if note else ""
+    if level <= 1:
+        return done("refuse", "level1", note=prefix)
+    if run_qa:
+        problems = _qa_problems(str(env.get("text") or ""))
+        if problems:
+            return done("refuse", "qa_failed", note=prefix, detail="; ".join(problems))
+    if level >= 3:
+        return done("allow", "level3", note=prefix)
+
+    if window_err:
+        return done("refuse", "config_invalid", note=prefix, detail=window_err)
+    if env.get("unreadable_reason"):
+        return done("refuse", "unreadable", note=prefix, detail=env["unreadable_reason"])
+    if not str(env.get("text") or "").strip():
+        return done("refuse", "no_text", note=prefix)
+    if not env.get("to"):
+        return done("refuse", "no_recipient", note=prefix)
+
+    standing, standing_note = read_standing(paths["standing"])
+    if standing_note:
+        prefix = prefix + f"({standing_note})\n"
+    out["note"] = prefix
+    hit = None if no_standing else standing_match(env, standing)
+    if hit:
+        out["standing"] = hit
+        try:
+            live, live_detail = standing_authorized(hit, paths["db"])
+        except Exception as exc:  # noqa: BLE001 -- unreachable DB is fail-closed
+            return done("refuse", "db_unavailable", exc=repr(exc))
+        if not live:
+            return done("refuse", "standing_not_live", detail=live_detail)
+        if mode != "consume":
+            return done("allow", "standing")
+        # The trace is part of the AUTHORISATION: this is the one allow-path with
+        # no human deciding on THIS letter, so a send that cannot be recorded
+        # does not go out at all.
+        try:
+            owner_gap = standing_trace(hit, env, paths)
+        except OSError as exc:
+            return done("refuse", "trace_unwritable", exc=repr(exc))
+        return done("allow", "standing", owner_gap=owner_gap)
+
+    anchor = content_anchor(env)
+    out["anchor"] = anchor
+    try:
+        verdict, detail = find_and_consume(anchor, paths["db"], window_s,
+                                           consume=(mode == "consume"), consumer=consumer, ref=ref)
+    except Exception as exc:  # noqa: BLE001 -- DB unreachable is fail-closed, not no-right
+        return done("refuse", "db_unavailable", exc=repr(exc))
+    if verdict == "allowed":
+        return done("allow", "approval", approval_id=detail)
+    return done("refuse", verdict, approval_id=detail)
+
+
 def deny(msg: str):
     sys.stderr.write(f"EMAIL JOVAHAGYASI KAPU: TILTVA.\n{msg}\n")
     sys.exit(2)
@@ -1173,10 +1476,77 @@ def scope_kind(tool: str):
     return kind
 
 
+# graph-forward (spec B, r3): the graph-mail whitelist holds at EVERY level, so it runs
+# FIRST, before is_send_invocation and before the level, the standing list and any
+# approval are read. A cheap text test decides whether the extractor is needed at all;
+# a command that does not mention graph-mail never loads it here, so every other Bash
+# send keeps its old path byte for byte. A mention whose extractor does not load is a
+# deny (fail-closed): without it nothing can tell a read from a send.
+_GRAPH_MAIL_MENTION = re.compile(r"graph-mail", re.I)
+
+
+# B4 (Brainy): a script-runner command (tsx node npx bun deno) with a glob, quote or
+# expansion character in a script-looking word is refused at every level, whatever the
+# script is called (email_extract.script_path_meta_reason, ONE function shared with the
+# copy gate). Asked before the grammar and before any level. Fail-closed: when the
+# extractor does not load, a script-runner command naming a script file is a deny.
+_B4_SCRIPT_EXT = re.compile(r"\.(?:ts|js|mjs|mts|cts|cjs)", re.I)
+_B4_RUNNERS = ("tsx", "node", "npx", "bun", "deno")
+
+
+def _script_path_meta_or_deny(cmd: str) -> None:
+    if not _B4_SCRIPT_EXT.search(cmd):
+        return
+    try:
+        sys.path.insert(0, _HERE)
+        from email_extract import script_path_meta_reason
+    except Exception as exc:  # noqa: BLE001 -- fail-closed, as for the graph-mail mention
+        words = [w for w in cmd.split() if not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", w)]
+        if words and words[0].rsplit("/", 1)[-1] in _B4_RUNNERS:
+            deny(f"A kapu fuggosege (scripts/hooks/email_extract.py) nem toltheto be ({exc!r}) -- fail-closed: "
+                 "a parancs scriptet futtat, ezert a modul javitasaig tiltva.")
+        return
+    reason = script_path_meta_reason(cmd)
+    if reason:
+        deny("Graph-mail kapu (script-ut): " + reason + ".\n"
+             "A szabaly minden szinten all, a szint, az allando cimzett-lista es a jovahagyas elott.")
+
+
+def _classify_graph_mail_or_deny(cmd: str):
+    """(kind, fields): "none", "read", "send" or "forward". A refused command is a deny
+    (exit 2) right here, whatever the level, the standing list or an approval would say."""
+    if not _GRAPH_MAIL_MENTION.search(cmd):
+        return "none", None
+    try:
+        sys.path.insert(0, _HERE)
+        from email_extract import classify_graph_mail, GM_HELP
+    except Exception as exc:  # noqa: BLE001 -- SyntaxError, an extractor without the grammar, anything
+        deny(f"A kapu fuggosege (scripts/hooks/email_extract.py) nem toltheto be, vagy nem ismeri a "
+             f"graph-mail szabalyokat ({exc!r}) -- fail-closed: a parancs a graph-mail-t nevezi meg, ezert "
+             "a modul javitasaig tiltva.")
+    kind, fields, reason = classify_graph_mail(cmd)
+    if kind == "deny":
+        deny("Graph-mail kapu (graph-mail parancs): " + str(reason or "a parancs nem egyszeru") + ".\n"
+             "A graph-mail szabalyai minden szinten allnak, a szint, az allando cimzett-lista es a "
+             "jovahagyas elott: a parancs egyetlen, szigoru alaku parancs lehet.\n" + GM_HELP)
+    return kind, fields
+
+
 def summarize(env: dict) -> str:
     to = ", ".join(env["to"]) or "(nincs)"
     cc = ", ".join(env["cc"]) or "-"
     head = env["text"].replace("\n", " ")[:120]
+    if env.get("forward"):
+        # spec C6 + spec-delta KC4: the forwarded letter, then the comment's
+        # facts and its first 120 characters -- never the whole comment, which
+        # can be 3-5 thousand characters and would land in the approval's
+        # action_description (dashboard tooltip, Telegram text).
+        fwd = env["forward"]
+        src, sha, chars, lines = _comment_facts(env)
+        shown = "fajl " + str(env.get("comment_file") or "?") if src == "file" else "inline"
+        return (f"Cimzett: {to} | CC: {cc} | Tovabbitott level: {fwd['subject']} | "
+                f"id: {fwd['message_id'][:16]}... | Komment: {shown} | sha256: {sha[:16]} | "
+                f"{chars} karakter, {lines} sor | Szoveg eleje: {head}")
     extra = ""
     if env.get("html_sha256"):
         extra += f" | HTML sha256: {env['html_sha256'][:16]}"
@@ -1210,9 +1580,25 @@ def main():
 
     kind = None
     cmd = ""
+    forward_env = None
+    graph_mail = False
     if tool == "Bash":
         cmd = str(tool_input.get("command") or "")
-        if not _load_is_send_invocation()(cmd):
+        # r3: the whitelist FIRST. It denies what it cannot prove simple, lets a read
+        # through, and hands a forward over with its envelope already built (its comment
+        # file read once). Only a command that does not mention graph-mail reaches the
+        # old send classifier, unchanged.
+        _script_path_meta_or_deny(cmd)
+        gm_kind, gm_fields = _classify_graph_mail_or_deny(cmd)
+        # cli-send-enforce: ANY command that mentions graph-mail (any case) is only
+        # peeked at below. The Graph CLI authorizes and consumes by itself.
+        graph_mail = bool(_GRAPH_MAIL_MENTION.search(cmd))
+        if gm_kind == "read":
+            sys.exit(0)
+        if gm_kind == "forward":
+            from email_extract import forward_envelope_from_fields
+            forward_env = forward_envelope_from_fields(gm_fields)
+        elif gm_kind == "none" and not _load_is_send_invocation()(cmd):
             sys.exit(0)
         if ledger_enabled():
             ledger_gate("bash", tool_input, cmd)
@@ -1220,6 +1606,18 @@ def main():
         if not _MAYBE_MAIL_TOOL.search(tool):
             sys.exit(0)  # no mail kind is possible: the extractor is not needed
         kind = scope_kind(tool)
+        if kind is None and tool[:5].lower() == "mcp__":
+            # graph-forward N1b (G1-G5): a send under a name the classifier does not
+            # know (v2_send_draft, replyAll, fwd_message ...), read by its ACTION.
+            # It only adds names the name classifier returned None for. The extractor
+            # loaded here (classify_tool would have said "unclassified" otherwise);
+            # a failure of this extra reading is a send (fail-closed).
+            try:
+                from email_extract import mail_tool_action
+                if mail_tool_action(tool) == "send":
+                    kind = "send_email"
+            except Exception:  # noqa: BLE001 -- cannot classify = send
+                kind = "send_email"
         # MAILCCGATE1016: the owner-CC check, before the level (it applies at
         # every level) and for drafts too. MCP tools only: the Bash senders
         # carry their own owner-CC default (scripts/support-mail/send.py,
@@ -1249,7 +1647,11 @@ def main():
              "Az email_send autonomia-szint 1 (csak jelez): a kuldes tiltott.\n"
              "Jelezd a gazdanak inter-agent uzenettel vagy a dashboardon; a szint "
              "emelese a store/autonomy-config.json-ban a gazda dontese.")
-    if tool == "Bash" and canonical_sender_send(cmd, payload.get("cwd")):
+    # A command that mentions graph-mail is NOT passed through or denied by the two
+    # sender tests below: the hook only PEEKS at it (the early, readable refusal with
+    # the anchor), and the CLI authorizes and consumes by itself. Skipping the tests
+    # for graph-mail only adds the peek; it never lets a send through unchecked.
+    if tool == "Bash" and not graph_mail and canonical_sender_send(cmd, payload.get("cwd")):
         # This project's own sender, called literally: it enforces level 2
         # itself (sender_check.py) on the envelope it delivers, standing list
         # included, and consumes the approval there. Not consuming here keeps
@@ -1258,7 +1660,7 @@ def main():
             "email-approval-gate: email_send level 2 -- a kuldo maga ellenorzi a jovahagyast "
             "(vagy az allando cimzett-listat), es elutasitaskor kiirja a level horgonyat."}))
         sys.exit(0)
-    if tool == "Bash" and names_own_sender(cmd, payload.get("cwd")):
+    if tool == "Bash" and not graph_mail and names_own_sender(cmd, payload.get("cwd")):
         deny(prefix +
              "email_send level 2: ez a parancs a projekt SAJAT kuldojet futtatja, de nem a "
              "kanonikus alakban. A kuldo maga ellenorzi es hasznalja fel a jovahagyast a sajat "
@@ -1281,49 +1683,49 @@ def main():
     if _WINDOW_ERR:
         deny(prefix + f"A kapu beallitasa hibas ({_WINDOW_ERR}) -- fail-closed, "
              "a level nem mehet ki.")
-    env = _load_collect_email_envelope()(tool, tool_input)
-    if env["unreadable_reason"]:
+    # A forward's envelope was already built (and its comment file read) above;
+    # reading it again here would only open a second window on the file.
+    env = forward_env if forward_env is not None else _load_collect_email_envelope()(tool, tool_input)
+
+    # The decision itself (standing list, anchor, consumption) is authorize(): the
+    # same function the Graph CLI's authorizer runs. A graph-mail command is only
+    # PEEKED at here (cli-send-enforce): the CLI is the one consumer, at the moment
+    # of sending, so this hook neither spends the approval nor writes the standing
+    # trace -- either would burn the right before the letter can leave.
+    mode = "peek" if graph_mail else "consume"
+    # A call that names its original (a connector reply, reply_all or forward) is
+    # never a standing-list send, whatever `to` says (PR #2098): decided on the call.
+    res = authorize(env, mode, level_info=(level, note), bare_recipients=graph_mail,
+                    no_standing=bool(tool_input.get("messageId")))
+    reason, hit, anchor = res["reason"], res["standing"], res["anchor"]
+    prefix = res["note"] or prefix
+    detail = res["approval_id"] or res["detail"]
+
+    if reason == "unreadable":
         deny(prefix +
-             f"A level nem horgonyozhato: {env['unreadable_reason']}.\n"
+             f"A level nem horgonyozhato: {res['detail']}.\n"
              "Fail-closed: tedd a hivast determinisztikusan olvashatova (inline "
              "--to/--cc/--subject/--body vagy MCP-mezok, shell-valtozo NELKUL), "
              "aztan kuldd ujra.")
-    if not env["text"].strip():
+    if reason == "no_text":
         deny(prefix + "A hivasbol nem nyerheto ki level-szoveg -- fail-closed.")
-    if not env["to"]:
+    if reason == "no_recipient":
         deny(prefix +
              "A hivasbol nem nyerheto ki cimzett (a horgony a cimzettet is fedi).\n"
              "Hasznalj explicit --to flaget vagy MCP to-mezot, aztan kuldd ujra.")
 
-    # The standing list is checked BEFORE the anchor, and only here -- i.e.
-    # only at level 2. Level 1 stays a hard deny: "signal only" must not have a
-    # back door, and the owner's plan is to sit at 2. Level 3 never reaches
-    # this point at all.
-    standing, standing_note = read_standing()
-    if standing_note:
-        prefix = prefix + f"({standing_note})\n"
-    # A call that names its original (a connector reply, reply_all or forward)
-    # is never a standing-list send, whatever `to` says: the letter reaches the
-    # original's sender or participants, or carries the original's content,
-    # none of which this gate read. The envelope only shows the messageId as a
-    # `to` token when `to` is empty, so this is decided on the call itself
-    # (PR #2098 review: messageId + a listed `to` -> exit 0 at level 2).
-    hit = None if tool_input.get("messageId") else standing_match(env, standing)
     if hit:
         # The list makes the address a CANDIDATE; only the owner's one-time
-        # approval makes it live. Checked before the trace, because an address
-        # that is not live has no approval-free send to record.
-        try:
-            live, live_detail = standing_authorized(hit)
-        except Exception as exc:  # noqa: BLE001 -- unreachable DB is fail-closed
+        # approval makes it live (checked inside authorize, before the trace).
+        if reason == "db_unavailable":
             deny(prefix +
                  f"email_send level 2: {hit} rajta van az allando cimzett-listan, de az "
-                 f"elesitese nem ellenorizheto ({exc!r}) -- nem-eldontheto, ezert "
+                 f"elesitese nem ellenorizheto ({res['exc']}) -- nem-eldontheto, ezert "
                  "fail-closed TILTVA. Ha a dashboard/DB helyreallt, kuldd ujra.")
-        if not live:
+        if reason == "standing_not_live":
             deny(prefix +
                  f"email_send level 2: {hit} szerepel az allando cimzett-listan, DE NINCS "
-                 f"ELESITVE -- {live_detail}.\n"
+                 f"ELESITVE -- {res['detail']}.\n"
                  "Egy cim attol valik elese, hogy a gazda EGYSZER jovahagyta, NEM attol, "
                  "hogy felkerult a listara. A felvetel javaslat, az elesites dontes.\n"
                  f"Cim-horgony (sha256): {standing_anchor(hit)}\n"
@@ -1332,46 +1734,59 @@ def main():
                  "action_description=melyik cimet es miert. A dontes a gazdae: a sajat "
                  "keresedet NE hagyd jova.\n"
                  "Addig ez a level a szokasos, level-enkenti jovahagyasi uton mehet.")
-        # The trace is part of the AUTHORISATION here, not a side effect of it:
-        # this is the one allow-path with no human deciding on THIS letter, so a
-        # send that cannot be recorded does not go out at all.
-        try:
-            owner_gap = standing_trace(hit, env)
-        except OSError as exc:
+        if reason == "trace_unwritable":
             deny(prefix +
                  f"email_send level 2: {hit} rajta van az allando cimzett-listan, DE a "
-                 f"kuldes nem rogzitheto ({exc!r}) -- fail-closed TILTVA.\n"
+                 f"kuldes nem rogzitheto ({res['exc']}) -- fail-closed TILTVA.\n"
                  "A lista az egyetlen ut, amin emberi dontes nelkul megy ki level, ezert "
                  f"a NYOMA a feltetele: ha a {os.path.basename(STANDING_LOG)} nem irhato, "
                  "a jog sem all. Tedd irhatova, aztan kuldd ujra.")
+        if graph_mail:
+            # Peek: no trace was written. The CLI records the standing send, once,
+            # at the moment it sends.
+            what = "a tovabbitas" if env.get("forward") else "a kuldes"
+            print(json.dumps({"systemMessage":
+                f"email-approval-gate: {hit} allando cimzett, {what} jovahagyas nelkul "
+                "mehet; a nyomot (napi naplo + helyi log) a CLI irja, a tenyleges kuldeskor. "
+                "Minden mas cimzett tovabbra is jovahagyas-koteles."}))
+            sys.exit(0)
+        owner_gap = res["owner_gap"]
         note = ("A kuldes a gazda napi naplojaba is bekerult."
                 if owner_gap is None else
                 f"FIGYELEM: a gazdat NEM sikerult ertesiteni ({owner_gap}). A helyi "
                 f"{os.path.basename(STANDING_LOG)} rogzitette a kuldest ES az ertesites "
                 "hianyat is, de a gazda ettol meg nem tud rola -- ha a level fontos, "
                 "szolj neki a csatornan.")
+        if env.get("forward"):
+            print(json.dumps({"systemMessage":
+                f"email-approval-gate: {hit} allando cimzett, a tovabbitas jovahagyas nelkul "
+                "mehet; hogy tenyleg kiment-e, azt a CLI kimenete mondja meg (exit 0 es a "
+                f"forwarded sor). Minden mas cimzett tovabbra is jovahagyas-koteles. {note}"}))
+            sys.exit(0)
         print(json.dumps({"systemMessage":
             f"email-approval-gate: {hit} allando cimzett, a kuldes jovahagyas nelkul "
             f"mehet. Minden mas cimzett tovabbra is jovahagyas-koteles. {note}"}))
         sys.exit(0)
 
-    anchor = content_anchor(env)
-    try:
-        verdict, detail = find_and_consume(anchor)
-    except Exception as exc:  # noqa: BLE001 -- DB unreachable is fail-closed, not no-right
+    if reason == "db_unavailable":
         deny(prefix +
-             f"A jovahagyasok nem elerheto(k) ({exc!r}) -- nem-eldontheto, ezert "
+             f"A jovahagyasok nem elerheto(k) ({res['exc']}) -- nem-eldontheto, ezert "
              "fail-closed TILTVA. Ha a dashboard/DB helyreallt, kuldd ujra.")
 
     copy_note = ""
-    if tool == "Bash":
+    if tool == "Bash" and not graph_mail:
         copy_note = ("\nMegjegyzes: ez a Bash-kuldes nem a projekt sajat kuldojet futtatja, ezert a "
                      "kapu maga hasznalja fel a jovahagyast. A projekt kuldoinek alakja: "
                      f"{canonical_forms_text()}.")
-    if verdict == "allowed":
-        print(json.dumps({"systemMessage":
-            f"email-approval-gate: jovahagyas {detail} felhasznalva (egyszer-hasznalatos), a kuldes mehet."
-            + copy_note}))
+    if reason == "approval":
+        if graph_mail:
+            print(json.dumps({"systemMessage":
+                f"email-approval-gate: jovahagyas {detail} megvan; a CLI egyszer-hasznalatosan "
+                "fogyasztja el a kuldes pillanataban, a kuldes mehet."}))
+        else:
+            print(json.dumps({"systemMessage":
+                f"email-approval-gate: jovahagyas {detail} felhasznalva (egyszer-hasznalatos), a kuldes mehet."
+                + copy_note}))
         sys.exit(0)
 
     reasons = {
@@ -1380,10 +1795,24 @@ def main():
         "expired": f"A(z) {detail} jovahagyas IDOABLAKA lejart ({WINDOW_S // 60} perc) -- uj jovahagyas kell.",
         "race": "A jovahagyast egy parhuzamos kuldes hasznalta fel -- uj jovahagyas kell.",
         "none": "Ehhez a levelhez NINCS jovahagyas.",
+        "config_invalid": f"A kapu beallitasa hibas ({res['detail']}) -- fail-closed, a level nem mehet ki.",
     }
+    # cli-send-enforce: a graph-mail letter's approval is spent by the CLI, at the
+    # moment of sending, not here. Say so, and say what a Graph failure costs.
+    if graph_mail:
+        spent = ("A jovahagyast a CLI fogyasztja el, a kuldes pillanataban (egyszer-hasznalatos): "
+                 "ha a Graph-hivas utana hibazik, uj jovahagyas kell.\n")
+    else:
+        spent = ""
+    # graph-forward (C6, KC4): a forward's anchor also covers the forwarded
+    # message's id and subject. A send's wording stays byte for byte.
+    if env.get("forward"):
+        covers = "to+cc+komment+a tovabbitott level azonositoja es targya"
+    else:
+        covers = "to+cc+bcc+targy+torzs"
     deny(prefix +
-         f"email_send level 2 (CHECK-BEFORE-SEND). {reasons[verdict]}\n"
-         f"Tartalom-horgony (sha256; to+cc+bcc+targy+torzs): {anchor}\n"
+         f"email_send level 2 (CHECK-BEFORE-SEND). {reasons.get(reason, 'Belso hiba: ' + str(reason))}\n"
+         f"Tartalom-horgony (sha256; {covers}): {anchor}\n"
          f"{summarize(env)}\n"
          "Jovahagyas kerese: POST /api/approvals a sajat agent_id-ddal, "
          'category="email_send", content_hash=a fenti horgony, action_description='
@@ -1391,6 +1820,7 @@ def main():
          "Jovahagyas UTAN PONTOSAN ugyanezt a hivast kuldd ujra -- a horgony csak "
          "byte-azonos levelre egyezik, es a jovahagyas egyszer hasznalhato, "
          f"{WINDOW_S // 60} percig ervenyes.\n"
+         f"{spent}"
          "Ha ez visszatero, EGY cimzettnek szolo level (tipikusan a gazda sajat "
          "ertesitese), a gazda beallithatja a cimet allando cimzettnek. KERD TOLE "
          "a csatornan es vard meg a valaszat. A beallitast MAGAD NE vegezd el: ez "

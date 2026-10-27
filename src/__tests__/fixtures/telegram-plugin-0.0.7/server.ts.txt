@@ -1,13 +1,23 @@
 // Excerpt of claude-plugins-official/telegram 0.0.7 server.ts (Apache-2.0,
-// (c) Anthropic), verbatim blocks: the /start, /help, /status handlers, the
-// polling loop's onStart setMyCommands, handleInbound, and (at the end) the
-// server instructions, the MCP tool list and the tool-call handler (server.ts
-// lines 391-418, 454-526 and 528-650), plus the PERMISSION_REPLY_RE line
-// and the callback_query:data handler (the answer-buttons patch hooks in
-// there; the plugin's own lines, without Marveen's). Test input for
-// scripts/patch-telegram-plugin.py (ELSOKOR922 spec D-4, the answer-buttons
-// patch (c67f5f34) and the topics patch); the declarations and the loop's
-// closing lines only make the excerpt parse on its own.
+// (c) Anthropic), verbatim blocks: the fs import, STATE_DIR, loadAccess, the
+// /start, /help, /status handlers, the callback_query handler (lines 709-766
+// of the cache file already patched by d4; the answer-buttons and approval-button
+// patches hook in there, the plugin's own lines without Marveen's), the
+// PERMISSION_REPLY_RE line, the polling loop's onStart setMyCommands,
+// handleInbound, and (at the end) the server instructions, the
+// MCP tool list and the tool-call handler (server.ts lines 391-418, 454-526
+// and 528-650). Test input for scripts/patch-telegram-plugin.py (ELSOKOR922
+// spec D-4, the answer-buttons patch (c67f5f34), the approval-button patch
+// (345f34e2) and the topics patch); the declarations and the loop's closing
+// lines only make the excerpt parse on its own.
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync } from 'fs'
+const STATE_DIR = process.env.TELEGRAM_STATE_DIR
+  ?? join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'channels', 'telegram')
+
+function loadAccess(): Access {
+  return BOOT_ACCESS ?? readAccessFile()
+}
+
 declare const bot: any
 declare function dmCommandGate(ctx: any): any
 let botUsername = ''
@@ -57,31 +67,9 @@ bot.command('status', async ctx => {
   await ctx.reply(`Not paired. Send me a message to get a pairing code.`)
 })
 
-void (async () => {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      await bot.start({
-        onStart: info => {
-          attempt = 0
-          botUsername = info.username
-          process.stderr.write(`telegram channel: polling as @${info.username}\n`)
-          void bot.api.setMyCommands(
-            [
-              { command: 'start', description: 'Welcome and setup guide' },
-              { command: 'help', description: 'What this bot can do' },
-              { command: 'status', description: 'Check your pairing status' },
-            ],
-            { scope: { type: 'all_private_chats' } },
-          ).catch(() => {})
-        },
-      })
-      return // bot.stop() was called — clean exit from the loop
-    } catch (err) {
-      return
-    }
-  }
-})()
-
+// Inline-button handler for permission requests. Callback data is
+// `perm:allow:<id>`, `perm:deny:<id>`, or `perm:more:<id>`.
+// Security mirrors the text-reply path: allowFrom must contain the sender.
 bot.on('callback_query:data', async ctx => {
   const data = ctx.callbackQuery.data
   const m = /^perm:(allow|deny|more):([a-km-z]{5})$/.exec(data)
@@ -137,6 +125,31 @@ bot.on('callback_query:data', async ctx => {
     await ctx.editMessageText(`${msg.text}\n\n${label}`).catch(() => {})
   }
 })
+
+void (async () => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await bot.start({
+        onStart: info => {
+          attempt = 0
+          botUsername = info.username
+          process.stderr.write(`telegram channel: polling as @${info.username}\n`)
+          void bot.api.setMyCommands(
+            [
+              { command: 'start', description: 'Welcome and setup guide' },
+              { command: 'help', description: 'What this bot can do' },
+              { command: 'status', description: 'Check your pairing status' },
+            ],
+            { scope: { type: 'all_private_chats' } },
+          ).catch(() => {})
+        },
+      })
+      return // bot.stop() was called — clean exit from the loop
+    } catch (err) {
+      return
+    }
+  }
+})()
 
 async function handleInbound(
   ctx: Context,

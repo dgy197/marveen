@@ -32,6 +32,45 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   export $(grep -v '^#' "$INSTALL_DIR/.env" | xargs)
 fi
 
+# INTERACTIVE_ANTHROPIC_KEY_POLICY (fec6335f), the rule of
+# src/web/interactive-key-guard.ts (policyFromEnvText, BE-1 parity):
+# absent, empty or `allow` -> allow, anything else -> forbid (fail-closed).
+# The whole .env is exported above, so under forbid the model call below drops
+# the key names; under allow KEY_UNSET is empty and the call is unchanged.
+interactive_key_policy() {
+  local f="$INSTALL_DIR/.env" text raw bom
+  # No .env at all: allow (upstream default). One that exists but cannot be
+  # read as a regular file: forbid -- a check that cannot read its input must
+  # not pass (BE-1).
+  [ -e "$f" ] || { echo allow; return; }
+  if [ ! -f "$f" ] || [ ! -r "$f" ]; then echo forbid; return; fi
+  # Byte-wise in the C locale, so the answer does not depend on the caller's
+  # LANG; a UTF-8 BOM in front of line 1 is dropped first.
+  bom="$(printf '\357\273\277')"
+  text="$(LC_ALL=C sed "1s/^$bom//" "$f" 2>/dev/null)" || { echo forbid; return; }
+  # A non-comment line that names the key but is not a plain `KEY=value` line
+  # (Unicode space around the key, an `export ` prefix, ...) is forbid: the TS
+  # reader and this one would otherwise disagree, possibly in the open direction.
+  if printf '%s\n' "$text" | LC_ALL=C grep -F 'INTERACTIVE_ANTHROPIC_KEY_POLICY' | LC_ALL=C grep -Ev '^[[:space:]]*#' \
+    | LC_ALL=C grep -Evq '^[[:space:]]*INTERACTIVE_ANTHROPIC_KEY_POLICY[[:space:]]*='; then
+    echo forbid; return
+  fi
+  raw="$(printf '%s\n' "$text" | LC_ALL=C grep -E '^[[:space:]]*INTERACTIVE_ANTHROPIC_KEY_POLICY[[:space:]]*=' | tail -1 | cut -d= -f2-)"
+  raw="$(printf '%s' "$raw" | LC_ALL=C sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$raw" in
+    \"*) case "$raw" in *\") raw="${raw#\"}"; raw="${raw%\"}" ;; esac ;;
+    \'*) case "$raw" in *\') raw="${raw#\'}"; raw="${raw%\'}" ;; esac ;;
+  esac
+  # Trimmed again inside the quotes, as the TS reader does: `" allow "` is allow in both.
+  raw="$(printf '%s' "$raw" | LC_ALL=C sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$raw" in
+    ''|allow) echo allow ;;
+    *) echo forbid ;;
+  esac
+}
+KEY_UNSET=""
+if [ "$(interactive_key_policy)" = forbid ]; then KEY_UNSET="-u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN"; fi
+
 CALENDAR_ID="${HEARTBEAT_CALENDAR_ID:-primary}"
 # The install zone for "today" (ISSUE1895 / #1895), not a hardcoded Europe/Budapest.
 . "$INSTALL_DIR/scripts/lib/install-tz.sh"
@@ -168,8 +207,10 @@ trap 'rm -f "$RUN_OUT" "$RUN_ERR" "$BODY"; rm -rf "$NO_CHANNEL_STATE"' EXIT
 if [ "$(id -u)" = "0" ]; then export IS_SANDBOX=1; fi
 # The subscription tokens an .env may carry are dropped too, so the call cannot
 # fall back to them (MORNTIMER2197).
+# fec6335f: under INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid the key names are dropped too.
+# shellcheck disable=SC2086 # KEY_UNSET: fixed words or empty, split on purpose
 env -u TELEGRAM_BOT_TOKEN -u SLACK_BOT_TOKEN -u SLACK_APP_TOKEN -u DISCORD_BOT_TOKEN \
-  -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_AUTH_TOKEN \
+  -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_AUTH_TOKEN $KEY_UNSET \
   TELEGRAM_STATE_DIR="$NO_CHANNEL_STATE" SLACK_STATE_DIR="$NO_CHANNEL_STATE" \
   DISCORD_STATE_DIR="$NO_CHANNEL_STATE" GOOGLECHAT_STATE_DIR="$NO_CHANNEL_STATE" \
   TEAMS_STATE_DIR="$NO_CHANNEL_STATE" \

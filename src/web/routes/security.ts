@@ -10,6 +10,11 @@
 // (SSH tunnel + a fresh device key), so it is allowlisted to token+session.
 // A device key must never enroll further devices -- one leaked Bridge would
 // otherwise become unlimited Bridges.
+//
+// Card 053f4e66 B: a pairing writes an SSH line and mints a full device key
+// that does not expire, so the shared bearer token reaches it only through the
+// bearer-credential-admin switch (credential-admin.ts), decided before the body
+// is read. A logged-in session pairs as before.
 
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
@@ -20,7 +25,8 @@ import { isSshDirGuardError } from '../../ssh-dir.js'
 import { checkEnrollHost } from '../../remote-enroll-core.js'
 import { DEVICE_NAME_RE } from '../auth-device-keys.js'
 import { isIP } from 'node:net'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { carriesOwnerSessionCookie, mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { admitBearerCredentialAdmin } from '../credential-admin.js'
 import type { RouteContext } from './types.js'
 
 const BODY_MAX_BYTES = 8 * 1024
@@ -45,6 +51,9 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
     json(res, OWNER_SESSION_REQUIRED, 403)
     return true
   }
+  // 053f4e66 B: a bare token caller (no owner session cookie alongside) only
+  // through the switch, decided before the body is read.
+  if (auth.kind === 'token' && !carriesOwnerSessionCookie(req) && !admitBearerCredentialAdmin(ctx, 'security.bridge_enroll')) return true
 
   let body: Record<string, unknown>
   try {

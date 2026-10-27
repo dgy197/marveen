@@ -18,10 +18,12 @@
 // every agent runs as, so an agent could list itself. F2 adds a change log and
 // a notification for that; the OS-user split (F3 prerequisite) closes it.
 import { existsSync, readFileSync } from 'node:fs'
+import type http from 'node:http'
 import { join } from 'node:path'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { callerLabel } from './admin-switch.js'
 import type { RouteContext } from './routes/types.js'
 
 export const VAULT_ACL_PATH = join(STORE_DIR, 'vault-acl.json')
@@ -126,13 +128,25 @@ function claimedVerdict(id: string, claimed: string, acl: VaultAcl): VaultAclVer
 }
 
 // The ONE audit line per value read. Fields: which secret, which credential
-// kind, which principal, what the allowlist says, and whether the secret
-// existed. The VALUE is never passed in and never logged -- the function
-// signature has no parameter for it on purpose.
+// kind, which principal, what the allowlist says, whether the secret existed,
+// and the caller label. The VALUE is never passed in and never logged -- the
+// function signature has no parameter for it on purpose.
+//
+// `caller` (card 053f4e66, F0.5) is the self-asserted X-Agent-Id, computed HERE
+// from the request through the one sanitiser (callerLabel: capped, safe charset,
+// 'unknown' when absent), so a caller of this function cannot hand in raw text.
+// It exists ONLY to build the vault-acl allowlist proposal from the log. It is
+// NEVER an authorization input: nothing reads it back, it never blocks, and the
+// response is identical with and without the header. Anyone can send any label.
+//
+// `extra` (upstream, VAULT_ACL_MODE=enforce): which channel the read came
+// through and whether the read was refused. Parameter order after the merge:
+// (id, auth, found, req, acl, extra).
 export function logVaultRead(
   id: string,
   auth: RouteContext['auth'],
   found: boolean,
+  req: http.IncomingMessage,
   acl: VaultAcl = readVaultAcl(),
   extra: { channel?: 'value' | 'resolve'; refused?: boolean } = {},
 ): void {
@@ -143,6 +157,7 @@ export function logVaultRead(
     id,
     kind,
     principal,
+    caller: callerLabel(req),
     acl: claimed ? claimedVerdict(id, claimed, acl) : evaluateVaultRead(id, auth, acl),
     mode: vaultAclMode(),
     claimed,

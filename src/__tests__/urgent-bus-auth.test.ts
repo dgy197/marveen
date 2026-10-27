@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { agentDir } from '../web/agent-config.js'
 import { initDatabase, createAgentMessage, getAgentMessage, listAgentMessages } from '../db.js'
 import { MAIN_AGENT_ID, parseDeviceKeyIds } from '../config.js'
@@ -15,6 +15,33 @@ import type { RouteContext } from '../web/routes/types.js'
 // in MESSAGE_URGENT_DEVICE_IDS: that is the key rotator's path. The shared dashboard token is the agent API, every
 // sub-agent reads it, and it can mint a device key (POST /api/auth/device-keys): so neither the token nor an unlisted
 // key may send one, and both are refused before anything is written.
+
+// Card 053f4e66 B: since the shared token mints a device key only while the install
+// .env opens BEARER_CREDENTIAL_ADMIN_ENABLED=1 (credential-admin.ts), the "token
+// can mint a key" premise of (a8) holds only with the switch open. The suite
+// runs against a throwaway install whose .env has the switch closed; (a8) first
+// shows the closed switch ends the measured path at the mint, then opens it and
+// keeps the old claim: even a key the token minted cannot send an urgent row.
+// CLAUDECLAW_ENV_DIR must be set before any app module loads. The owner
+// notification of a token mint is stubbed.
+const ENV = vi.hoisted(() => {
+  const fs = require('node:fs') as typeof import('node:fs')
+  const os = require('node:os') as typeof import('node:os')
+  const path = require('node:path') as typeof import('node:path')
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'urgent-auth-env-')))
+  process.env.CLAUDECLAW_ENV_DIR = dir
+  for (const k of ['BEARER_CREDENTIAL_ADMIN_ENABLED', 'BEARER_CREDENTIAL_ADMIN_UNTIL', 'BEARER_CREDENTIAL_ADMIN_NONCE']) delete process.env[k]
+  return { file: path.join(dir, '.env') }
+})
+vi.mock('../notify.js', () => ({
+  notifyChannel: vi.fn(async () => {}),
+  notifyTelegram: vi.fn(async () => {}),
+  notifySecurityEvent: vi.fn(async () => {}),
+}))
+// The switch is read from the .env per request, so it can flip between calls.
+function setSwitch(on: boolean): void {
+  writeFileSync(ENV.file, on ? 'BEARER_CREDENTIAL_ADMIN_ENABLED=1\n' : 'BEARER_CREDENTIAL_ADMIN_ENABLED=0\n')
+}
 
 // The install lists ONE key for urgent rows, id 7; the route reads the list at module load.
 vi.mock('../config.js', async (importOriginal) => ({
@@ -60,6 +87,7 @@ const SENDER = 'kulcsvalto-teszt-795d'
 
 beforeAll(() => {
   process.env.NODE_ENV = 'test'
+  setSwitch(false)
   initDatabase(':memory:')
   mkdirSync(agentDir(SENDER), { recursive: true })
 })
@@ -119,7 +147,16 @@ describe('POST /api/messages: urgent only on a device key the install lists (795
     expect((await post({ from: SENDER, to: MAIN_AGENT_ID, content: 'sima, ugyanazzal a kulccsal' }, UNLISTED_KEY)).statusCode).toBe(200)
   })
 
-  it('(a8) the measured path: the shared token mints a full key, and that key cannot send an urgent row', async () => {
+  it('(a8) the measured path: the shared token mints a full key only with the switch open, and that key cannot send an urgent row', async () => {
+    // 0. the switch is closed: the shared token cannot mint at all (403, no key in the answer), so the measured path ends here
+    setSwitch(false)
+    const closed = fakeCtx({ name: 'barki-kulcsa' }, TOKEN, '/api/auth/device-keys')
+    expect(await tryHandleAuth(closed.ctx)).toBe(true)
+    expect(closed.res.statusCode).toBe(403)
+    expect(JSON.parse(closed.res.body)).toMatchObject({ code: 'bearer_credential_admin_off' })
+    expect(JSON.parse(closed.res.body)).not.toHaveProperty('key')
+    // The install opens the switch; from here the old claim: a minted key is no urgent sender.
+    setSwitch(true)
     // 1. the shared token mints a key through the real route (a 201 with the raw key, scope full by default)
     const minted = fakeCtx({ name: 'barki-kulcsa' }, TOKEN, '/api/auth/device-keys')
     expect(await tryHandleAuth(minted.ctx)).toBe(true)

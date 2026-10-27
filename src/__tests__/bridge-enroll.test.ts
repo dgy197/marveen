@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
@@ -21,6 +21,33 @@ import type { RouteContext } from '../web/routes/types.js'
 //   - revoking a paired key drops the authorized_keys line in the same step;
 //   - the endpoint is denied to 'device' principals and validates input;
 //   - old-bundle compatibility: nothing here touches the shared-token lane.
+
+// Card 053f4e66 B: the shared Bearer ('token') pairs a Bridge only while the
+// install .env opens BEARER_CREDENTIAL_ADMIN_ENABLED=1 (credential-admin.ts).
+// The HTTP cases below test validation and the enroll/audit result, not that
+// gate, so they run against a throwaway install whose .env has the switch open
+// (setSwitch(true) in beforeEach); one case pins the closed switch (403, nothing
+// written, then the same request goes through once opened).
+// credential-admin-gate.test.ts holds the full matrix. CLAUDECLAW_ENV_DIR must
+// be set before any app module loads. The owner notification is stubbed.
+const ENV = await vi.hoisted(async () => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-enroll-env-')))
+  process.env.CLAUDECLAW_ENV_DIR = dir
+  for (const k of ['BEARER_CREDENTIAL_ADMIN_ENABLED', 'BEARER_CREDENTIAL_ADMIN_UNTIL', 'BEARER_CREDENTIAL_ADMIN_NONCE']) delete process.env[k]
+  return { file: path.join(dir, '.env') }
+})
+vi.mock('../notify.js', () => ({
+  notifyChannel: vi.fn(async () => {}),
+  notifyTelegram: vi.fn(async () => {}),
+  notifySecurityEvent: vi.fn(async () => {}),
+}))
+// The switch is read from the .env per request, so it can flip between calls.
+function setSwitch(on: boolean): void {
+  writeFileSync(ENV.file, on ? 'BEARER_CREDENTIAL_ADMIN_ENABLED=1\n' : 'BEARER_CREDENTIAL_ADMIN_ENABLED=0\n')
+}
 
 const TOKEN = 'a'.repeat(64)
 
@@ -70,6 +97,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  setSwitch(true)
   sshDir = mkdtempSync(join(tmpdir(), 'bridge-enroll-test-'))
   // ENROLL813: point the seam at THIS test's scratch dir up front. Several
   // cases below drive the HTTP routes, which call bridgeEnroll() with no deps
@@ -226,6 +254,31 @@ describe('POST /api/security/bridge-enroll (HTTP)', () => {
       expect(r.statusCode).toBe(403)
     }
     expect(listDeviceKeys()).toHaveLength(0)
+  })
+
+  it('the token\'s pairing is the gate: 403 with the switch off (no key, no line, no audit), the same request passes it with the switch on', async () => {
+    const { line, installId } = makeKeyLine()
+    const body = { key_line: line, name: 'Gated Phone' }
+    setSwitch(false)
+    const refused = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { auth: { kind: 'token' }, body })
+    expect(refused.statusCode).toBe(403)
+    expect(refused.json()).toMatchObject({ code: 'bearer_credential_admin_off' })
+    expect(refused.json()).not.toHaveProperty('bundle')
+    expect(listDeviceKeys()).toHaveLength(0)
+    expect(findDeviceKeyByInstallId(installId)).toBeNull()
+    expect(authKeysContent()).toBe('')
+    expect(getDb().prepare("SELECT COUNT(*) AS c FROM config_change_log WHERE key = 'security.bridge_enroll'").get()).toEqual({ c: 0 })
+    // Positive control on the same fixture: with the switch open the request is no longer refused by the gate.
+    // 201 = enrolled; 400 = the documented hard fail when no ssh-ed25519 host key is obtainable here.
+    setSwitch(true)
+    const admitted = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { auth: { kind: 'token' }, body })
+    expect([201, 400]).toContain(admitted.statusCode)
+    if (admitted.statusCode === 201) {
+      expect(findDeviceKeyByInstallId(installId)).not.toBeNull()
+      expect(authKeysContent()).toContain(`marveen-remote:${installId}`)
+    } else {
+      expect(String(admitted.json().error ?? '')).toMatch(/host key/i)
+    }
   })
 
   it('400s on a missing name or invalid key line without side effects', async () => {

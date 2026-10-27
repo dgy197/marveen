@@ -2,6 +2,7 @@ import { readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { logger } from './logger.js'
+import { isForwardRecipient, isGraphMessageId } from './graph-forward-validate.js'
 
 // Microsoft Graph mail for a single M365 mailbox (marveen@pecibt.hu), via the
 // app-only client-credentials flow. The app registration holds NO tenant-wide
@@ -189,6 +190,16 @@ async function getToken(): Promise<string> {
   return json.access_token
 }
 
+/**
+ * Mint (or reuse) the access token without calling Graph. The send and forward
+ * CLI paths call this BEFORE the send authorizer: a credential or token failure
+ * must surface while the approval is still unspent. The later POST reuses the
+ * cached token (no second token request).
+ */
+export async function ensureToken(): Promise<void> {
+  await getToken()
+}
+
 async function graphFetch(path: string, init?: RequestInit): Promise<Response> {
   const token = await getToken()
   return withTimeout((signal) =>
@@ -233,6 +244,22 @@ export async function listMessages(options: ListMessagesOptions = {}): Promise<G
   return json.value ?? []
 }
 
+/**
+ * The combined base64 size check, a pure local precondition. The CLI runs it
+ * BEFORE the send authorization (card efa58ad2, S1), so an oversized attachment
+ * is refused without spending an approval; sendMail keeps it as its own guard.
+ */
+export function assertAttachmentsWithinLimit(attachments: ReadonlyArray<{ contentBytes: string }>): void {
+  const total = attachments.reduce((n, a) => n + a.contentBytes.length, 0)
+  if (total > MAX_TOTAL_ATTACHMENT_BASE64_BYTES) {
+    throw new Error(
+      `graph-mail: attachments too large (${total} base64 bytes across ` +
+        `${attachments.length} file(s); limit ${MAX_TOTAL_ATTACHMENT_BASE64_BYTES}). ` +
+        'Send fewer or smaller files, or share a link instead.',
+    )
+  }
+}
+
 /** Send mail from the scoped mailbox via Graph /sendMail. */
 export async function sendMail(options: SendMailOptions): Promise<void> {
   const message: Record<string, unknown> = {
@@ -242,14 +269,7 @@ export async function sendMail(options: SendMailOptions): Promise<void> {
   }
   if (options.cc) message.ccRecipients = toRecipientList(options.cc)
   if (options.attachments?.length) {
-    const total = options.attachments.reduce((n, a) => n + a.contentBytes.length, 0)
-    if (total > MAX_TOTAL_ATTACHMENT_BASE64_BYTES) {
-      throw new Error(
-        `graph-mail: attachments too large (${total} base64 bytes across ` +
-          `${options.attachments.length} file(s); limit ${MAX_TOTAL_ATTACHMENT_BASE64_BYTES}). ` +
-          'Send fewer or smaller files, or share a link instead.',
-      )
-    }
+    assertAttachmentsWithinLimit(options.attachments)
     message.attachments = options.attachments.map((a) => ({
       '@odata.type': '#microsoft.graph.fileAttachment',
       name: a.name,
@@ -281,4 +301,131 @@ export async function verifyAccess(): Promise<{ mailbox: string; messageCount: n
   }
   const json = (await res.json()) as { value?: unknown[] }
   return { mailbox: creds.mailbox, messageCount: json.value?.length ?? 0 }
+}
+
+// --- forward (card graph-forward, Brainy 2958) -------------------------------
+
+/** A Graph call answered with a non-2xx status. Carries the status and Graph's short error code, never the body. */
+export class GraphRequestError extends Error {
+  constructor(
+    readonly operation: string,
+    readonly status: number,
+    readonly code: string,
+  ) {
+    super(`graph-mail: ${operation} failed (${status} ${code})`)
+    this.name = 'GraphRequestError'
+  }
+}
+
+/**
+ * The forward POST got no response (network error, timeout, abort). The
+ * request may or may not have reached Graph, so the letter may or may not be
+ * on its way. The caller must NOT retry: the operator checks Sent Items.
+ */
+export class ForwardOutcomeUnknownError extends Error {
+  constructor(cause: unknown) {
+    const name = cause instanceof Error ? cause.name : typeof cause
+    const code = (cause as { cause?: { code?: unknown } } | null)?.cause?.code
+    super(`graph-mail: forward request got no response (${name}${typeof code === 'string' ? ` ${code}` : ''})`)
+    this.name = 'ForwardOutcomeUnknownError'
+  }
+}
+
+/**
+ * Graph's short error code from a non-2xx response (`{"error":{"code":...}}`).
+ * Only a plain identifier is passed on: the body itself can carry request
+ * details, and an error line ends up in terminals, logs and agent transcripts.
+ */
+async function graphErrorCode(res: Response): Promise<string> {
+  try {
+    const code = (JSON.parse(await res.text()) as { error?: { code?: unknown } })?.error?.code
+    return typeof code === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? code : 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+/** Fields getMessage may $select: a fixed set, so the query string is never built from caller text. */
+export type MessageField = 'id' | 'subject' | 'from' | 'receivedDateTime' | 'hasAttachments'
+const MESSAGE_FIELDS: ReadonlySet<string> = new Set<MessageField>([
+  'id',
+  'subject',
+  'from',
+  'receivedDateTime',
+  'hasAttachments',
+])
+
+export interface GraphMessageDetail extends GraphMessage {
+  hasAttachments?: boolean
+}
+
+/**
+ * Read one message of the scoped mailbox by id (`GET .../messages/{id}?$select=...`).
+ * Read-only. The default selection (id, subject) is what the forward subject
+ * check needs; `show` asks for the sender, the time and the attachment flag too.
+ */
+export async function getMessage(
+  id: string,
+  fields: readonly MessageField[] = ['id', 'subject'],
+): Promise<GraphMessageDetail> {
+  if (!isGraphMessageId(id)) throw new Error('graph-mail: getMessage refused: not a Graph message id')
+  if (fields.length === 0 || !fields.every((f) => MESSAGE_FIELDS.has(f))) {
+    throw new Error('graph-mail: getMessage refused: unknown $select field')
+  }
+  const res = await graphFetch(`${mailboxPath()}/messages/${encodeURIComponent(id)}?$select=${fields.join(',')}`)
+  if (!res.ok) throw new GraphRequestError('getMessage', res.status, await graphErrorCode(res))
+  const json = (await res.json()) as unknown
+  if (!json || typeof json !== 'object') throw new Error('graph-mail: getMessage: unexpected response')
+  return json as GraphMessageDetail
+}
+
+export interface ForwardMailOptions {
+  /** Graph message id of the letter to forward (spec E2). */
+  id: string
+  /** Exactly one plain @fireeng.hu address (spec D1), passed to Graph unchanged. */
+  to: string
+  /** The text Graph puts above the quoted original. */
+  comment: string
+}
+
+/**
+ * Forward one message of the scoped mailbox via Graph
+ * `POST /users/{mailbox}/messages/{id}/forward`. Graph quotes the original and
+ * carries its attachments; the request body is exactly
+ * `{"comment":...,"toRecipients":[{"emailAddress":{"address":...}}]}`.
+ *
+ * The inputs are re-validated here (one @fireeng.hu recipient, id shape,
+ * non-blank comment), so a programmatic caller gets the same limits as the
+ * CLI. No retry anywhere: a non-2xx answer throws GraphRequestError, and a
+ * POST that got no answer at all throws ForwardOutcomeUnknownError. The token
+ * is minted BEFORE the POST, so a token failure is a plain error (nothing was
+ * sent) and only the forward request itself can end in "unknown".
+ */
+export async function forwardMail(options: ForwardMailOptions): Promise<void> {
+  const { id, to, comment } = options
+  if (!isGraphMessageId(id)) throw new Error('graph-mail: forwardMail refused: not a Graph message id')
+  if (!isForwardRecipient(to)) {
+    throw new Error('graph-mail: forwardMail refused: the recipient must be exactly one plain @fireeng.hu address')
+  }
+  if (typeof comment !== 'string' || comment.trim() === '') {
+    throw new Error('graph-mail: forwardMail refused: empty comment')
+  }
+  const url = `${GRAPH_BASE}${mailboxPath()}/messages/${encodeURIComponent(id)}/forward`
+  const body = JSON.stringify({ comment, toRecipients: [{ emailAddress: { address: to } }] })
+  const token = await getToken()
+  let res: Response
+  try {
+    res = await withTimeout((signal) =>
+      fetch(url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body,
+        signal,
+      }),
+    )
+  } catch (err) {
+    throw new ForwardOutcomeUnknownError(err)
+  }
+  if (!res.ok) throw new GraphRequestError('forward', res.status, await graphErrorCode(res))
+  logger.info({ to, messageId: `${id.slice(0, 16)}...` }, 'graph-mail: forwarded')
 }

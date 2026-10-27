@@ -12,6 +12,10 @@
 //                            channels.sh treats this as a hard error and aborts
 //                            so the main agent does NOT silently fall back to a
 //                            wrong backend.
+//   Exit 3, empty stdout  -- INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid and the
+//                            provider is Anthropic itself (fec6335f): the vault
+//                            key is never read, a guard event is written, and
+//                            channels.sh aborts the same way.
 //
 // Side effect: for x-api-key providers the API key is pre-stamped into the
 // config dir's .claude.json (stampCustomApiKeyApproval) so the "Detected a
@@ -33,7 +37,7 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
-import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, openSync, writeSync, closeSync, fchmodSync, constants as fsConstants } from 'node:fs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(__dirname, '..')
@@ -99,6 +103,82 @@ if (!baseUrl) {
 const model = (readAgentModel(MAIN_AGENT_ID) ?? '').trim()
 if (!model) {
   fatal(`no model configured for main agent with customProvider "${customProviderId}" -- set a model via the dashboard`)
+}
+
+// fec6335f (I-01/I-03 for the main agent): under INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid
+// a customProvider that IS Anthropic (a *.anthropic.com baseUrl, the shared Team key
+// as vaultKey, or a baseUrl the guard cannot read) would put the main agent's
+// interactive session on an API key. Refused BEFORE the vault key is read or parked
+// in a launch-secret file: nothing on stdout, exit 3, and channels.sh does not start
+// the main agent. A provider that is not Anthropic, and every install under allow,
+// pass straight through: the output below is unchanged.
+//
+// The guard module is imported here, after the no-provider exit, and on its own:
+// folding it into the guarded block above would turn a dist that predates it into
+// the "standard backend" fallback for EVERY custom-provider install. When it is
+// missing, the policy is read through dist/env.js with the module's own rule
+// (absent, empty, `allow` = allow; anything else = forbid): allow carries on as
+// before, forbid aborts loudly (a first-party check that cannot run must not pass).
+//
+// No logger here: the module's recordGuardEvent logs through pino, whose line on
+// fd 1 would land in this script's stdout contract. The event line is written
+// directly, in the same format and file.
+const KEY_GUARD_REFUSED_EXIT = 3
+let keyGuard = null
+try {
+  keyGuard = await import(join(projectRoot, 'dist', 'web', 'interactive-key-guard.js'))
+} catch {
+  keyGuard = null
+}
+if (!keyGuard || typeof keyGuard.isAnthropicFirstParty !== 'function') {
+  let policy = 'forbid'
+  try {
+    const { readEnvFile } = await import(join(projectRoot, 'dist', 'env.js'))
+    const v = String(readEnvFile(['INTERACTIVE_ANTHROPIC_KEY_POLICY']).INTERACTIVE_ANTHROPIC_KEY_POLICY ?? '').trim()
+    policy = v === '' || v === 'allow' ? 'allow' : 'forbid'
+  } catch {
+    policy = 'forbid'
+  }
+  if (policy === 'forbid') {
+    fatal('dist older than this helper (no interactive-key-guard module) and INTERACTIVE_ANTHROPIC_KEY_POLICY is not allow -- run `npm run build`')
+  }
+} else if (
+  keyGuard.readInteractiveKeyPolicy() === 'forbid' &&
+  keyGuard.isAnthropicFirstParty({ isCustom: true, customProviderDef: def, model })
+) {
+  const names = keyGuard.refusalNames('first-party-custom-provider')
+  // IKG_GUARD_EVENT_QUIET=1: channels.sh holds this same refusal (its marker,
+  // inputs unchanged, inside the hold) -- the decision still runs, the repeat
+  // event is left out (one event per hold, not one per launchd round).
+  if (process.env.IKG_GUARD_EVENT_QUIET !== '1') {
+    let fd = null
+    try {
+      const eventsPath = keyGuard.guardEventsPath()
+      mkdirSync(dirname(eventsPath), { recursive: true })
+      // O_NOFOLLOW: a symlink planted at the event path is not written through.
+      fd = openSync(eventsPath, fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW, 0o600)
+      fchmodSync(fd, 0o600)
+      writeSync(
+        fd,
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          source: 'main-launch-guard',
+          where: `main-agent-custom-provider:${customProviderId}`,
+          names,
+          agent: MAIN_AGENT_ID,
+        }) + '\n',
+      )
+    } catch (e) {
+      process.stderr.write(`main-agent-custom-provider: guard event not written (${e.code ?? e.message})\n`)
+    } finally {
+      if (fd !== null) closeSync(fd)
+    }
+  }
+  process.stderr.write(
+    `main-agent-custom-provider: provider "${customProviderId}" is Anthropic itself and ` +
+      'INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid -- the main agent does not start on an API key (exit 3)\n',
+  )
+  process.exit(KEY_GUARD_REFUSED_EXIT)
 }
 
 // Resolve auth credential from the vault.

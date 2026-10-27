@@ -1,7 +1,8 @@
 import { statSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, WEB_PORT } from '../config.js'
+import { episodeHandoffStep } from '../episode-block.js'
 import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS, markAgentRestartPending } from './channel-monitor.js'
 import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
 import { listAgentNames, listAllAgentNames, agentDir, readAgentModel, readAgentRemoteHost, readAgentWorksourceChannel } from './agent-config.js'
@@ -400,11 +401,16 @@ export function resumePrompt(
     // The main agent's channel is the OWNER's channel (Telegram), and session
     // meta must never go there (standing owner preference; a 3am status
     // notice measured on 2026-08-05, review msg 14197). Sub-agents' channel
-    // is the inter-agent queue, where the notice belongs. This prompt is the
-    // fresh session's ONLY rule set, so the split must live here.
+    // is the inter-agent queue. Owner request 2026-10-21: sub-agents with their
+    // own bot have the owner's Telegram as channel, so NO agent notifies a
+    // channel about the fresh context; only a faulty handoff is reported, to
+    // the main agent via the queue. This prompt is the fresh session's ONLY
+    // rule set, so the rule must live here.
     (name === MAIN_AGENT_ID
-      ? `Zárásul egyetlen transzkript-sorban rögzítsd, hogy friss kontextussal folytatod -- a csatornádra (a gazda Telegramjára) session-meta NEM mehet ki.`
-      : `Röviden jelezz a csatornádon, hogy friss kontextussal folytatod.`)
+      ? `Zárásul egyetlen transzkript-sorban rögzítsd, hogy friss kontextussal folytatod -- a csatornádra (a gazda Telegramjára) session-meta NEM mehet ki. ` +
+        `Ha az átadás hibás volt (nincs HANDOFF, olvashatatlan, vagy elveszett egy kérés), azt is ebben a transzkript-sorban rögzítsd, a gazdának ne küldj üzenetet.`
+      : `A friss kontextusról a csatornádra (Telegram) NE küldj üzenetet. ` +
+        `Csak ha az átadás hibás volt (nincs HANDOFF, olvashatatlan, vagy elveszett egy kérés), azt jelezd inter-agent üzenetben a fő ügynöknek (${MAIN_AGENT_ID}), a gazdának ne.`)
   )
 }
 
@@ -951,7 +957,9 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         await sendSystemDirective(
           name,
           session,
-          promptReason.startsWith(STALE_REFRESH_REASON_PREFIX)
+          // 3e9f6c28 c): the six-field episode step rides on every handoff
+          // request (appended text only; the base prompts are unchanged).
+          (promptReason.startsWith(STALE_REFRESH_REASON_PREFIX)
             // The handoff exists but went stale while we waited for an idle
             // pane; ask for a refresh, not a first write.
             ? staleRefreshHandoffPrompt(((sm) => typeof sm === 'number' ? sm : 0)(handoffStaleMinutes(inputs)), handoffPathFor(name))
@@ -965,7 +973,13 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
                 // agent, so the percentage prompt would announce "~0% --
                 // critical" at 04:00 to a session that is perfectly healthy.
                 ? dailyHandoffPrompt(cfg.dailyHandoffTime ?? '', handoffPathFor(name))
-                : handoffPrompt(pctRound ?? 0, handoffPathFor(name)),
+                : handoffPrompt(pctRound ?? 0, handoffPathFor(name)))
+          + episodeHandoffStep({
+            webPort: WEB_PORT,
+            projectRoot: PROJECT_ROOT,
+            agentName: name,
+            refresh: promptReason.startsWith(STALE_REFRESH_REASON_PREFIX),
+          }),
         )
         break
       case 'restart': {

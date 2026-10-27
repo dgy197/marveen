@@ -1,4 +1,6 @@
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync, renameSync } from 'node:fs'
+import { MAIN_CHANNEL_ADMIN_ENV, isMainChannelAdminEnabled, mainChannelWriteAction } from '../main-channel-admin.js'
+import { callerLabel } from '../admin-switch.js'
 import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
 import { execFile } from 'node:child_process'
@@ -6,7 +8,7 @@ import { promisify } from 'node:util'
 import { logger } from '../../logger.js'
 import { beginRestart, endRestart } from '../restart-lock.js'
 import { restartOptsFromBody } from '../restart-wake.js'
-import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
+import { isModelProfileId, MODEL_PROFILE_IDS, resolveAgentModelFromConfig, type AgentModelConfig } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT, RESERVED_AGENT_IDS } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
   getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards } from '../../db.js'
@@ -22,8 +24,9 @@ import { launchableInstallDefault } from '../default-model-guard.js'
 import { claudeSupportForCli, isModelUnsupportedByCli, CLAUDE_MODEL_MIN_CLI } from '../../claude-cli-support.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
-import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
-import { listCustomProviders } from '../custom-providers.js'
+import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual, resolveOpenRouterModel } from '../openrouter-models.js'
+import { listCustomProviders, loadCustomProvider } from '../custom-providers.js'
+import { interactiveKeyPolicy, decideInteractiveLaunch, type InteractiveRefusal } from '../interactive-key-guard.js'
 import {
   agentDir,
   agentConfigRoot,
@@ -31,6 +34,7 @@ import {
   extractDescriptionFromClaudeMd,
   findAvatarForAgent,
   resolveModelId,
+  DEFAULT_MODEL,
   readAgentModel,
   resolveAgentModelDetailed,
   readModelProfileMap,
@@ -252,6 +256,59 @@ export const PERSONALITY_PENDING_SENTINEL = '.personality-pending'
 // "Ujrageneralasig ez marad ervenyben", but nothing reads
 // PERSONALITY_PENDING_SENTINEL, so there is no regeneration to wait for. It
 // points at editing, which is what actually exists.
+// fec6335f (I-02). The fields of an agent write that decide whether its
+// launch would run on an API key.
+type AgentKeyRouteChange = {
+  model?: unknown; modelProfile?: unknown; customProvider?: unknown; authMode?: unknown; apiKey?: unknown
+}
+const AUTH_MODES: readonly string[] = ['shared', 'own_team', 'api']
+
+/**
+ * Under INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid: would this change leave a
+ * first-party Claude agent on an API key? Judged on the configuration AFTER the
+ * change (the stored agent-config.json with the request's fields applied the
+ * way the writers apply them, the model resolved the way the launcher resolves
+ * it), so a model or provider switch onto an existing api-mode agent is caught
+ * as well as an authMode write. Returns the 422 body, or null. Under allow, and
+ * for a request that touches none of these fields, it reads nothing.
+ */
+export function interactiveKeyRefusalForAgentChange(name: string, data: AgentKeyRouteChange): { error: string; reason: InteractiveRefusal } | null {
+  const policy = interactiveKeyPolicy()
+  if (policy !== 'forbid') return null
+  const touches = data.model !== undefined || data.modelProfile !== undefined || data.customProvider !== undefined
+    || data.authMode !== undefined || data.apiKey !== undefined
+  if (!touches) return null
+  let current: Record<string, unknown> = {}
+  try {
+    const parsed = JSON.parse(readFileOr(join(agentDir(name), 'agent-config.json'), '{}')) as unknown
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) current = parsed as Record<string, unknown>
+  } catch { /* the readers treat a garbled file as defaults; so does this */ }
+  const next: Record<string, unknown> = { ...current }
+  if (data.model !== undefined) next.model = data.model
+  if (data.modelProfile !== undefined) {
+    if (data.modelProfile === '' || data.modelProfile === null) delete next.modelProfile
+    else next.modelProfile = data.modelProfile
+  }
+  if (data.customProvider !== undefined) next.customProvider = data.customProvider || null
+  // writeAgentAuthMode ignores an unknown mode, so the stored one stays in force.
+  const authMode = (typeof data.authMode === 'string' && AUTH_MODES.includes(data.authMode)
+    ? data.authMode : readAgentAuthMode(name)) as AuthMode
+  const customId = typeof next.customProvider === 'string' && next.customProvider.trim() ? next.customProvider.trim() : null
+  const rawModel = resolveAgentModelFromConfig(next as AgentModelConfig, readModelProfileMap(), DEFAULT_MODEL, resolveModelId).model
+  const decision = decideInteractiveLaunch({
+    policy,
+    isCustom: customId !== null,
+    customProviderDef: customId ? loadCustomProvider(customId) : null,
+    model: customId !== null ? rawModel : resolveOpenRouterModel(rawModel),
+    authMode,
+  })
+  if (decision.ok) return null
+  return {
+    reason: decision.reason,
+    error: `INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid: this change would run a first-party Claude agent on an API key (${decision.reason}). Nothing was written.`,
+  }
+}
+
 function fallbackClaudeMd(name: string, description: string, model: string): string {
   return `# ${name}
 
@@ -748,6 +805,19 @@ export async function refuseIfCliCannotLaunch(model: string): Promise<Record<str
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
+  // Card 053f4e66: writes to the MAIN agent's channel state (access.json,
+  // pairing, invites, channel .env) are off unless .env has
+  // MAIN_CHANNEL_ADMIN_ENABLED=1. Checked before any handler reads the body.
+  const mainChannelAction = mainChannelWriteAction(path, method, MAIN_AGENT_ID)
+  if (mainChannelAction && !isMainChannelAdminEnabled()) {
+    logger.warn(
+      { caller: callerLabel(req), at: new Date().toISOString(), action: mainChannelAction },
+      'Main-agent channel admin refused: disabled on this install',
+    )
+    json(res, { error: `A fő ügynök csatornáinak módosítása ki van kapcsolva ezen a telepítésen (${MAIN_CHANNEL_ADMIN_ENV}).` }, 403)
+    return true
+  }
+
   // Lists every model the dashboard is willing to serve up to an agent.
   // Claude IDs are static. DeepSeek is gated behind a vault secret because
   // the agent-process launcher reads the key from there at start time --
@@ -1141,6 +1211,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // probe, so a CLI upgraded a minute ago is not refused on a stale cache.
     const cliGate = await refuseIfCliCannotLaunch(model)
     if (cliGate) { json(res, cliGate, 422); return true }
+    // fec6335f (I-02): the create path writes no authMode, so an api-mode
+    // request would silently become a shared one; under forbid it is refused
+    // up front instead, judged on the model this request would create.
+    if (data.authMode !== undefined || data.apiKey !== undefined) {
+      const keyRefusal = interactiveKeyRefusalForAgentChange(name, { model, authMode: data.authMode, apiKey: data.apiKey })
+      if (keyRefusal) { json(res, keyRefusal, 422); return true }
+    }
     if (!description) { json(res, { error: 'Description is required' }, 400); return true }
     // The main agent lives in PROJECT_ROOT, not under agents/, so the existsSync
     // below never sees it: without this, a sub-agent named like the main one
@@ -2636,6 +2713,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const fieldCheck = checkAgentPutFields(name, data)
     if (!fieldCheck.ok) {
       json(res, { error: fieldCheck.message, rejected: fieldCheck.rejected, writable: AGENT_PUT_WRITABLE_FIELDS }, 400)
+      return true
+    }
+
+    // fec6335f (I-02): refused as a whole, before ANY write below -- config,
+    // Vault, memoryIsolation, CLAUDE.md alike. A no-op under allow.
+    const keyRefusal = interactiveKeyRefusalForAgentChange(name, data)
+    if (keyRefusal) {
+      logger.warn({ name, reason: keyRefusal.reason }, 'interactive-key-guard: agent change refused (422)')
+      json(res, keyRefusal, 422)
       return true
     }
 

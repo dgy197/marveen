@@ -22,6 +22,12 @@
 // authorized_keys options at auth time); the Bridge reconnects after a
 // successful PUT. Narrowing therefore also requires the Bridge-side
 // reconnect -- stated in the response so the caller cannot miss it.
+//
+// Card 053f4e66 B (Brainy 2097): a PUT widens what an existing Bridge key
+// reaches, so the shared bearer token (auth kind 'token') reaches it only
+// through the bearer-credential-admin switch (credential-admin.ts), decided
+// before the body is read. A logged-in session and the Bridge's own bound
+// device key work as before; the GET is a read and is not gated.
 
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
@@ -31,6 +37,7 @@ import { WEB_PORT } from '../../config.js'
 import { validateBridgeServicePorts, extractServicePorts, COMMENT_PREFIX, ACCEPTED_KEY_TYPE } from '../../remote-enroll-core.js'
 import { updateEnrolledServicePorts } from '../../remote-enroll-fs.js'
 import { getDeviceKey } from '../auth-device-keys.js'
+import { admitBearerCredentialAdmin } from '../credential-admin.js'
 import { sshDirOverride, resolveSshDir as resolveSshDirShared, isSshDirGuardError } from '../../ssh-dir.js'
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
@@ -161,6 +168,7 @@ export async function tryHandleBridgeServicePorts(ctx: RouteContext): Promise<bo
   }
 
   if (method !== 'PUT') return false
+  if (auth?.kind === 'token' && !admitBearerCredentialAdmin(ctx, 'bridge.service_ports.update')) return true
 
   let body: Record<string, unknown>
   try {

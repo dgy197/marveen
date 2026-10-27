@@ -46,6 +46,22 @@ describe('findDuplicateJsonKeys (detector)', () => {
     expect(findDuplicateJsonKeys(raw)).toEqual([])
   })
 
+  it('compares keys DECODED: a \\u-escape or an escape sequence is the same key (BE-2 p1)', () => {
+    expect(findDuplicateJsonKeys('{"in": 500000, "\\u0069n": 1}')).toEqual(['in'])
+    expect(findDuplicateJsonKeys('{"\\u0049N": 1, "IN": 2}')).toEqual(['IN'])
+    expect(findDuplicateJsonKeys('{"a\\nb": 1, "a\\u000ab": 2}')).toEqual(['a\nb'])
+    expect(findDuplicateJsonKeys('{"\\"": 1, "\\u0022": 2}')).toEqual(['"'])
+    expect(findDuplicateJsonKeys('{"a\\/b": 1, "a/b": 2}')).toEqual(['a/b'])
+    expect(findDuplicateJsonKeys('{"\\ud83d\\ude00": 1, "\u{1F600}": 2}')).toEqual(['\u{1F600}'])
+    // and JSON.parse agrees: the escaped key overwrote the first one
+    expect(JSON.parse('{"in": 500000, "\\u0069n": 1}')).toEqual({ in: 1 })
+  })
+
+  it('does not merge keys that only LOOK alike once escapes are decoded', () => {
+    expect(findDuplicateJsonKeys('{"u0069n": 1, "in": 2}')).toEqual([])
+    expect(findDuplicateJsonKeys('{"\\\\u0069n": 1, "\\u0069n": 2}')).toEqual([])
+  })
+
   it('handles top-level duplicates and nested duplicates together', () => {
     const raw = `{"env": {}, "env": {}, "hooks": {"Stop": [], "Stop": []}}`
     expect(findDuplicateJsonKeys(raw)).toEqual(['env', 'hooks.Stop'])

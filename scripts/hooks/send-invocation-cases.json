@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared recognition contract of the two mail gates (scripts/hooks/outgoing-copy-gate.py :: is_send_invocation and scripts/email-send-gate.mjs :: isSendInvocation). The conformance test (send-invocation-conformance.test.ts) runs EVERY case through BOTH implementations and asserts both equal `expected` -- divergence between the two copies surfaces as a test failure, not an incident (SUBGATEPOZ822, msg 14289). Unparseable-input fallbacks are deliberately NOT here: the two gates fall back differently by design (copy-gate: strong literals; hard-gate: full legacy patterns) and each pins its own in its scope test. A [marveen:...] prefixu esetek Marveen fuggetlen review-probai (store/marveen-send-gate-cases.json, msg 14302) -- a 'hatar' jeloles tortenete: az ot naiv exec-alak 2026-08-22 delutan LEZARULT (expected true), a megmaradt dokumentalt korlat az elfedett/futasidoben osszerakott kod; egy kesobbi valtozasnak itt teszt-hibakent kell jelentkeznie MINDKET iranyban, a nema atbillenes a tiltott allapot. INTERAGENTHOMOGLIF923 (2026-09-23): the inter-agent `curl .../api/messages` cases STAY expected:false here -- they are NOT email sends, and NONE of the email copy rules (accents, name rule, em dash) run on them. What changed is OUTSIDE this contract: the copy gate runs a SEPARATE, homoglyph-only check on that path (outgoing-copy-gate.py :: inter_agent_homoglyph_gate), blocking on a mixed-script word and passing an uninterpretable body with a loud warning. A reader must not take the expected:false rows as 'the path is unguarded', nor that change as 'the full copy gate now runs there'.",
+  "_comment": "Shared recognition contract of the two mail gates (scripts/hooks/outgoing-copy-gate.py :: is_send_invocation and scripts/email-send-gate.mjs :: isSendInvocation). The conformance test (send-invocation-conformance.test.ts) runs EVERY case through BOTH implementations and asserts both equal `expected` -- divergence between the two copies surfaces as a test failure, not an incident (SUBGATEPOZ822, msg 14289). Unparseable-input fallbacks are deliberately NOT here: the two gates fall back differently by design (copy-gate: strong literals; hard-gate: full legacy patterns) and each pins its own in its scope test. A [marveen:...] prefixu esetek Marveen fuggetlen review-probai (store/marveen-send-gate-cases.json, msg 14302) -- a 'hatar' jeloles tortenete: az ot naiv exec-alak 2026-08-22 delutan LEZARULT (expected true), a megmaradt dokumentalt korlat az elfedett/futasidoben osszerakott kod; egy kesobbi valtozasnak itt teszt-hibakent kell jelentkeznie MINDKET iranyban, a nema atbillenes a tiltott allapot. INTERAGENTHOMOGLIF923 (2026-09-23): the inter-agent `curl .../api/messages` cases STAY expected:false here -- they are NOT email sends, and NONE of the email copy rules (accents, name rule, em dash) run on them. What changed is OUTSIDE this contract: the copy gate runs a SEPARATE, homoglyph-only check on that path (outgoing-copy-gate.py :: inter_agent_homoglyph_gate), blocking on a mixed-script word and passing an uninterpretable body with a loud warning. A reader must not take the expected:false rows as 'the path is unguarded', nor that change as 'the full copy gate now runs there'. graph-forward (Brainy 2958, N1): the Graph CLI (graph-mail.ts) is classified by an ALLOWLIST of its subcommand -- verify, list and show are reads, every other word after the CLI file name (forward, send, FORWARD, `--`, a flag, a variable, none) is a send, where the file runs as a program or behind a node-like or package runner; forwardMail joins sendMail in the code-string rules. On an unparseable command BOTH twins now fall back to the same graph-mail literal (any mention counts), so the T3 cases (`echo $'it\\'s'; ... graph-mail.ts send`) are in this shared list despite the fallback note above. QUOTEPARITY1018: both tokenizers read ANSI-C `$'...'`, `$\"...\"`, line continuations and `#` comments the way the shell does, and the send classifier reads every command twice, with and without comments (a send in either reading counts); the QUOTEPARITY1018 rows were checked against real bash and zsh with stubbed senders (the two rows marked as stricter than the shell are deliberate).",
   "known_agents_comment": "FLEETTOFLAG1025 v4: the agent names the conformance test hands BOTH twins (KNOWN_AGENTS_OVERRIDE / setKnownAgentsOverride) instead of the install's agents/ + MAIN_AGENT_ID",
   "known_agents": [
     "merlin",
@@ -1767,6 +1767,511 @@
     {
       "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor minor 3; Codex 03d059dca749) control: a longer flag starting with --c (--content) is no abbreviation: not a send",
       "cmd": "$PY $S/x.py --to neo --content hello",
+      "expected": false
+    },
+    {
+      "name": "graph-forward A1: npx tsx CLI forward",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: tsx CLI forward without npx",
+      "cmd": "tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: the CLI file run directly (shebang)",
+      "cmd": "./scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: node on the .js build",
+      "cmd": "node scripts/graph-mail.js forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: absolute path to the CLI",
+      "cmd": "npx tsx /Volumes/8T/x/scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: CLI name without an extension",
+      "cmd": "npx tsx scripts/graph-mail forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: runner flag before the script",
+      "cmd": "npx tsx --no-warnings scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: deno run on the CLI",
+      "cmd": "deno run -A scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: bun on the CLI",
+      "cmd": "bun scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: npm exec runs the CLI",
+      "cmd": "npm exec -- tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: pnpm runs the CLI",
+      "cmd": "pnpm tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: no subcommand at all",
+      "cmd": "npx tsx scripts/graph-mail.ts",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: -- before the subcommand",
+      "cmd": "npx tsx scripts/graph-mail.ts -- forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: upper-case FORWARD",
+      "cmd": "npx tsx scripts/graph-mail.ts FORWARD --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: upper-case LIST is not the allowlisted word",
+      "cmd": "npx tsx scripts/graph-mail.ts LIST",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: unknown subcommand",
+      "cmd": "npx tsx scripts/graph-mail.ts reply --id X --to a@fireeng.hu",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: a flag where the subcommand stands",
+      "cmd": "npx tsx scripts/graph-mail.ts --top 5 list",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: subcommand from a command substitution",
+      "cmd": "npx tsx scripts/graph-mail.ts $(echo forward) --id X",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: subcommand from a variable",
+      "cmd": "npx tsx scripts/graph-mail.ts \"$SUB\" --id X",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: xargs supplies the subcommand",
+      "cmd": "echo forward | xargs npx tsx scripts/graph-mail.ts",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: bash -c wrapper",
+      "cmd": "bash -c 'npx tsx scripts/graph-mail.ts forward --id X --to a@fireeng.hu --comment Szia'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: env assignment wrapper",
+      "cmd": "env X=1 npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: leading assignment",
+      "cmd": "X=1 npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: sudo wrapper",
+      "cmd": "sudo npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: timeout wrapper",
+      "cmd": "timeout 30 npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: if/then keyword position",
+      "cmd": "if true; then npx tsx scripts/graph-mail.ts forward --id X --to a@fireeng.hu; fi",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: subshell",
+      "cmd": "(npx tsx scripts/graph-mail.ts forward --id X --to a@fireeng.hu)",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: after cd &&",
+      "cmd": "cd /tmp && npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: after a list on the same line",
+      "cmd": "npx tsx scripts/graph-mail.ts list; npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: a heredoc fed to bash runs the forward",
+      "cmd": "bash <<'EOF'\nnpx tsx scripts/graph-mail.ts forward --id X --to a@fireeng.hu --comment 'Szia'\nEOF",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: a heredoc written to a file, then run by bash",
+      "cmd": "cat > /tmp/s/f.sh <<'EOF'\nnpx tsx scripts/graph-mail.ts forward --id X --to a@fireeng.hu\nEOF\nbash /tmp/s/f.sh",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A1: a heredoc piped to bash",
+      "cmd": "cat <<'EOF' | bash\nnpx tsx scripts/graph-mail.ts forward --id X --to a@fireeng.hu\nEOF",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A4: node -e calls forwardMail(",
+      "cmd": "node -e \"require('./src/graph-mail.js').forwardMail({id:'X',to:'a@fireeng.hu',comment:'Szia'})\"",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A4: forwardMail renamed on import",
+      "cmd": "npx tsx -e \"import { forwardMail as f } from './src/graph-mail.ts'; await f({id:'X'})\"",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A4: forwardMail reached by a string key",
+      "cmd": "npx tsx -e \"const m = await import('./src/graph-mail.ts'); await m['forwardMail']({id:'X'})\"",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A4: forwardMail rename in a heredoc fed to tsx",
+      "cmd": "npx tsx - <<'TS'\nimport { forwardMail as f } from './src/graph-mail.ts'\nawait f({ id: 'X' })\nTS",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A4: forwardMail written to a file, then run",
+      "cmd": "cat > /tmp/s/x.ts <<'EOF'\nimport { forwardMail as f } from './src/graph-mail.ts'\nEOF\nnpx tsx /tmp/s/x.ts",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A4: python -c calling a forwardMail( function",
+      "cmd": "python3 -c \"forwardMail(1)\"",
+      "expected": true
+    },
+    {
+      "name": "graph-forward T3: ANSI-C quote before a CLI send (shlex fails, bash runs the send)",
+      "cmd": "echo $'it\\'s'; npx tsx scripts/graph-mail.ts send --to a@b.hu --subject X --body Y",
+      "expected": true
+    },
+    {
+      "name": "graph-forward T3: ANSI-C quote before a CLI forward",
+      "cmd": "echo $'it\\'s'; npx tsx scripts/graph-mail.ts forward --id X --to a@fireeng.hu --comment Szia",
+      "expected": true
+    },
+    {
+      "name": "graph-forward T3: unbalanced quote after a CLI forward",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id X --to a@fireeng.hu --comment \"Szia",
+      "expected": true
+    },
+    {
+      "name": "QUOTEPARITY1018: a comment line before the forward",
+      "cmd": "# tovabbitas Andinak\nnpx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "QUOTEPARITY1018: a comment line before a plain mailer",
+      "cmd": "# note\nsendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "QUOTEPARITY1018: apostrophes in two comments around a forward are comment text, not quotes",
+      "cmd": "# Andi's level\nnpx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'\n# that's it",
+      "expected": true
+    },
+    {
+      "name": "QUOTEPARITY1018: a mid-word # is not a comment",
+      "cmd": "echo a#b; npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "QUOTEPARITY1018: a comment ends at its newline even after a backslash",
+      "cmd": "# note \\\nsendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "QUOTEPARITY1018: no-comment reading (a shell that does not take # as a comment runs the mailer)",
+      "cmd": "echo hi # ; sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "QUOTEPARITY1018: ANSI-C escaped quote, re-synced by a later escaped quote",
+      "cmd": "echo $'a\\'b' ; sendmail a@b.hu ; echo \\'",
+      "expected": true
+    },
+    {
+      "name": "QUOTEPARITY1018: ANSI-C escaped quote, re-synced, before a CLI forward",
+      "cmd": "echo $'a\\'b' ; npx tsx scripts/graph-mail.ts forward --id X --to a@fireeng.hu ; echo \\'",
+      "expected": true
+    },
+    {
+      "name": "QUOTEPARITY1018: the $ of $\"...\" is dropped by the shell, so it names the program",
+      "cmd": "$\"sendmail\" a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "QUOTEPARITY1018: a line continuation before the mailer",
+      "cmd": "cd /tmp && \\\nsendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "QUOTEPARITY1018: a multi-line list with a line continuation stays a read",
+      "cmd": "npx tsx scripts/graph-mail.ts \\\n  list --top 3",
+      "expected": false
+    },
+    {
+      "name": "QUOTEPARITY1018: a comment that mentions a forward, then a list, stays a read",
+      "cmd": "# npx tsx scripts/graph-mail.ts forward --id X\nnpx tsx scripts/graph-mail.ts list",
+      "expected": false
+    },
+    {
+      "name": "graph-forward A2: list stays a read",
+      "cmd": "npx tsx scripts/graph-mail.ts list --top 3",
+      "expected": false
+    },
+    {
+      "name": "graph-forward A2: verify stays a read",
+      "cmd": "tsx scripts/graph-mail.ts verify",
+      "expected": false
+    },
+    {
+      "name": "graph-forward A2: show is a read",
+      "cmd": "npx tsx scripts/graph-mail.ts show --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "expected": false
+    },
+    {
+      "name": "graph-forward A2: list via node on the .js build",
+      "cmd": "node scripts/graph-mail.js list --unread",
+      "expected": false
+    },
+    {
+      "name": "graph-forward A2: cat of the CLI",
+      "cmd": "cat scripts/graph-mail.ts",
+      "expected": false
+    },
+    {
+      "name": "graph-forward A2: sed -n of the CLI",
+      "cmd": "sed -n 1,5p scripts/graph-mail.ts",
+      "expected": false
+    },
+    {
+      "name": "graph-forward A2: git diff of the CLI",
+      "cmd": "git diff scripts/graph-mail.ts src/graph-mail.ts",
+      "expected": false
+    },
+    {
+      "name": "graph-forward A2: grep for forwardMail in the sources",
+      "cmd": "grep -n forwardMail scripts/graph-mail.ts src/graph-mail.ts",
+      "expected": false
+    },
+    {
+      "name": "graph-forward A2: echo of a forward command line",
+      "cmd": "echo \"npx tsx scripts/graph-mail.ts forward --id X\"",
+      "expected": false
+    },
+    {
+      "name": "graph-forward A2: a list, then an echo of the word forward",
+      "cmd": "npx tsx scripts/graph-mail.ts list; echo forward",
+      "expected": false
+    },
+    {
+      "name": "graph-forward A2: inter-agent curl whose payload quotes a forward",
+      "cmd": "curl -s -X POST http://localhost:3420/api/messages -H \"Content-Type: application/json\" -d '{\"from\":\"brainy\",\"to\":\"ezermester\",\"content\":\"npx tsx scripts/graph-mail.ts forward --id X --to a@fireeng.hu\"}'",
+      "expected": false
+    },
+    {
+      "name": "graph-forward A2: inter-agent heredoc payload quoting a forward",
+      "cmd": "curl -s -X POST http://localhost:3420/api/messages --data-binary @- <<'JSON'\n{\"from\":\"brainy\",\"to\":\"ezermester\",\"content\":\"npx tsx scripts/graph-mail.ts forward --id X\"}\nJSON",
+      "expected": false
+    },
+    {
+      "name": "graph-forward A2: a heredoc that only writes a forward line to notes",
+      "cmd": "cat > /tmp/notes.md <<'EOF'\nnpx tsx scripts/graph-mail.ts forward --id X\nEOF",
+      "expected": false
+    },
+    {
+      "name": "graph-forward A2: node -e reading a message (no forwardMail)",
+      "cmd": "npx tsx -e \"import { getMessage } from './src/graph-mail.ts'; console.log(await getMessage('X'))\"",
+      "expected": false
+    },
+    {
+      "name": "graph-forward A3: unbalanced quote after a CLI send (the python fallback had no graph-mail)",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@b.hu --subject X --body \"Y",
+      "expected": true
+    },
+    {
+      "name": "graph-forward A3: accepted false positive, fail-closed: a list behind an unbalanced quote",
+      "cmd": "npx tsx scripts/graph-mail.ts list --top \"3",
+      "expected": true
+    },
+    {
+      "name": "graph-forward KA6: canonical --comment-file",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file /Users/gyorgydecsi/marveen/store/mail-outbox/20261018-2200-kovacs.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward KA6: reordered flags",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --orig-subject 'Targy' --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --comment-file /Users/gyorgydecsi/marveen/store/mail-outbox/20261018-2200-kovacs.txt --to kovacs@fireeng.hu --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "expected": true
+    },
+    {
+      "name": "graph-forward KA6: quoted path",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file '/Users/gyorgydecsi/marveen/store/mail-outbox/20261018-2200-kovacs.txt' --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward KA6: bash -c wrapper",
+      "cmd": "bash -c 'npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file /Users/gyorgydecsi/marveen/store/mail-outbox/20261018-2200-kovacs.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward KA6: env X=1 prefix",
+      "cmd": "env X=1 npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file /Users/gyorgydecsi/marveen/store/mail-outbox/20261018-2200-kovacs.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward KA6: command substitution in place of the hash",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file /Users/gyorgydecsi/marveen/store/mail-outbox/20261018-2200-kovacs.txt --comment-sha256 $(shasum -a 256 /Users/gyorgydecsi/marveen/store/mail-outbox/20261018-2200-kovacs.txt | cut -c1-64) --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: brace expansion of the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts fo{r,r}ward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: brace list that starts with the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts {forward,send} --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: verb in a variable",
+      "cmd": "V=forward; npx tsx scripts/graph-mail.ts $V --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: verb in a double-quoted variable",
+      "cmd": "V=forward; npx tsx scripts/graph-mail.ts \"$V\" --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: verb in a braced variable",
+      "cmd": "V=forward; npx tsx scripts/graph-mail.ts ${V} --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: verb from a command substitution",
+      "cmd": "npx tsx scripts/graph-mail.ts $(echo forward) --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: verb from a backtick substitution",
+      "cmd": "npx tsx scripts/graph-mail.ts `echo forward` --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: ANSI-C hex escape in the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts $'\\x66orward' --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: ANSI-C octal escape in the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts $'\\146orward' --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: glob star in the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts fo*ward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: glob question mark in the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts fo?ward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: glob bracket in the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts fo[r]ward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: redirect before the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts >/dev/null forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: unclosed double quote inside the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts fo\"rward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: unclosed single quote inside the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts fo'rward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment \"Szia!\" --orig-subject \"Targy\"",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: unparsable ANSI-C quote earlier, brace verb later",
+      "cmd": "echo $'it\\'s'; npx tsx scripts/graph-mail.ts fo{r,r}ward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: unparsable ANSI-C quote earlier, a decoy send word later, brace verb",
+      "cmd": "echo $'it\\'s'; npx tsx scripts/graph-mail.ts fo{r,r}ward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'send' --orig-subject 'Targy'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: a quoted send is not a literal verb (stricter than the shell, deliberate)",
+      "cmd": "npx tsx scripts/graph-mail.ts 'send' --to kovacs@fireeng.hu --subject 'Re' --body 'Szia!'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: brace verb inside bash -c",
+      "cmd": "bash -c \"npx tsx scripts/graph-mail.ts fo{r,r}ward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment Szia\"",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1: brace verb in a heredoc fed to bash",
+      "cmd": "bash <<'EOF'\nnpx tsx scripts/graph-mail.ts fo{r,r}ward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment Szia\nEOF",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GR2: a plain send, single-quoted body that quotes the forward command",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to kovacs@fireeng.hu --subject 'Re' --body 'futtasd: npx tsx scripts/graph-mail.ts forward --id X'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GR2: a plain send, double-quoted body that mentions the forward verb",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to kovacs@fireeng.hu --subject 'Re' --body \"a scripts/graph-mail.ts forward kesobb lesz\"",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GR2: a plain send, subject that mentions the forward command",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to kovacs@fireeng.hu --subject 'graph-mail.ts forward teszt' --body 'Szia'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GR2: a plain send, body that quotes a bash -c forward",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to kovacs@fireeng.hu --subject 'Re' --body 'bash -c \"npx tsx scripts/graph-mail.ts forward --id X\"'",
+      "expected": true
+    },
+    {
+      "name": "graph-forward GS1 control: list followed by a quoted forward in its text",
+      "cmd": "npx tsx scripts/graph-mail.ts list --folder 'forward'",
+      "expected": false
+    },
+    {
+      "name": "graph-forward GS1 control: show with a brace in a later argument",
+      "cmd": "npx tsx scripts/graph-mail.ts show --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --out {a,b}",
       "expected": false
     }
   ]

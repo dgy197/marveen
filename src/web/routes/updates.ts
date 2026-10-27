@@ -1,5 +1,5 @@
 import {
-  readFileSync, writeFileSync, mkdirSync, openSync, closeSync, statSync, unlinkSync,
+  readFileSync, writeFileSync, mkdirSync, openSync, closeSync, statSync, unlinkSync, readdirSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import { spawn, execFile } from 'node:child_process'
@@ -14,6 +14,7 @@ import {
   type GitRunner, type PidfileRunner,
 } from '../../update-preflight.js'
 import { json, readBody } from '../http-helpers.js'
+import { callerLabel } from '../admin-switch.js'
 import { claudeAgentRunnable } from '../../update-agent-capability.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
 import { buildCliUpdateStatus, cliUpdateDepsForRoute, startCliUpdate, VERSION_RE } from '../cli-update.js'
@@ -61,6 +62,26 @@ function readLastResult(): LastResult | null {
 // ROLLED-BACK outcome (a success or an in-progress run is not diagnosable).
 function isDiagnosable(r: LastResult | null): boolean {
   return r?.status === 'rolled-back' || r?.status === 'failed'
+}
+
+// Card 053f4e66 (M2): a local patch package under store/local-patches/ means
+// tracked files carry hand-applied changes. The auto-stash update stashes them,
+// pulls, builds WITHOUT them, and on a pop conflict leaves the install running
+// a dist with every gate of those patches silently gone. So with any package
+// present, { autoStash: true } is refused (409 local_patches_present): the
+// update goes by hand, in the order the packages' READMEs give. Present = the
+// folder exists and holds anything but dotfiles; an unreadable folder counts
+// as present (fail closed).
+export function localPatchesPresent(storeDir: string = STORE_DIR): boolean {
+  const dir = join(storeDir, 'local-patches')
+  let entries: string[]
+  try {
+    if (!statSync(dir).isDirectory()) return true
+    entries = readdirSync(dir)
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code !== 'ENOENT'
+  }
+  return entries.some(e => !e.startsWith('.'))
 }
 
 export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
@@ -182,6 +203,17 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
     } catch {
       // Empty/invalid body: treat as autoStash=false. Real validation lives
       // at update.sh's own dirty-tree check; this is just a hint.
+    }
+    if (autoStash && localPatchesPresent()) {
+      logger.warn(
+        { caller: callerLabel(ctx.req), at: new Date().toISOString() },
+        'Auto-stash update refused: local patches present under store/local-patches',
+      )
+      json(res, {
+        error: 'A store/local-patches alatt helyi patch-csomag van: a stash-elt frissítés le van tiltva. Frissíts kézzel, a csomagok README-je szerinti sorrendben.',
+        reason: 'local_patches_present',
+      }, 409)
+      return true
     }
     const pf: PidfileRunner = {
       readPidfile: () => {

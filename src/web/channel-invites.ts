@@ -30,6 +30,7 @@ import { logger } from '../logger.js'
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 import { agentDir } from './agent-config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { isMainChannelAdminEnabled } from './main-channel-admin.js'
 
 interface InviteEntry {
   createdAt: number
@@ -54,6 +55,10 @@ interface InvitesFile {
 }
 
 const INVITE_DEFAULT_TTL_MS = 24 * 60 * 60 * 1000
+
+// Card 053f4e66: pending codes of the MAIN agent the monitor declined because
+// MAIN_CHANNEL_ADMIN_ENABLED is off -- one WARN per code, not one per tick.
+const refusedMainPending = new Set<string>()
 
 export function agentChannelDir(name: string, mainAgentId: string, provider: ChannelProviderType): string {
   return name === mainAgentId
@@ -230,6 +235,18 @@ export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): v
 
       const [pCode, pEntry] = pendingEntries[0]
       const [tToken, tEntry] = live[0]
+
+      // Card 053f4e66: auto-approving onto the MAIN agent's allowlist needs the
+      // install switch, like every other main-channel write. Nothing is changed
+      // while it is off; the owner can still pair by hand (/telegram:access).
+      if (name === mainAgentId && !isMainChannelAdminEnabled()) {
+        const key = `${accessPath}\0${pCode}`
+        if (!refusedMainPending.has(key)) {
+          refusedMainPending.add(key)
+          logger.warn({ name, provider, at: new Date().toISOString() }, 'invite-monitor: main-agent auto-approval refused: MAIN_CHANNEL_ADMIN_ENABLED is off')
+        }
+        continue
+      }
 
       if (!access.allowFrom) access.allowFrom = []
       if (!access.allowFrom.includes(pEntry.senderId)) access.allowFrom.push(pEntry.senderId)

@@ -1,0 +1,338 @@
+#!/usr/bin/env python3
+"""graph-forward N1b (spec G1-G7): mail tools are recognised by their ACTION, not by a list of names.
+
+The gap this closes (spec T10): the gates recognised mail tools by a fixed list of NAMES, so a send
+under any other name -- mcp__gmail-v2__v2_send_draft, __v2_reply_all, __replyAll -- reached the hooks
+through the "[Gg]mail" matcher and left with exit 0: no approval, no copy audit. This file drives the
+two python gates (the main agent's email approval gate and the outgoing copy gate) with the shared
+vectors in scripts/hooks/mail-tool-action-cases.json; the sub-agent JS gate runs the same vectors in
+src/__tests__/mail-tool-action-conformance.test.ts.
+
+Proven here:
+  - the classifier (email_extract.mail_tool_action) on every case and every classifier edge (G1-G4);
+  - approval gate: a send is in scope (level 1 denies), a draft or a read is not; level 3 passes all;
+  - copy gate: a send and a draft are audited (an em dash blocks), a read passes, a send with no
+    readable text blocks, a draft-path call with no text passes (labels, filters);
+  - G5: a stored draft sent by id is "nem horgonyozhato" at level 2 even with a body in the call; a
+    reply with only a messageId is anchored on it, the approval is one-shot and does not carry over to
+    another message;
+  - the pinned helper scripts/approval-envelope.py (unchanged) still builds today's send, and exits 2
+    with an empty stdout on v2_send_draft;
+  - the call forms the pinned helper and the golden rely on: gate._SEND_TOOL.search(tool) and
+    email_extract.CONNECTOR_SEND_RE (G6);
+  - fail-closed on a disposable copy: a broken or an old email_extract.py turns an unlisted MCP tool
+    into a deny in both gates, and leaves the Bash path as it was.
+
+Run: python3 <thisfile>   Exit 0 = all pass.
+"""
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+HOOKS = os.path.join(ROOT, "scripts", "hooks")
+GATE = os.path.join(HOOKS, "email-approval-gate.py")
+COPY = os.path.join(HOOKS, "outgoing-copy-gate.py")
+HELPER = os.path.join(ROOT, "scripts", "approval-envelope.py")
+with open(os.path.join(HOOKS, "mail-tool-action-cases.json"), encoding="utf-8") as _fh:
+    VECTORS = json.load(_fh)
+CASES = VECTORS["cases"]
+EDGES = VECTORS["classifier_edges"]
+AS_CLASS = {"send": "send", "draft": "draft", "nonsend": None}
+EM_DASH = chr(0x2014)
+NOW_S = "CAST(strftime('%s','now') AS INTEGER)"
+
+failed = []
+
+
+def check(name, ok, detail=""):
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f" -- {detail}" if not ok and detail else ""))
+    if not ok:
+        failed.append(name)
+
+
+def make_store(td, level):
+    store = os.path.join(td, "store")
+    os.makedirs(store, exist_ok=True)
+    with open(os.path.join(store, "autonomy-config.json"), "w", encoding="utf-8") as fh:
+        json.dump({"version": 1, "categories": [
+            {"key": "email_send", "label": "Email", "level": level, "locked": False}]}, fh)
+    with open(os.path.join(store, "rules.json"), "w", encoding="utf-8") as fh:
+        json.dump({"no_name_rule": True, "no_name_rule_reason": "mail-tool-action test"}, fh)
+    con = sqlite3.connect(os.path.join(store, "claudeclaw.db"))
+    con.execute("""
+      CREATE TABLE approvals (
+        id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, category TEXT NOT NULL,
+        action_description TEXT NOT NULL, action_payload TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        timeout_at INTEGER, telegram_message_id INTEGER,
+        requested_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+        resolved_at INTEGER, resolved_by TEXT,
+        content_hash TEXT, consumed_at INTEGER)""")
+    con.commit()
+    con.close()
+    return store
+
+
+def approve(store, anchor, approval_id="appr-1"):
+    con = sqlite3.connect(os.path.join(store, "claudeclaw.db"))
+    con.execute(
+        "INSERT INTO approvals (id, agent_id, category, action_description, status,"
+        " requested_at, resolved_at, resolved_by, content_hash, consumed_at)"
+        f" VALUES (?, 'marveen', 'email_send', 'test', 'approved', {NOW_S}-60, {NOW_S}, 'owner', ?, NULL)",
+        (approval_id, anchor))
+    con.commit()
+    con.close()
+
+
+def run(script, store, tool, ti):
+    env = dict(os.environ,
+               EMAIL_APPROVAL_GATE_STORE=store,
+               EMAIL_APPROVAL_WINDOW_S="1800",
+               OUTGOING_COPY_GATE_RULES=os.path.join(store, "rules.json"))
+    p = subprocess.run([sys.executable, "-I", script],
+                       input=json.dumps({"tool_name": tool, "tool_input": ti}).encode("utf-8"),
+                       capture_output=True, env=env, timeout=60)
+    return p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
+
+
+def run_helper(tool, ti):
+    p = subprocess.run([sys.executable, "-I", HELPER, "--agent", "marveen"],
+                       input=json.dumps({"tool_name": tool, "tool_input": ti}).encode("utf-8"),
+                       capture_output=True, timeout=60)
+    return p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
+
+
+ANCHOR_RE = re.compile(r"Tartalom-horgony \(sha256[^)]*\): ([0-9a-f]{64})")
+
+
+def anchor_from(err):
+    m = ANCHOR_RE.search(err)
+    return m.group(1) if m else None
+
+
+def hand_anchor(to, text, cc=()):
+    """The anchor computed here, NOT by the gate: sha256 over the canonical {to, cc, text} JSON."""
+    canon = json.dumps({"cc": list(cc), "text": text, "to": list(to)},
+                       ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def is_channel(tool):
+    return tool.startswith("mcp__plugin_")
+
+
+def has_text(ti):
+    return any(str(ti.get(f) or "").strip() for f in
+               ("body", "text", "html", "htmlBody", "message", "subject", "content", "forwardText"))
+
+
+with tempfile.TemporaryDirectory(prefix="mta-") as td:
+    os.environ["EMAIL_APPROVAL_GATE_STORE"] = make_store(os.path.join(td, "inproc"), 2)
+    os.environ["OUTGOING_COPY_GATE_RULES"] = os.path.join(os.environ["EMAIL_APPROVAL_GATE_STORE"], "rules.json")
+    sys.path.insert(0, HOOKS)
+    import email_extract as ee  # noqa: E402
+    gate = load("mta_approval_gate", GATE)
+
+    # --- 1. the classifier, cases and edges (G1-G4) --------------------------
+    print("classifier")
+    for c in CASES:
+        got = ee.mail_tool_action(c["tool"])
+        check(f"{c['tool']} -> {c['expected']}", got == AS_CLASS[c["expected"]], f"got {got!r}")
+    for e in EDGES:
+        got = ee.mail_tool_action(e["tool"])
+        check(f"edge {e['tool']!r} -> {e['expected']} ({e['note']})", got == e["expected"], f"got {got!r}")
+    check("the case list holds every G7 class", {c["expected"] for c in CASES} == {"send", "draft", "nonsend"})
+
+    # --- 2. the call forms the pinned helper and the golden use (G6) ----------
+    print("call forms")
+    legacy = gate._SEND_TOOL.search("mcp__claude_ai_Gmail__reply")
+    check("_SEND_TOOL.search on a listed name still returns the regex match",
+          isinstance(legacy, re.Match) and legacy.group(0) == "Gmail__reply", repr(legacy))
+    check("_SEND_TOOL.search on v2_send_draft is truthy", bool(gate._SEND_TOOL.search("mcp__gmail-v2__v2_send_draft")))
+    for tool in ("Bash", "mcp__gmail__search_emails", "mcp__gmail-v2__v2_draft_email",
+                 "mcp__plugin_telegram_telegram__reply", "Read", ""):
+        check(f"_SEND_TOOL.search({tool!r}) is falsy", not gate._SEND_TOOL.search(tool))
+    check("_SEND_TOOL.search on a manage_email name is the legacy match (the operation decides later)",
+          isinstance(gate._SEND_TOOL.search("mcp__google-workspace__manage_email"), re.Match))
+    check("CONNECTOR_SEND_RE is the unchanged compiled pattern",
+          isinstance(ee.CONNECTOR_SEND_RE, re.Pattern)
+          and ee.CONNECTOR_SEND_RE.pattern == r"gmail__(reply|reply_all|send_message|forward)$"
+          and ee.CONNECTOR_SEND_RE.flags & re.I)
+
+    # --- 3. every case through both python gates -----------------------------
+    print("gates, per case")
+    s1 = make_store(os.path.join(td, "l1"), 1)
+    s3 = make_store(os.path.join(td, "l3"), 3)
+    for c in CASES:
+        tool, ti, exp = c["tool"], c["input"], c["expected"]
+        code, _, err = run(GATE, s1, tool, ti)
+        if exp == "send":
+            check(f"approval gate L1: {tool} is a send, DENIED", code == 2 and "szint 1" in err,
+                  f"exit={code} err={err[:160]!r}")
+        else:
+            check(f"approval gate L1: {tool} is not a send, passes", code == 0, f"exit={code} err={err[:160]!r}")
+        code, _, err = run(GATE, s3, tool, ti)
+        check(f"approval gate L3: {tool} passes", code == 0, f"exit={code} err={err[:160]!r}")
+
+        code, _, err = run(COPY, s1, tool, ti)
+        want = 2 if (exp == "send" and not has_text(ti)) else 0
+        check(f"copy gate as-is: {tool} -> exit {want}", code == want, f"exit={code} err={err[:160]!r}")
+        if not is_channel(tool):
+            probe = dict(ti)
+            probe["body"] = str(probe.get("body") or "") + " Próba " + EM_DASH + " vége."
+            code, _, err = run(COPY, s1, tool, probe)
+            want = 2 if exp in ("send", "draft") else 0
+            check(f"copy gate em-dash probe: {tool} {'audited' if want else 'not audited'} (exit {want})",
+                  code == want, f"exit={code} err={err[:160]!r}")
+
+    # A draft verb also names label, filter and settings calls (spec G2: create/update/save). They
+    # carry no text of ours: no approval, no copy block, as before N1b.
+    for tool, ti in (("mcp__gmail__create_label", {"name": "Ügyfél — fontos"}),
+                     ("mcp__gmail-v2__v2_update_label", {"id": "L1", "name": "Ajánlat"}),
+                     ("mcp__gmail__create_filter", {"criteria": {"from": "x@y.hu"}, "action": {"addLabelIds": ["L1"]}})):
+        check(f"{tool} is on the draft path", ee.mail_tool_action(tool) == "draft")
+        code, _, err = run(GATE, s1, tool, ti)
+        check(f"approval gate L1: {tool} passes", code == 0, f"exit={code} err={err[:160]!r}")
+        code, _, err = run(COPY, s1, tool, ti)
+        check(f"copy gate: {tool} with no text of ours passes untouched", code == 0, f"exit={code} err={err[:160]!r}")
+
+    # --- 4. G5: envelope and anchor at level 2 --------------------------------
+    print("G5")
+    s2 = make_store(os.path.join(td, "g5"), 2)
+    for tool, ti, label in (
+            ("mcp__gmail-v2__v2_send_draft", {"draftId": "draft-7"}, "v2_send_draft by draftId"),
+            ("mcp__x_gmail__sendDraft", {"draftId": "draft-7"}, "sendDraft by draftId"),
+            ("mcp__gmail-v2__v2_send_draft", {"draftId": "draft-7", "to": ["a@b.hu"], "body": "Kedves Ügyfelünk! Ez nem a piszkozat."},
+             "v2_send_draft with a body in the call: the draft goes out, not the body"),
+            ("mcp__gmail-v2__v2_send", {"draft_id": "draft-7", "to": ["a@b.hu"], "body": "Kedves Ügyfelünk! Törzs."},
+             "a draft id in the input, whatever the key spelling"),
+            ("mcp__gmail-v2__v2_forward", {"messageId": "msg-42", "to": ["a@b.hu"]}, "v2_forward with no text")):
+        code, _, err = run(GATE, s2, tool, ti)
+        check(f"L2: {label} -> DENIED, nem horgonyozhato", code == 2 and "nem horgonyozhato" in err
+              and anchor_from(err) is None, f"exit={code} err={err[:200]!r}")
+    env = ee.collect_email_envelope("mcp__gmail-v2__v2_send_draft", {"draftId": "draft-7"})
+    check("envelope of v2_send_draft names the stored draft", "piszkozat" in (env["unreadable_reason"] or ""), repr(env))
+
+    reply_text = "Kedves Ügyfelünk! Válasz."
+    reply = {"messageId": "msg-42", "body": reply_text}
+    want_anchor = hand_anchor(["messageId:msg-42"], reply_text)
+    sa = make_store(os.path.join(td, "g5-reply"), 2)
+    code, _, err = run(GATE, sa, "mcp__gmail-v2__v2_reply_all", reply)
+    check("L2: v2_reply_all without approval -> DENIED with the messageId anchor (hand-computed)",
+          code == 2 and anchor_from(err) == want_anchor, f"exit={code} anchor={anchor_from(err)} want={want_anchor}")
+    approve(sa, want_anchor)
+    code, out, err = run(GATE, sa, "mcp__gmail-v2__v2_reply_all", reply)
+    check("L2: v2_reply_all with the matching approval -> ALLOWED", code == 0, f"exit={code} err={err[:160]!r}")
+    code, _, err = run(GATE, sa, "mcp__gmail-v2__v2_reply_all", reply)
+    check("L2: the same reply again -> DENIED (one-shot)", code == 2, f"exit={code}")
+    sb = make_store(os.path.join(td, "g5-other"), 2)
+    approve(sb, want_anchor)
+    code, _, err = run(GATE, sb, "mcp__gmail-v2__v2_reply_all", {"messageId": "msg-43", "body": reply_text})
+    check("L2: the approval for msg-42 does not answer msg-43", code == 2 and anchor_from(err) != want_anchor,
+          f"exit={code}")
+
+    # --- 5. the pinned helper (scripts/approval-envelope.py, not modified) -----
+    print("approval-envelope.py helper")
+    # The helper exists only where the approval-envelope local patch is applied
+    # (live tree); develop does not ship it, so there the section is skipped, not failed.
+    if not os.path.exists(HELPER):
+        print("  [SKIP] scripts/approval-envelope.py not present in this tree (live-tree-only helper)")
+    else:
+        today = {"to": ["a@b.hu"], "subject": "Teszt tárgy", "body": "Kedves Ügyfelünk! Törzs."}
+        code, out, err = run_helper("mcp__server-gmail-autoauth-mcp__send_email", today)
+        try:
+            body = json.loads(out)
+        except ValueError:
+            body = {}
+        check("helper: today's send still builds its request (exit 0, hand-computed hash)",
+              code == 0 and body.get("content_hash") == hand_anchor(["a@b.hu"], "Kedves Ügyfelünk! Törzs.\nTeszt tárgy")
+              and body.get("category") == "email_send", f"exit={code} err={err[:160]!r}")
+        code, out, err = run_helper("mcp__gmail-v2__v2_send_draft", {"draftId": "draft-7"})
+        check("helper: v2_send_draft -> exit 2, empty stdout", code == 2 and out == "", f"exit={code} out={out[:80]!r}")
+        code, out, err = run_helper("mcp__gmail-v2__v2_reply_all", reply)
+        try:
+            body = json.loads(out)
+        except ValueError:
+            body = {}
+        check("helper: v2_reply_all gets the same anchor the gate asks for",
+              code == 0 and body.get("content_hash") == want_anchor, f"exit={code} err={err[:160]!r}")
+
+    # --- 6. fail-closed on a disposable copy ----------------------------------
+    print("fail-closed (disposable copies)")
+
+    def copy_tree(dst):
+        skip = shutil.ignore_patterns("__pycache__")
+        shutil.copytree(HOOKS, os.path.join(dst, "scripts", "hooks"), ignore=skip)
+        shutil.copytree(os.path.join(ROOT, "scripts", "lib"), os.path.join(dst, "scripts", "lib"), ignore=skip)
+        return (os.path.join(dst, "scripts", "hooks", "email-approval-gate.py"),
+                os.path.join(dst, "scripts", "hooks", "outgoing-copy-gate.py"),
+                os.path.join(dst, "scripts", "hooks", "email_extract.py"))
+
+    send_draft = ("mcp__gmail-v2__v2_send_draft", {"draftId": "draft-7"})
+    search = ("mcp__gmail__search_emails", {"query": "x"})
+    tg = ("mcp__plugin_telegram_telegram__reply", {"chat_id": "1", "text": "Szia, köszönöm."})
+    ls = ("Bash", {"command": "ls -la"})
+    bash_send = ("Bash", {"command": 'sendmail --to a@b.hu --subject "Bash tárgy" --body "Kedves Ügyfelünk! Törzs."'})
+
+    g_ok, c_ok, _ = copy_tree(os.path.join(td, "intact"))
+    for label, (tool, ti) in (("v2_send_draft", send_draft), ("search_emails", search), ("Bash ls", ls)):
+        real = run(GATE, s2, tool, ti)[0], run(COPY, s1, tool, ti)[0]
+        cp = run(g_ok, s2, tool, ti)[0], run(c_ok, s1, tool, ti)[0]
+        check(f"control: the intact copy decides like the real gates ({label})", real == cp, f"real={real} copy={cp}")
+
+    g_br, c_br, x_br = copy_tree(os.path.join(td, "broken"))
+    with open(x_br, "a", encoding="utf-8") as fh:
+        fh.write("<" * 7 + " Updated upstream\n")
+    code, _, err = run(g_br, s2, *send_draft)
+    check("broken email_extract: approval gate L2 denies v2_send_draft (exit 2) naming the module",
+          code == 2 and "email_extract.py" in err, f"exit={code} err={err[:160]!r}")
+    code, _, err = run(g_br, s2, *search)
+    check("broken email_extract: approval gate L2 cannot classify search_emails -> denies (exit 2)",
+          code == 2, f"exit={code}")
+    code, _, _ = run(g_br, s2, *ls)
+    check("broken email_extract: approval gate passes a non-send Bash as before", code == 0, f"exit={code}")
+    code, _, _ = run(c_br, s1, *send_draft)
+    check("broken email_extract: copy gate denies v2_send_draft", code == 2, f"exit={code}")
+    code, _, _ = run(c_br, s1, *search)
+    check("broken email_extract: copy gate cannot classify search_emails -> denies", code == 2, f"exit={code}")
+    code, _, _ = run(c_br, s1, *tg)
+    check("broken email_extract: the Telegram reply path is untouched (exit 0)", code == 0, f"exit={code}")
+
+    g_old, c_old, x_old = copy_tree(os.path.join(td, "old"))
+    with open(x_old, encoding="utf-8") as fh:
+        src = fh.read()
+    # An email_extract.py from before N1b: no classifier, and no branch that calls it.
+    src2 = (src.replace("def mail_tool_action(", "def _gone_mail_tool_action(")
+               .replace('elif mail_tool_action(tool_name) == "send":', "elif False:"))
+    with open(x_old, "w", encoding="utf-8") as fh:
+        fh.write(src2)
+    check("old-module copy really lacks mail_tool_action",
+          src2 != src and re.search(r"(?<!\w)mail_tool_action\(", src2) is None)
+    code, _, err = run(g_old, s2, *send_draft)
+    check("email_extract without the classifier: approval gate L2 denies v2_send_draft", code == 2, f"exit={code}")
+    code, _, _ = run(c_old, s1, *send_draft)
+    check("email_extract without the classifier: copy gate denies v2_send_draft", code == 2, f"exit={code}")
+    code, _, err = run(c_old, s1, *bash_send)
+    check("email_extract without the classifier: a clean Bash send is still read and passes the copy gate",
+          code == 0, f"exit={code} err={err[:160]!r}")
+
+if failed:
+    print(f"\n{len(failed)} FAILED: {failed}", file=sys.stderr)
+    sys.exit(1)
+print("\nAll mail-tool-action tests passed.")

@@ -401,15 +401,17 @@ call). A tool that mails through a script on another host,
 for example `ssh <host> 'tsx send-letter.mjs'`, is invisible to it, so its
 approval stayed unconsumed and could authorize a second send.
 
-This project's own senders (`scripts/support-mail/send.py`,
-`scripts/graph-mail.ts`) do the same without the endpoint: they run
-`scripts/hooks/sender_check.py` on the envelope they are about to deliver,
-which consumes the approval of THAT envelope with the gate's own one-shot
-update (and applies the standing-recipient list and level 1 / 3 the same
-way). The gate therefore does not consume for them: a literal call of one of
-them passes the hook at level 2, any other spelling of them is denied without
+This project's own senders do the same without the endpoint.
+`scripts/support-mail/send.py` runs `scripts/hooks/sender_check.py` on the
+envelope it is about to deliver, which consumes the approval of THAT envelope
+with the gate's own one-shot update (and applies the standing-recipient list and
+level 1 / 3 the same way). The gate therefore does not consume for it: a literal
+call of it passes the hook at level 2, any other spelling of it is denied without
 consuming and without an anchor, and the sender's refusal prints the anchor
-to approve.
+to approve. `scripts/graph-mail.ts` decides through its own authorizer instead
+(`scripts/hooks/email_send_authorize.py`, see "The Graph CLI decides for
+itself" below); the hook only peeks at a command that mentions `graph-mail`, so
+neither the pass-through nor the deny-without-anchor applies to it.
 
 Any other tool consumes on its own path, right BEFORE the letter goes out, and
 sends only on a yes:
@@ -748,3 +750,36 @@ and the main agent's `email_send` approval gate keeps its current reach.
     cwd, not `dir`;
   - a missing file, which is judged on its arguments alone;
   - code assembled at runtime.
+
+## The Graph CLI decides for itself
+
+`scripts/graph-mail.ts send|forward` does not rely on the hook having seen the
+command. However it was typed (a glob in the script path, quotes, `bash -c --`,
+`bash -ec`, `tcsh -c`, `env -S`), the CLI builds the envelope from the bytes it is
+about to send (hash-checked body or comment, attachment bytes, the real subject of
+a forwarded message) and, after the token request and right before the Graph
+POST, runs `scripts/hooks/email_send_authorize.py` of ITS OWN checkout (the path
+comes from the CLI's realpath; no environment variable moves it). That helper is
+the same code as the hook (`authorize()` in `email-approval-gate.py`): level,
+standing recipient, content anchor, one-shot consumption. The letter goes out only
+on exit 0 AND `decision: allow`; every other outcome, a crashed or hung helper
+included, is exit 2 with the first stderr line `graph-mail: REFUSED <reason>` and
+not one Graph POST.
+
+On a `graph-mail` command the hook only PEEKS: it gives the early, readable
+refusal (with the anchor) but never spends an approval and never writes the
+standing trace. The CLI is the single consumer there (`consumed_by =
+'graph-mail'`, `consumed_ref = graph-mail:<send|forward>:<uuid>`) and writes the
+standing trace once, at the send. Every other mail tool (MCP send_email,
+gmail-connector, scripts) is still consumed by the hook. An approval is strictly
+single use with no refund: if Graph fails after the consumption the CLI says so
+(exit 1, or 3 when the outcome is unknown) and a new approval is needed.
+
+Not covered: a process that calls Graph directly with the credentials file (a
+copied or older CLI, a script of its own) never meets this check. That needs a
+separate mail broker; see the open risks of card efa58ad2.
+
+The helper also runs the outgoing-copy audit before it consumes anything. With the
+opt-in verified-recipient ledger on (`MAIN_AGENT_RECIPIENT_LEDGER=1`), the CLI
+additionally refuses a send or forward to an address that is not in the ledger,
+before the authorizer is asked, exactly as `sender_check.py` does for `send.py`.

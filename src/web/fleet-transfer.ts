@@ -19,6 +19,8 @@ import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAM
 import { channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
+import { envEntryProblem } from '../env-entry.js'
+import { isAdminSwitchKey } from './admin-switch.js'
 import { AGENTS_BASE_DIR, listAgentNames, readJsonObjectForWrite } from './agent-config.js'
 import { safeJoin, sanitizeAgentName } from './sanitize.js'
 import { importedLabelColor } from '../css-color.js'
@@ -327,6 +329,56 @@ function encryptWithPassword(plaintext: string, password: string): string {
   const tag = cipher.getAuthTag()
   const header = Buffer.from([KDF_VERSION, KDF_N_LOG2, KDF_R, KDF_P])
   return Buffer.concat([header, salt, iv, tag, enc]).toString('base64')
+}
+
+/**
+ * Identity keys an import never writes (card fec6335f, BE-3). The identity
+ * block is copied key by key into config-overrides.json and .env, and the
+ * import is reachable with the shared Bearer token. These flags are .env-only
+ * on purpose (blueprint 3.1): a Bearer caller must not be able to switch the
+ * credit gate or the interactive key policy off through a crafted fleet file.
+ */
+export const IMPORT_DENIED_IDENTITY_KEYS: ReadonlySet<string> = new Set([
+  'CREDIT_GATE_MODE',
+  'INTERACTIVE_ANTHROPIC_KEY_POLICY',
+])
+
+/**
+ * Families an import never writes (card fec6335f, BE-3c P5): the owner's chat
+ * id (ALLOWED_CHAT_ID; the credit gate trusts it as the owner) and every chat
+ * id, bot token, channel state path or allow-list beside it.
+ */
+const IMPORT_DENIED_IDENTITY_PATTERNS: readonly RegExp[] = [/_CHAT_ID$/, /_BOT_TOKEN$/, /^TELEGRAM_/, /^ALLOWED_/]
+
+/**
+ * The identity keys an import writes: exactly the five the export puts in
+ * (FleetIdentity, exportMainAgent). An allow-list, so a key nobody thought of
+ * cannot be smuggled into .env through a crafted fleet file (BE-3c P5).
+ */
+export const IMPORT_ALLOWED_IDENTITY_KEYS: ReadonlySet<string> = new Set([
+  'MAIN_AGENT_ID',
+  'BOT_NAME',
+  'BRAND_NAME',
+  'OWNER_NAME',
+  'CHANNEL_PROVIDER',
+])
+
+/**
+ * Is this identity key denied? Compared trimmed and upper-cased (BE-3 round 2:
+ * `"CREDIT_GATE_MODE "` or `credit_gate_mode` must not slip past the list).
+ */
+export function isDeniedIdentityKey(key: string): boolean {
+  const k = key.trim().toUpperCase()
+  return IMPORT_DENIED_IDENTITY_KEYS.has(k) || IMPORT_DENIED_IDENTITY_PATTERNS.some((re) => re.test(k))
+}
+
+/** An identity key the import writes: on the allow-list, exactly as written, and not denied. */
+export function isImportableIdentityKey(key: string): boolean {
+  return IMPORT_ALLOWED_IDENTITY_KEYS.has(key) && !isDeniedIdentityKey(key)
+}
+
+for (const k of IMPORT_ALLOWED_IDENTITY_KEYS) {
+  if (isDeniedIdentityKey(k)) throw new Error(`fleet-transfer: the identity allow-list holds a denied key: ${k}`)
 }
 
 // Exported for unit testing (crypto round-trip verification)
@@ -773,6 +825,8 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
   const skills = listSkillsInDir(join(homedir(), '.claude', 'skills'))
   const scheduledTasks = exportScheduledTasks()
 
+  // Contacts (contacts, contact_values, contacts_fts, contact_reads, contact_writes) are
+  // deliberately NOT exported: every table here is named explicitly (AC24).
   // Export ALL memories and daily_logs across every agent_id
   const memories = db.prepare(
     `SELECT agent_id, content, sector, salience, created_at, accessed_at,
@@ -877,6 +931,51 @@ function validateModels(fleet: FleetJson): string[] {
   for (const agent of fleet.agents ?? []) {
     check(`agent ${String(agent.name).slice(0, 60)} agent-config.json`, agent.config)
     check(`agent ${String(agent.name).slice(0, 60)} settings.json`, agent.settings)
+  }
+  return errors
+}
+
+// FLEET_IDENTITY_KEYS (the keys an export carries) and IDENTITY_VALUE_BAD_RE are
+// declared near the top (FLEETIMPORTENVKEY1021, upstream). The takeover used to
+// copy any key of mainAgent.identity, so one Bearer call could put an arbitrary
+// setting into .env, e.g. INTERACTIVE_ANTHROPIC_KEY_POLICY=allow, which by design
+// (fec6335f, blueprint 3.1) is writable from the .env file only.
+//
+// The interactive key guard (PR-A) and the credit gate (PR-B, BE-3c P5) each
+// brought an allow-list; it is one list, checked at load.
+if (FLEET_IDENTITY_KEYS.length !== IMPORT_ALLOWED_IDENTITY_KEYS.size || FLEET_IDENTITY_KEYS.some((k) => !IMPORT_ALLOWED_IDENTITY_KEYS.has(k))) {
+  throw new Error('fleet-transfer: FLEET_IDENTITY_KEYS and IMPORT_ALLOWED_IDENTITY_KEYS differ')
+}
+
+// Checked before dry-run AND apply, so a bad file is an import error (400) and
+// nothing is written. Card 053f4e66: an install admin switch (admin-switch.ts,
+// in any letter case or spacing) is never taken from a file -- it is skipped
+// (the apply phase warns), not an error. Every other key that is not
+// importable (isImportableIdentityKey: the allow-list, exactly as written, and
+// none of the denied keys or families) refuses the whole import (fec6335f).
+// A value, and the legacy agentId, must pass both rules: no control character
+// at all, and the .env writer's own entry rule (env-entry.ts).
+function validateIdentity(fleet: FleetJson): string[] {
+  const errors: string[] = []
+  const main = fleet.mainAgent as { identity?: unknown; agentId?: unknown } | undefined
+  if (!main) return errors
+  const identity = main.identity
+  if (identity !== undefined && identity !== null) {
+    if (typeof identity !== 'object' || Array.isArray(identity)) {
+      errors.push('Érvénytelen mainAgent.identity: objektum kell.')
+      return errors
+    }
+    for (const [key, val] of Object.entries(identity as Record<string, unknown>)) {
+      if (isAdminSwitchKey(key)) continue
+      if (!isImportableIdentityKey(key)) {
+        errors.push(`Nem identitás-kulcs a mainAgent.identity-ben: "${key.slice(0, 60)}" (megengedett: ${FLEET_IDENTITY_KEYS.join(', ')}).`)
+      } else if (typeof val === 'string' && (IDENTITY_VALUE_BAD_RE.test(val) || envEntryProblem(key, val) !== null)) {
+        errors.push(`Vezérlőkarakter a mainAgent.identity.${key} értékében.`)
+      }
+    }
+  }
+  if (typeof main.agentId === 'string' && (IDENTITY_VALUE_BAD_RE.test(main.agentId) || envEntryProblem('MAIN_AGENT_ID', main.agentId) !== null)) {
+    errors.push('Vezérlőkarakter a mainAgent.agentId értékében.')
   }
   return errors
 }
@@ -1079,8 +1178,46 @@ function writeMainAgentFiles(ma: MainAgentExport, tracker: WriteTracker): void {
       ? channelStateDir(provider as ChannelProviderType)
       : safeJoin(channelsBase, provider)
     trackedMkdir(provDir, tracker)
-    trackedWrite(join(provDir, 'access.json'), JSON.stringify(access, null, 2), tracker)
+    const accessPath = join(provDir, 'access.json')
+    const merged = mergeMainAccess(accessPath, access)
+    if (merged === null) {
+      logger.warn({ provider }, 'Fleet import: the main access.json is unreadable, left as it is')
+      continue
+    }
+    trackedWrite(accessPath, JSON.stringify(merged, null, 2), tracker)
   }
+}
+
+/**
+ * Who may talk to the main agent, and who its owner is (card fec6335f, BE-3c
+ * P5): the credit gate trusts the one DM entry of allowFrom as the owner when
+ * .env has none. An import (Bearer-reachable) never rewrites these fields of
+ * an EXISTING main access.json; it brings only the other settings (reaction,
+ * chunking and the like). A fresh target without one gets the exported file.
+ */
+const MAIN_ACCESS_PROTECTED_KEYS: ReadonlySet<string> = new Set(['allowFrom', 'groups', 'channels', 'pending', 'dmPolicy'])
+
+function isProtectedAccessKey(key: string): boolean {
+  return MAIN_ACCESS_PROTECTED_KEYS.has(key) || /owner/i.test(key)
+}
+
+/** The access.json to write, or null when an existing one cannot be read (it stays). */
+function mergeMainAccess(path: string, imported: unknown): unknown {
+  if (!existsSync(path)) return imported
+  let current: unknown
+  try {
+    current = JSON.parse(readFileSync(path, 'utf-8'))
+  } catch {
+    return null
+  }
+  if (typeof current !== 'object' || current === null || Array.isArray(current)) return null
+  const out: Record<string, unknown> = { ...(current as Record<string, unknown>) }
+  if (typeof imported === 'object' && imported !== null && !Array.isArray(imported)) {
+    for (const [k, v] of Object.entries(imported as Record<string, unknown>)) {
+      if (!isProtectedAccessKey(k)) out[k] = v
+    }
+  }
+  return out
 }
 
 function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
@@ -1179,6 +1316,11 @@ export function importFleet(
   const modelErrors = validateModels(fleet)
   if (modelErrors.length > 0) {
     return { ...EMPTY_DIFF, errors: modelErrors }
+  }
+  // Before dry-run AND apply: an apply with a bad identity writes nothing at all.
+  const identityErrors = validateIdentity(fleet)
+  if (identityErrors.length > 0) {
+    return { ...EMPTY_DIFF, errors: identityErrors }
   }
 
   if (!options.apply) {

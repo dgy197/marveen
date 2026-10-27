@@ -20,6 +20,19 @@ import {
   buildCustomProviderLaunchEnv,
   stampCustomApiKeyApproval,
 } from './agent-process.js'
+import { readAgentCustomProvider } from './agent-config.js'
+import { loadCustomProvider } from './custom-providers.js'
+import {
+  interactiveKeyPolicy,
+  isAnthropicFirstParty,
+  decideInteractiveLaunch,
+  scanSettingsForInteractiveKeys,
+  refusalNames,
+  assertLaunchCmdClean,
+  recordGuardEvent,
+  InteractiveKeyGuardError,
+  INTERACTIVE_UNSET_OR_EXIT,
+} from './interactive-key-guard.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { readClaudeCodeOauthJson } from './claude-credentials.js'
 import { detectPaneState } from '../pane-state.js'
@@ -639,6 +652,21 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   // every agent-create fails with "worker session not ready" (observed: agent-create
   // failed 4x after a cold start). Mirror the agent-process.ts launcher,
   // which already disables the suggestion for the same scrape-misread reason.
+  // fec6335f: the worker is an interactive Claude Code session as well. Under
+  // INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid a main-agent custom provider that
+  // is Anthropic itself refuses the start here, before its key is read; the
+  // rest is decided below, once the model is known. Under allow nothing here
+  // reads anything.
+  const keyPolicy = interactiveKeyPolicy()
+  const mainCustomId = keyPolicy === 'forbid' && !WORKER_MODEL_OVERRIDE ? readAgentCustomProvider(MAIN_AGENT_ID) : null
+  const mainCustomDef = mainCustomId ? loadCustomProvider(mainCustomId) : null
+  if (mainCustomDef) {
+    const early = decideInteractiveLaunch({ policy: keyPolicy, isCustom: true, customProviderDef: mainCustomDef, model: '', authMode: 'shared' })
+    if (!early.ok) {
+      recordGuardEvent({ source: 'launch-guard', where: `agent-worker:${early.reason}`, names: refusalNames(early.reason), agent: ctx.session })
+      return
+    }
+  }
   // Resolve model and optional custom-provider env prefix.
   // Priority: MARVEEN_WORKER_MODEL override > main-agent custom provider > default.
   let customEnvPrefix = ''
@@ -679,6 +707,32 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     notifyWorkerModelFallback(decision, Date.now())
   }
 
+  // fec6335f, the rest of the decision: a first-party worker under forbid
+  // refuses if the settings it loads carry a key route, and otherwise starts
+  // with the unset FIRST in the `bash -lc` string -- that runs after the login
+  // shell's rc files, so a key exported there is gone too. '' under allow and
+  // for a non-Anthropic custom provider: the command is unchanged.
+  let workerKeyUnset = ''
+  let workerFirstParty = false
+  if (keyPolicy === 'forbid') {
+    const isCustom = customProviderModel !== null
+    const guardInput = { policy: keyPolicy, isCustom, customProviderDef: isCustom ? mainCustomDef : null, model: workerModel, directAnthropic: true, authMode: 'shared' as const }
+    workerFirstParty = isAnthropicFirstParty(guardInput)
+    const settingsFindings = workerFirstParty
+      ? scanSettingsForInteractiveKeys([
+          join(ctx.configDir, 'settings.json'),
+          join(ctx.home, '.claude', 'settings.json'),
+          join(ctx.home, '.claude', 'settings.local.json'),
+        ])
+      : []
+    const late = decideInteractiveLaunch({ ...guardInput, settingsFindings })
+    if (!late.ok) {
+      const findings = settingsFindings.length ? settingsFindings : [{ path: 'agent-worker', names: refusalNames(late.reason) }]
+      for (const f of findings) recordGuardEvent({ source: 'launch-guard', where: f.path, names: f.names, agent: ctx.session })
+      return
+    }
+    workerKeyUnset = late.unsetPrefix ? INTERACTIVE_UNSET_OR_EXIT : ''
+  }
   const claudeLaunchBin = tryResolveFromPath('claude') ?? 'claude'
   const autoUpdaterEnv = workerAutoUpdaterEnv({
     role: ctx === ctxSlow ? 'slow' : 'fast',
@@ -689,6 +743,7 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     logger.warn({ session: ctx.session }, 'WORKERAUTOUPDATE1011: WORKER_AUTOUPDATE is on but claude is not a native install; the slow worker stays pinned')
   }
   const launch =
+    workerKeyUnset +
     (hasFleetOauthToken() ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : '') +
     `export CLAUDE_CONFIG_DIR=${shArg(ctx.configDir)}; ` +
     autoUpdaterEnv +
@@ -700,6 +755,13 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     customEnvPrefix +
     `cd ${shArg(ctx.home)} && ` +
     `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(workerModel)}`
+  try {
+    assertLaunchCmdClean(launch, { policy: keyPolicy, firstParty: workerFirstParty })
+  } catch (err) {
+    if (!(err instanceof InteractiveKeyGuardError)) throw err
+    recordGuardEvent({ source: 'launch-guard', where: 'agent-worker:launch-cmd', names: err.names, agent: ctx.session })
+    return
+  }
   execFileSync(TMUX, ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })
   logger.info({ session: ctx.session, cwd: ctx.home }, 'agent-worker: launched interactive worker session')
   // APRO920 (c)(2): same rationale as startAgentProcess's model-resolved log --

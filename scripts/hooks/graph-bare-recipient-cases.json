@@ -1,0 +1,37 @@
+{
+  "_comment": "Shared vectors for the graph-mail send recipient rule (card efa58ad2, S2). --to/--cc/--bcc accept ONLY a comma-separated list of bare addresses. The TypeScript CLI (isBareAddressList, src/graph-forward-validate.ts) and the Python gate (email_extract.bare_address_list_ok) must give the same verdict on every string.",
+  "valid": [
+    "a@fireeng.hu",
+    "a@fireeng.hu,b@fireeng.hu",
+    "kovacs.janos+x@fireeng.hu",
+    "A@B.HU",
+    "x_y-z@sub.example.org,q@fireeng.hu"
+  ],
+  "invalid": [
+    "",
+    ",",
+    "a@fireeng.hu,",
+    ",a@fireeng.hu",
+    "a@fireeng.hu, ,b@x.hu",
+    "a@fireeng.hu,,b@x.hu",
+    "a@fireeng.hu, b@fireeng.hu",
+    " a@fireeng.hu",
+    "a@fireeng.hu ",
+    "\"a,evil@x.com,b\" <allando@fireeng.hu>",
+    "Name <a@fireeng.hu>",
+    "a@fireeng.hu (x)",
+    "<a@fireeng.hu>",
+    "a@fireeng.hu;evil@x.com",
+    "\"a\"@fireeng.hu",
+    "a@@fireeng.hu",
+    "a@fireeng",
+    "a@-fireeng.hu",
+    "a@fireeng.hu.",
+    ".a@fireeng.hu",
+    "a..b@fireeng.hu",
+    "a@fireeng.hu\n",
+    "a@fireeng.hu\nb@x.hu",
+    "a@füreeng.hu",
+    "a'b@fireeng.hu"
+  ]
+}

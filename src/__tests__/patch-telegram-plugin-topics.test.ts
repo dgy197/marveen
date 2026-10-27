@@ -52,14 +52,14 @@ describe('patch-telegram-plugin.py --topics', () => {
     expect(readFileSync(server, 'utf-8')).not.toContain('tgtopics')
     const s = JSON.parse(readFileSync(state, 'utf-8'))
     expect(s.topics).toBe('off')
-    expect(s.files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', kbd: 'patched' })
+    expect(s.files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', kbd: 'patched', apv: 'patched' })
   })
 
   it('on: every step applied once, the file still parses, a second run is a byte-identical no-op', () => {
     const state = join(cache, 'state.json')
     const r = run(['--state', state, '--topics', 'on'])
     expect(r.status).toBe(0)
-    expect(r.stderr).toMatch(/patched .*\(d4, fwd, evid, kbd, topics\)/)
+    expect(r.stderr).toMatch(/patched .*\(d4, fwd, evid, kbd, apv, topics\)/)
     const once = readFileSync(server, 'utf-8')
     expect(syntaxErrors(once)).toEqual([])
     expect(JSON.parse(readFileSync(state, 'utf-8'))).toMatchObject({ topics: 'on', files: [{ patches: { topics: 'patched' } }] })
@@ -78,7 +78,7 @@ describe('patch-telegram-plugin.py --topics', () => {
     const r = run(['--state', state, '--topics', 'off'])
     expect(r.stderr).toMatch(/patched .*\(topics removed\)/)
     expect(readFileSync(server, 'utf-8')).toBe(neverSwitched)
-    expect(JSON.parse(readFileSync(state, 'utf-8')).files[0].patches).toEqual({ d4: 'already', fwd: 'already', evid: 'already', kbd: 'already', topics: 'removed' })
+    expect(JSON.parse(readFileSync(state, 'utf-8')).files[0].patches).toEqual({ d4: 'already', fwd: 'already', evid: 'already', kbd: 'already', apv: 'already', topics: 'removed' })
   })
 
   it.each(['yes', 'true', '1', 'On', ''])('--topics %j: refused with exit 2, the plugin file and the state left alone', (value) => {
@@ -188,21 +188,38 @@ function load(source: string): Plugin {
   const ListTools = Symbol('list')
   const CallTool = Symbol('call')
   class InputFile { constructor(public path: string) {} }
+  const fsStub = {
+    statSync: () => ({ size: 1 }), writeFileSync: () => {}, renameSync: () => {}, readFileSync: () => '',
+    mkdirSync: () => {}, readdirSync: () => [], rmSync: () => {}, realpathSync: (p: string) => p, chmodSync: () => {},
+  }
   const stubs: Record<string, unknown> = {
     bot, Server, ListToolsRequestSchema: ListTools, CallToolRequestSchema: CallTool, InputFile, extname,
     dmCommandGate: () => null,
     gate: () => ({ action: 'deliver', access: {} }),
+    PERMISSION_REPLY_RE: /^\b$/,
     chunk: (t: string) => t.split('|'),
     assertAllowedChat: () => {},
     assertSendable: () => {},
-    statSync: () => ({ size: 1 }),
+    statSync: fsStub.statSync,
     MAX_ATTACHMENT_BYTES: 50 * 1024 * 1024,
     MAX_CHUNK_LIMIT: 4096,
     loadAccess: () => ({ allowFrom: ['42'] }),
     PHOTO_EXTS: new Set(['.png', '.jpg']),
-    writeFileSync: () => {}, renameSync: () => {}, join, STATE_DIR: '/nonexistent',
+    writeFileSync: fsStub.writeFileSync, renameSync: fsStub.renameSync, join, STATE_DIR: '/nonexistent',
+    // With the 345f34e2 approval-button patch the excerpt also carries the fs
+    // import (transpiled to require/exports), its own STATE_DIR and loadAccess,
+    // and the callback_query handler (bot.on above). Its loadAccess() answers
+    // from BOOT_ACCESS, so the owner's chat (42) is paired there: the buttons
+    // check of the kbd patch reads loadAccess().allowFrom.
+    require: (m: string) => (m === 'fs' || m === 'node:fs' ? fsStub : {}),
+    exports: {},
+    homedir: () => '/nonexistent',
+    BOOT_ACCESS: { allowFrom: ['42'] },
   }
-  const names = Object.keys(stubs)
+  // A stub of a name the excerpt declares itself with const/let/class would be
+  // a redeclaration (SyntaxError): the excerpt's own declaration is used.
+  const declared = new Set(Array.from(source.matchAll(/^(?:const|let|class) ([A-Za-z_$][\w$]*)/gm), m => m[1]))
+  const names = Object.keys(stubs).filter(n => !declared.has(n))
   const factory = new Function(...names, `${js}\nreturn { handleInbound }`)
   const { handleInbound } = factory(...names.map(n => stubs[n])) as { handleInbound: (ctx: unknown, text: string, d: undefined) => Promise<void> }
   return {

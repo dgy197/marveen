@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import type http from 'node:http'
+import { writeFileSync } from 'node:fs'
 import { Readable } from 'node:stream'
 import { initDatabase, getDb } from '../db.js'
 import { resolveAuth } from '../web/auth-gate.js'
@@ -24,6 +25,35 @@ import type { RouteContext } from '../web/routes/types.js'
 //   - zero rows = zero behavior change (fresh-install guarantee);
 //   - revocation and (opt-in) expiry take effect immediately;
 //   - keys survive a process restart (cache cleared -> DB rehydrates).
+
+// Card 053f4e66 B: the shared Bearer ('token') mints a device key only while the
+// install .env opens BEARER_CREDENTIAL_ADMIN_ENABLED=1 (credential-admin.ts).
+// The mint/validate/revoke cases below are not about that gate, so they run
+// against a throwaway install whose .env has the switch open (setSwitch(true)
+// in beforeEach); the token's mint is pinned both ways in its own test, and a
+// session mint is shown to ignore the switch. credential-admin-gate.test.ts
+// holds the full matrix. CLAUDECLAW_ENV_DIR must be set before any app module
+// loads. The owner notification of a token mint is stubbed: it must never
+// reach a live channel from a test.
+const ENV = await vi.hoisted(async () => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'auth-device-keys-env-')))
+  process.env.CLAUDECLAW_ENV_DIR = dir
+  for (const k of ['BEARER_CREDENTIAL_ADMIN_ENABLED', 'BEARER_CREDENTIAL_ADMIN_UNTIL', 'BEARER_CREDENTIAL_ADMIN_NONCE']) delete process.env[k]
+  return { file: path.join(dir, '.env') }
+})
+vi.mock('../notify.js', () => ({
+  notifyChannel: vi.fn(async () => {}),
+  notifyTelegram: vi.fn(async () => {}),
+  notifySecurityEvent: vi.fn(async () => {}),
+}))
+
+// The switch is read from the .env per request, so it can flip between calls.
+function setSwitch(on: boolean): void {
+  writeFileSync(ENV.file, on ? 'BEARER_CREDENTIAL_ADMIN_ENABLED=1\n' : 'BEARER_CREDENTIAL_ADMIN_ENABLED=0\n')
+}
 
 const TOKEN = 'a'.repeat(64)
 
@@ -92,6 +122,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  setSwitch(true)
   _clearDeviceKeyCacheForTest()
   getDb().prepare('DELETE FROM device_keys').run()
 })
@@ -210,18 +241,37 @@ describe('revocation + expiry', () => {
 })
 
 describe('management endpoints (mint/list/revoke)', () => {
-  it('token mints a key; the raw value appears in the response ONCE and never in list', async () => {
+  it('token mints a key (switch open); the raw value appears in the response ONCE and never in list', async () => {
     const r = await call('POST', '/api/auth/device-keys', { auth: TOKEN_AUTH, body: { name: 'MacBook Bridge' } })
     expect(r.res.statusCode).toBe(201)
     const body = r.json()
     expect(String(body.key).startsWith('mvdk_')).toBe(true)
-    expect(body.expires_at).toBeNull()
+    // E1 (card 053f4e66 B): a full key minted over the API expires, 90 days by default.
+    expect(body.expires_at).not.toBeNull()
+    expect(Number(body.expires_at) - Number(body.created_at)).toBe(90 * 86400)
     const list = await call('GET', '/api/auth/device-keys', { auth: TOKEN_AUTH })
     expect(JSON.stringify(list.json())).not.toContain(String(body.key))
   })
-  it('session may mint too (operator parity with token)', async () => {
+  it('the token\'s mint is the gate: 403 with the switch off (no key, no row), 201 with it on', async () => {
+    setSwitch(false)
+    const refused = await call('POST', '/api/auth/device-keys', { auth: TOKEN_AUTH, body: { name: 'MacBook Bridge' } })
+    expect(refused.res.statusCode).toBe(403)
+    expect(refused.json()).toMatchObject({ code: 'bearer_credential_admin_off' })
+    expect(refused.json()).not.toHaveProperty('key')
+    expect(listDeviceKeys()).toHaveLength(0)
+    expect(getDb().prepare('SELECT COUNT(*) AS c FROM device_keys').get()).toEqual({ c: 0 })
+    setSwitch(true)
+    const minted = await call('POST', '/api/auth/device-keys', { auth: TOKEN_AUTH, body: { name: 'MacBook Bridge' } })
+    expect(minted.res.statusCode).toBe(201)
+    expect(String(minted.json().key).startsWith('mvdk_')).toBe(true)
+    expect(listDeviceKeys()).toHaveLength(1)
+  })
+  it('session may mint too (operator parity with token), whatever the token switch says', async () => {
     const r = await call('POST', '/api/auth/device-keys', { auth: { kind: 'session', user: 'op' }, body: { name: 'phone' } })
     expect(r.res.statusCode).toBe(201)
+    setSwitch(false)
+    const r2 = await call('POST', '/api/auth/device-keys', { auth: { kind: 'session', user: 'op' }, body: { name: 'phone2' } })
+    expect(r2.res.statusCode).toBe(201)
   })
   it('mint validates the name', async () => {
     const r = await call('POST', '/api/auth/device-keys', { auth: TOKEN_AUTH, body: { name: '' } })

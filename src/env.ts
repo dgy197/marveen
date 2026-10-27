@@ -3,6 +3,9 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { atomicWriteFileSync } from './web/atomic-write.js'
 import { parseEnvContent } from './env-parse.js'
+import { envEntryProblem, InvalidEnvEntryError } from './env-entry.js'
+
+export { InvalidEnvEntryError } from './env-entry.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // CLAUDECLAW_ENV_DIR: test-only escape hatch so the suite can point .env
@@ -11,8 +14,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 // time; production never sets it.
 const PROJECT_ROOT = process.env.CLAUDECLAW_ENV_DIR ?? join(__dirname, '..')
 
+/** The install's .env (CLAUDECLAW_ENV_DIR in tests). */
+export function envFilePath(): string {
+  return join(PROJECT_ROOT, '.env')
+}
+
 export function readEnvFile(keys?: string[]): Record<string, string> {
-  const envPath = join(PROJECT_ROOT, '.env')
+  const envPath = envFilePath()
   let content: string
   try {
     content = readFileSync(envPath, 'utf-8')
@@ -36,8 +44,6 @@ export function writeEnvFileFresh(envPath: string, content: string): void {
   atomicWriteFileSync(envPath, content, { mode: ENV_FILE_MODE })
 }
 
-const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
-
 // Update (or append) the given keys in .env, preserving every other line,
 // comment, and the original ordering. Used by fleet import to mirror the
 // main-agent identity takeover into .env: the dashboard resolves identity via
@@ -50,18 +56,22 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 // Values are written UNQUOTED: channels.sh parses with `cut -d= -f2-` and does
 // no quote-stripping, so a quoted value would leak the quotes. Only non-empty
 // string values are written; empty updates are a no-op (no file touch).
+//
+// Cards fec6335f / 053f4e66: every entry is checked BEFORE anything is
+// written -- a key must be a plain variable name, a value must not hold CR,
+// LF or NUL (env-entry.ts). One bad entry throws InvalidEnvEntryError and the
+// file stays as it was.
 export function updateEnvFile(updates: Record<string, string>): void {
   const envPath = join(PROJECT_ROOT, '.env')
   const entries = Object.entries(updates).filter(
     ([, v]) => typeof v === 'string' && v.length > 0,
   )
   if (entries.length === 0) return
-  // FLEETIMPORTENVKEY1021: values are written unquoted, one KEY=value per line,
-  // so a line break (or NUL) in a value, or a key that is not a plain env name,
-  // would add a line of the caller's choosing. Refused before the file is read.
+  // FLEETIMPORTENVKEY1021 (upstream) + cards fec6335f / 053f4e66 (local): one
+  // shared check, the stricter local one (uppercase key, no CR/LF/NUL in value).
   for (const [key, val] of entries) {
-    if (!ENV_KEY_RE.test(key)) throw new Error(`refusing to write .env: ${JSON.stringify(key)} is not an env key name`)
-    if (/[\r\n\0]/.test(val)) throw new Error(`refusing to write .env: the value of ${key} holds a line break or NUL`)
+    const problem = envEntryProblem(key, val)
+    if (problem) throw new InvalidEnvEntryError(key, problem)
   }
 
   let content = ''

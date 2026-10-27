@@ -409,8 +409,17 @@ run_guard() {
   # session -- a respawn must not hand it a different python3 (#1626 review).
   . "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
   local FLEET_VENV_PREFIX; FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$STORE/channels-failures.log")"
+  # fec6335f: INTERACTIVE_ANTHROPIC_KEY_POLICY from the one shell resolver
+  # (channels.sh --interactive-key-policy), exactly as channel-watchdog.sh does:
+  # this respawn is a first-party launch and the pane gets the tmux server's
+  # global env, so under forbid -- or when channels.sh does not answer
+  # (fail-closed) -- the command strips the key names first. Under allow
+  # KEY_UNSET_ENV is empty and RESPAWN_CMD is unchanged.
+  local KEY_POLICY KEY_UNSET_ENV=""
+  KEY_POLICY="$(bash "$INSTALL_DIR/scripts/channels.sh" --interactive-key-policy 2>/dev/null | head -1)"
+  [ "$KEY_POLICY" = allow ] || KEY_UNSET_ENV="unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN && "
   # NATIVECLAUDEFIRST1011: the same order as the channels.sh boot PATH (#1896).
-  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${CFG_ENV}$CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
+  local RESPAWN_CMD="${KEY_UNSET_ENV}export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${CFG_ENV}$CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
 
   log "stuck modal not cleared by Escape -- respawn-pane $SESSION (respawn #$((count+1)))"
   # G: alert ONLY after the respawn-pane actually succeeds, so a failed respawn

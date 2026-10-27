@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { execSync } from 'node:child_process'
 import { PROJECT_ROOT } from './config.js'
+import { INTERACTIVE_KEY_ENV_NAMES, interactiveKeyPolicy, type InteractiveKeyPolicy } from './web/interactive-key-guard.js'
 
 const TYPING_REFRESH_MS = 4000
 import { logger } from './logger.js'
@@ -113,6 +114,25 @@ function resolveClaudeCodeBin(): string | undefined {
   return cachedClaudeCodeBin
 }
 
+/**
+ * fec6335f: the `env` option of the legacy SDK path, whose spawned claude
+ * inherits the dashboard's environment. Under allow it is exactly what it was:
+ * the caller's env over process.env, or no option at all (the SDK then uses
+ * process.env itself). Under INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid it is
+ * always explicit and carries neither ANTHROPIC_API_KEY nor
+ * ANTHROPIC_AUTH_TOKEN, so this fallback cannot spend a key outside the credit gate.
+ */
+export function sdkChildEnv(
+  processEnv: NodeJS.ProcessEnv,
+  env: Record<string, string | undefined> | undefined,
+  policy: InteractiveKeyPolicy,
+): Record<string, string | undefined> | undefined {
+  if (policy !== 'forbid') return env ? { ...processEnv, ...env } : undefined
+  const out: Record<string, string | undefined> = { ...processEnv, ...(env ?? {}) }
+  for (const k of INTERACTIVE_KEY_ENV_NAMES) delete out[k]
+  return out
+}
+
 // Backend selector (jun.15 subscription migration). 'worker' (default) routes
 // to a persistent INTERACTIVE Claude Code session in tmux (subscription login);
 // 'sdk' keeps the legacy Agent SDK `query` path (API billing) as an emergency
@@ -180,6 +200,7 @@ export async function runAgent(
   }, timeoutMs)
 
   const claudeCodeBin = resolveClaudeCodeBin()
+  const sdkEnv = sdkChildEnv(process.env, env, interactiveKeyPolicy())
 
   try {
     const events = query({
@@ -191,7 +212,7 @@ export async function runAgent(
         ...(claudeCodeBin ? { pathToClaudeCodeExecutable: claudeCodeBin } : {}),
         ...(allowTools ? {} : { disallowedTools: DEFAULT_DISALLOWED_TOOLS }),
         ...(sessionId ? { resume: sessionId } : {}),
-        ...(env ? { env: { ...process.env, ...env } } : {}),
+        ...(sdkEnv ? { env: sdkEnv } : {}),
       },
     })
 

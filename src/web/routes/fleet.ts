@@ -1,8 +1,20 @@
 import { logger } from '../../logger.js'
+import { FLEET_IMPORT_APPLY_ENV, isAdminSwitchOn, callerLabel } from '../admin-switch.js'
 import { readBody, json } from '../http-helpers.js'
 import { exportFleet, importFleet, MIN_VAULT_PASSWORD_LEN, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
 import { serializeSkillsDir } from '../skills-dir-queue.js'
 import type { RouteContext } from './types.js'
+
+// Card 053f4e66: applying a fleet import overwrites the main agent's persona,
+// settings, channel pairing (access.json), the .env identity and the DB, all
+// behind the one shared dashboard token. On this install it is OFF unless the
+// .env says FLEET_IMPORT_APPLY_ENABLED=1 (admin-switch.ts). The dry run (no
+// apply) is untouched: it only reads.
+export { FLEET_IMPORT_APPLY_ENV }
+
+export function isFleetImportApplyEnabled(): boolean {
+  return isAdminSwitchOn(FLEET_IMPORT_APPLY_ENV)
+}
 
 export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -40,6 +52,16 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/fleet/import' && method === 'POST') {
     const apply = ctx.url.searchParams.get('apply') === 'true'
+
+    // Refuse before anything else: no body read, no password check, no importFleet.
+    if (apply && !isFleetImportApplyEnabled()) {
+      logger.warn(
+        { caller: callerLabel(req), at: new Date().toISOString() },
+        'Fleet import apply refused: disabled on this install',
+      )
+      json(res, { error: `Fleet import (apply=true) ki van kapcsolva ezen a telepítésen (${FLEET_IMPORT_APPLY_ENV}).` }, 403)
+      return true
+    }
 
     // M1: check vault password length for import side too
     if (vaultPassword !== undefined && vaultPassword.length < MIN_VAULT_PASSWORD_LEN) {

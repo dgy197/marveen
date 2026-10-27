@@ -1,0 +1,1261 @@
+{
+  "_comment": "graph-forward r3 (Brainy 3092, 3094): vectors of the graph-mail whitelist grammar (email_extract.classify_graph_mail). expect is the kind: deny = refused at every level by both gates (approval gate exit 2 at levels 1, 2 with a live standing recipient and 3; copy gate exit 2); read = both gates exit 0; send / forward = the grammar passes the command on to the level / standing / anchor flow (approval gate: level 3 exit 0, level 1 exit 2 on the LEVEL, not on the grammar); none = no mention of graph-mail, the old classifiers decide. gate=deny on a send: the grammar accepts the command, the gates refuse when they read the body file. {ROOT} is the outbox root the test substitutes; {REPO} is the repo root (Q2 pins the CLI path to scripts/graph-mail.ts or <repo>/scripts/graph-mail.ts); {ROOT}/a.txt holds the text Szia! (sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d). All strings are JSON escapes (LF, CR, NUL, backslash, non-ASCII): never edit this file with a tool that rewrites them. Written by a generator, ASCII only.",
+  "cases": [
+    {
+      "name": "comment-hidden forward (decoy quote opens in a comment line)",
+      "cmd": "# --body decoy '\nnpx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment \"Szia\" --orig-subject \"Targy\"\n# '",
+      "expect": "deny",
+      "rule": "B1"
+    },
+    {
+      "name": "xargs feeds the forward verb, no decoy",
+      "cmd": "printf 'forward --id .. --to a@fireeng.hu --comment hello\\n' | xargs npx tsx scripts/graph-mail.ts",
+      "expect": "deny",
+      "rule": "X1"
+    },
+    {
+      "name": "xargs feeds the forward verb, with a --body decoy",
+      "cmd": "echo --body decoy >/dev/null; printf 'forward --id .. --to a@fireeng.hu --comment hello\\n' | xargs npx tsx scripts/graph-mail.ts",
+      "expect": "deny",
+      "rule": "X1"
+    },
+    {
+      "name": "deny: semicolon",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia ; echo x",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: and-and",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia && echo x",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: or-or",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia || echo x",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: pipe",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia | cat",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: background",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia &",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: LF",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia\necho x",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: hash outside quotes",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia # comment",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: hash right after the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts send #x --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: command substitution",
+      "cmd": "echo $(npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia)",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: backtick",
+      "cmd": "echo `npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia`",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: variable verb",
+      "cmd": "V=send; npx tsx scripts/graph-mail.ts $V --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: braced variable verb",
+      "cmd": "npx tsx scripts/graph-mail.ts ${V} --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: ANSI-C quoted verb",
+      "cmd": "npx tsx scripts/graph-mail.ts $'send' --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: backslash-LF continuation",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia \\\n--cc b@fireeng.hu",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: eval",
+      "cmd": "eval \"npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia\"",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: bash -c",
+      "cmd": "bash -c \"npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia\"",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: sh -c",
+      "cmd": "sh -c 'npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia'",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: zsh -c",
+      "cmd": "zsh -c 'npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia'",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: env -S",
+      "cmd": "env -S \"npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia\"",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: env X=1",
+      "cmd": "env X=1 npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: assignment prefix",
+      "cmd": "X=1 npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: xargs",
+      "cmd": "echo x | xargs npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: heredoc",
+      "cmd": "bash <<'EOF'\nnpx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia\nEOF",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: here-string",
+      "cmd": "cat <<< \"npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia\"",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: input redirect",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia < in.txt",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: output redirect",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia > out.txt",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: stderr redirect",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia 2>&1",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: cd chain",
+      "cmd": "cd /x && npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: timeout wrapper",
+      "cmd": "timeout 9 npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: nohup wrapper",
+      "cmd": "nohup npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: sudo wrapper",
+      "cmd": "sudo npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: exec wrapper",
+      "cmd": "exec npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: command wrapper",
+      "cmd": "command npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: ssh wrapper",
+      "cmd": "ssh h 'npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia'",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: watch wrapper",
+      "cmd": "watch npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: python -c",
+      "cmd": "python3 -c \"import os; os.system('npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia')\"",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: node -e",
+      "cmd": "node -e \"require('child_process').execSync('npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia')\"",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: tsx -e",
+      "cmd": "tsx -e \"console.log('scripts/graph-mail.ts send')\"",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: node runner",
+      "cmd": "node scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: npx without tsx",
+      "cmd": "npx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: tsx with own flag",
+      "cmd": "npx tsx --tsconfig x scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: direct invocation",
+      "cmd": "./scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: brace verb",
+      "cmd": "npx tsx scripts/graph-mail.ts se{n,n}d --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: subshell",
+      "cmd": "(npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia)",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: brace group",
+      "cmd": "{ npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia; }",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: negation",
+      "cmd": "! npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: tilde",
+      "cmd": "npx tsx ~/x/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: non-ASCII outside quotes",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia \u00e9",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: unterminated single quote",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia --cc 'b@fireeng.hu",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: unterminated double quote",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia --cc \"b@fireeng.hu",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: NUL",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia\u0000",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: CR",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia\r",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: quoted verb",
+      "cmd": "npx tsx scripts/graph-mail.ts 'send' --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: upper-case verb",
+      "cmd": "npx tsx scripts/graph-mail.ts SEND --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: capitalised verb",
+      "cmd": "npx tsx scripts/graph-mail.ts Send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: upper-case CLI name",
+      "cmd": "npx tsx scripts/GRAPH-MAIL.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: unknown verb",
+      "cmd": "npx tsx scripts/graph-mail.ts reply --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: no verb",
+      "cmd": "npx tsx scripts/graph-mail.ts",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: verb glued to a flag",
+      "cmd": "npx tsx scripts/graph-mail.ts send--to a@fireeng.hu",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: sed",
+      "cmd": "sed -n 1,5p scripts/graph-mail.ts",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: awk",
+      "cmd": "awk 1 scripts/graph-mail.ts",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: less",
+      "cmd": "less scripts/graph-mail.ts",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: more",
+      "cmd": "more scripts/graph-mail.ts",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: git log",
+      "cmd": "git log -- scripts/graph-mail.ts",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: git diff",
+      "cmd": "git diff -- scripts/graph-mail.ts",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: git commit message",
+      "cmd": "git commit -m 'feat(graph-mail): x'",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: find",
+      "cmd": "find scripts -name graph-mail.ts",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: xargs cat",
+      "cmd": "xargs cat scripts/graph-mail.ts",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: env cat",
+      "cmd": "env cat scripts/graph-mail.ts",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: echo",
+      "cmd": "echo scripts/graph-mail.ts",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: npx vitest",
+      "cmd": "npx vitest run src/__tests__/graph-mail.test.ts",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: quoted head",
+      "cmd": "'cat' scripts/graph-mail.ts",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: double-quoted head",
+      "cmd": "\"grep\" graph-mail x",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: head with a quote inside",
+      "cmd": "gr'e'p graph-mail x",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: grep then a send",
+      "cmd": "grep graph-mail x; npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: cat piped",
+      "cmd": "cat scripts/graph-mail.ts | head -3",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: cat redirected",
+      "cmd": "cat scripts/graph-mail.ts > out.txt",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: cat with substitution",
+      "cmd": "cat $(ls) scripts/graph-mail.ts",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: cat with a tilde",
+      "cmd": "cat ~/graph-mail.ts",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: grep with a glob",
+      "cmd": "grep graph-mail scripts/*.ts",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: ls with a glob",
+      "cmd": "ls scripts/graph-mail*",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: grep then LF then rm",
+      "cmd": "grep graph-mail x\nrm y",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: cat in a comment decoy",
+      "cmd": "cat x # graph-mail",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: grep with a LF inside quotes",
+      "cmd": "grep 'a\nb' graph-mail",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: wc with NUL",
+      "cmd": "wc -l graph-mail\u0000",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: inter-agent curl quoting a send",
+      "cmd": "curl -s -X POST http://localhost:3420/api/messages -H 'Content-Type: application/json' -d '{\"to\":\"samu\",\"content\":\"futtasd: npx tsx scripts/graph-mail.ts send --to a@b.hu\"}'",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: agent-msg quoting graph-mail",
+      "cmd": "bash scripts/agent-msg.sh ezermester brainy 'graph-mail teszt'",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny: alias-like name, not on the list",
+      "cmd": "dog graph-mail x",
+      "expect": "deny",
+      "rule": "Q1"
+    },
+    {
+      "name": "deny send: --bcc",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia --bcc c@x.hu",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: --to=value",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to=a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: --body=value",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body=Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: duplicate --to",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia --to b@fireeng.hu",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: duplicate --body",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia --body Szia2",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: positional extra",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia extra",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: unknown flag",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia --priority high",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: unknown short flag",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia -v",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: LF in the body",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body 'Szia\nTeszt'",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: backslash in the body",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body 'Szia\\nTeszt'",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: dollar in the body",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body 'Szia $HOME'",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: backtick in the subject",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject 'Te`x`szt' --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: body and body-file",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia --body-file {ROOT}/a.txt --body-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: body-file without a hash",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body-file {ROOT}/a.txt",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: hash without a body-file",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: body-file with a body-file",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body-file {ROOT}/a.txt --body-file {ROOT}/b.txt --body-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: body-file path outside the outbox",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body-file /etc/hosts --body-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: body-file relative path",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body-file a.txt --body-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: body-file with a subdirectory",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body-file {ROOT}/d/a.txt --body-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: body-file with a dot-dot",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body-file {ROOT}/../a.txt --body-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: body-file with a variable",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body-file $HOME/a.txt --body-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: body-file with a tilde",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body-file ~/a.txt --body-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: upper-case hash",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body-file {ROOT}/a.txt --body-sha256 92D1F492EAA9F4B21DF5D20EACB1DD1A67047F5D2B63D0C8EE8142D1E528901D",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: short hash",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body-file {ROOT}/a.txt --body-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: attach relative",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia --attach file.pdf",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: attach starting with a dash",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia --attach -x.pdf",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: html with a value",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia --html yes",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: empty cc",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia --cc ''",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: empty to",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to '' --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: empty subject",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject '' --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: missing subject",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: missing to",
+      "cmd": "npx tsx scripts/graph-mail.ts send --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: missing body",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: flag as a value",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject --body --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: value missing at the end",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: to quote-concatenated",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to \"a\"@fireeng.hu --subject Teszt --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: flag text inside the body",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body 'mail --to evil@evil.com'",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: cc text inside the subject",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject 'Re --cc evil@x.hu' --body Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: attach text inside the body",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body 'see --attach /etc/passwd'",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: html text inside the body",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body 'use --html now'",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: adjacent quotes in the body",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body 'Sz'\"ia\"",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: quoted flag name",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt \"--body\" Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny send: forward flag on a send",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia --comment Szia",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny forward: LF inside the quoted inline comment",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!\nMasik sor.' --orig-subject 'Targy'",
+      "expect": "deny",
+      "rule": "K3"
+    },
+    {
+      "name": "deny forward: LF inside the quoted subject",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy\nmasik'",
+      "expect": "deny",
+      "rule": "K3"
+    },
+    {
+      "name": "deny forward: send flags on a forward",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --body 'Szia!' --orig-subject 'Targy'",
+      "expect": "deny",
+      "rule": "K3"
+    },
+    {
+      "name": "deny: verify with an argument",
+      "cmd": "npx tsx scripts/graph-mail.ts verify --x",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: verify with a positional",
+      "cmd": "npx tsx scripts/graph-mail.ts verify now",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: list --top with four digits",
+      "cmd": "npx tsx scripts/graph-mail.ts list --top 1234",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: list --top not a number",
+      "cmd": "npx tsx scripts/graph-mail.ts list --top 5x",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: list --top negative",
+      "cmd": "npx tsx scripts/graph-mail.ts list --top -5",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: list --top without a value",
+      "cmd": "npx tsx scripts/graph-mail.ts list --top",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: list --top twice",
+      "cmd": "npx tsx scripts/graph-mail.ts list --top 5 --top 6",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: list --folder elsewhere",
+      "cmd": "npx tsx scripts/graph-mail.ts list --folder trash",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: list --unread with a value",
+      "cmd": "npx tsx scripts/graph-mail.ts list --unread yes",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: list positional",
+      "cmd": "npx tsx scripts/graph-mail.ts list extra",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: list --top=5",
+      "cmd": "npx tsx scripts/graph-mail.ts list --top=5",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: list with a send flag",
+      "cmd": "npx tsx scripts/graph-mail.ts list --to a@fireeng.hu",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: show without an id",
+      "cmd": "npx tsx scripts/graph-mail.ts show",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: show with a short id",
+      "cmd": "npx tsx scripts/graph-mail.ts show --id abc",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: show with a second id",
+      "cmd": "npx tsx scripts/graph-mail.ts show --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: show with an id=value",
+      "cmd": "npx tsx scripts/graph-mail.ts show --id=AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: show with a positional",
+      "cmd": "npx tsx scripts/graph-mail.ts show AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "read: cat the CLI",
+      "cmd": "cat scripts/graph-mail.ts",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: grep -r",
+      "cmd": "grep -r graph-mail scripts",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: grep with a path-qualified head",
+      "cmd": "/usr/bin/grep graph-mail x",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "deny: grep with a relative path-qualified head (B3: only bare, /bin/ or /usr/bin/)",
+      "cmd": "./x/grep graph-mail x",
+      "expect": "deny",
+      "rule": "W1"
+    },
+    {
+      "name": "read: head",
+      "cmd": "head -n 5 scripts/graph-mail.ts",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: tail",
+      "cmd": "tail -n 5 scripts/graph-mail.ts",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: wc",
+      "cmd": "wc -l scripts/graph-mail.ts",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: ls",
+      "cmd": "ls -la scripts/graph-mail.ts",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: grep with a semicolon inside quotes",
+      "cmd": "grep 'a;b' scripts/graph-mail.ts",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: grep with a double-quoted pattern",
+      "cmd": "grep -rn \"graph-mail\" scripts",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: grep with a hash inside quotes",
+      "cmd": "grep '#graph-mail' scripts/x.ts",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: cat with a TAB after the head",
+      "cmd": "cat\tscripts/graph-mail.ts",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: cat with a leading blank",
+      "cmd": " cat scripts/graph-mail.ts",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: verify",
+      "cmd": "npx tsx scripts/graph-mail.ts verify",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: verify with an absolute path",
+      "cmd": "npx tsx {REPO}/scripts/graph-mail.ts verify",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: verify with tsx alone",
+      "cmd": "tsx scripts/graph-mail.ts verify",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: list",
+      "cmd": "npx tsx scripts/graph-mail.ts list",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: list --top 50",
+      "cmd": "npx tsx scripts/graph-mail.ts list --top 50",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: list --unread --folder sentitems",
+      "cmd": "npx tsx scripts/graph-mail.ts list --unread --folder sentitems",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: list --folder inbox --top 5",
+      "cmd": "npx tsx scripts/graph-mail.ts list --folder inbox --top 5",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: show --id",
+      "cmd": "npx tsx scripts/graph-mail.ts show --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "read: show --id quoted",
+      "cmd": "npx tsx scripts/graph-mail.ts show --id 'AAMkAGFmZXN0MDEyMzQ1Njc4OQ=='",
+      "expect": "read",
+      "rule": "W1"
+    },
+    {
+      "name": "send: send inline, bare words",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "send",
+      "rule": "W1"
+    },
+    {
+      "name": "send: send inline, single quotes",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject 'Teszt level' --body 'Szia, ez egy teszt.'",
+      "expect": "send",
+      "rule": "W1"
+    },
+    {
+      "name": "send: send inline, double quotes",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject \"Teszt level\" --body \"Szia, ez egy teszt.\"",
+      "expect": "send",
+      "rule": "W1"
+    },
+    {
+      "name": "send: send inline with a cc",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia --cc b@fireeng.hu",
+      "expect": "send",
+      "rule": "W1"
+    },
+    {
+      "name": "send: send inline with --html",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia --html",
+      "expect": "send",
+      "rule": "W1"
+    },
+    {
+      "name": "send: send inline with a quoted absolute attach",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia --attach '/Users/gyorgydecsi/marveen/store/mail-attachments/x.pdf'",
+      "expect": "send",
+      "rule": "W1"
+    },
+    {
+      "name": "send: send inline with a hash inside quotes",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject 'Teszt #1' --body \"Szia #2\"",
+      "expect": "send",
+      "rule": "W1"
+    },
+    {
+      "name": "send: send inline, reordered flags",
+      "cmd": "npx tsx scripts/graph-mail.ts send --body Szia --subject Teszt --to a@fireeng.hu",
+      "expect": "send",
+      "rule": "W1"
+    },
+    {
+      "name": "send: send inline with an absolute CLI path",
+      "cmd": "npx tsx {REPO}/scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "send",
+      "rule": "W1"
+    },
+    {
+      "name": "send: send inline with tsx alone",
+      "cmd": "tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "send",
+      "rule": "W1"
+    },
+    {
+      "name": "send: send with a body-file",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body-file {ROOT}/a.txt --body-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+      "expect": "send",
+      "rule": "W1"
+    },
+    {
+      "name": "send: send with a quoted body-file path",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body-file '{ROOT}/a.txt' --body-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+      "expect": "send",
+      "rule": "W1"
+    },
+    {
+      "name": "send: send with a body-file, reordered, with cc",
+      "cmd": "npx tsx scripts/graph-mail.ts send --body-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --body-file {ROOT}/a.txt --cc b@fireeng.hu --subject Teszt --to a@fireeng.hu",
+      "expect": "send",
+      "rule": "W1"
+    },
+    {
+      "name": "send: send whose body only mentions the forward command (GR2)",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Re --body 'futtasd: npx tsx scripts/graph-mail.ts forward --id X'",
+      "expect": "send",
+      "rule": "W1"
+    },
+    {
+      "name": "forward: inline",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia' --orig-subject 'Targy'",
+      "expect": "forward",
+      "rule": "W1"
+    },
+    {
+      "name": "forward: inline, double quotes",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment \"Szia\" --orig-subject \"Targy\"",
+      "expect": "forward",
+      "rule": "W1"
+    },
+    {
+      "name": "forward: file form",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Targy'",
+      "expect": "forward",
+      "rule": "W1"
+    },
+    {
+      "name": "send, unreadable body file: wrong hash",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body-file {ROOT}/a.txt --body-sha256 0000000000000000000000000000000000000000000000000000000000000000",
+      "expect": "send",
+      "rule": "W1",
+      "gate": "deny"
+    },
+    {
+      "name": "send, unreadable body file: file does not exist",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to a@fireeng.hu --subject Teszt --body-file {ROOT}/nincs.txt --body-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+      "expect": "send",
+      "rule": "W1",
+      "gate": "deny"
+    },
+    {
+      "name": "none: an ordinary command",
+      "cmd": "ls -la",
+      "expect": "none",
+      "rule": "W1"
+    },
+    {
+      "name": "none: a command with a semicolon and no mention",
+      "cmd": "echo a; echo b",
+      "expect": "none",
+      "rule": "W1"
+    },
+    {
+      "name": "none: glob in the script path (the grammar still says none; the B4 script-path rule in both gates denies it, see the B4 section of the gate test)",
+      "cmd": "npx tsx scripts/graph-m*.ts send --to a@fireeng.hu --subject Teszt --body Szia",
+      "expect": "none",
+      "rule": "K5"
+    },
+    {
+      "name": "B3: ./x/grep head with a full send after it",
+      "cmd": "./x/grep scripts/graph-mail.ts send --to evil@evil.com --subject s --body b",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3: ./x/grep head",
+      "cmd": "./x/grep graph-mail x",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3: x/cat head",
+      "cmd": "x/cat graph-mail",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3: /opt/bin/grep head",
+      "cmd": "/opt/bin/grep graph-mail x",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3: /usr/bin/grep is a reader",
+      "cmd": "/usr/bin/grep graph-mail x",
+      "expect": "read",
+      "rule": "B3"
+    },
+    {
+      "name": "B3: /bin/cat is a reader",
+      "cmd": "/bin/cat scripts/graph-mail.ts",
+      "expect": "read",
+      "rule": "B3"
+    },
+    {
+      "name": "B3: bare ls is a reader",
+      "cmd": "ls scripts/graph-mail.ts",
+      "expect": "read",
+      "rule": "B3"
+    },
+    {
+      "name": "Q2: CLI path under /tmp",
+      "cmd": "npx tsx /tmp/evil/graph-mail.ts send --to evil@evil.com --subject s --body b",
+      "expect": "deny",
+      "rule": "Q2"
+    },
+    {
+      "name": "Q2: CLI path ./scripts",
+      "cmd": "npx tsx ./scripts/graph-mail.ts list",
+      "expect": "deny",
+      "rule": "Q2"
+    },
+    {
+      "name": "Q2: CLI path x/graph-mail.ts",
+      "cmd": "tsx x/graph-mail.ts list",
+      "expect": "deny",
+      "rule": "Q2"
+    },
+    {
+      "name": "Q2: CLI path scripts/graph-mail.ts is the pinned one",
+      "cmd": "npx tsx scripts/graph-mail.ts list",
+      "expect": "read",
+      "rule": "Q2"
+    }
+  ]
+}
