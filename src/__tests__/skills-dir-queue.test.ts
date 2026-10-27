@@ -18,6 +18,13 @@ const realHome = process.env.HOME
 process.env.HOME = fakeHome
 const bin = join(tmpRoot, 'bin')
 const log = join(tmpRoot, 'tool.log')
+// v1.45.0 merge (card c3c32903, test setup): POST /api/fleet/import?apply=true needs the install's .env to open
+// FLEET_IMPORT_APPLY_ENABLED=1 (admin-switch.ts), which this suite used to get from the live checkout's .env. It
+// is not about that gate, so it runs against a throwaway .env that opens it (set before any app module loads).
+const envDir = join(tmpRoot, 'envdir')
+mkdirSync(envDir, { recursive: true })
+writeFileSync(join(envDir, '.env'), 'FLEET_IMPORT_APPLY_ENABLED=1\n')
+process.env.CLAUDECLAW_ENV_DIR = envDir
 
 vi.mock('../config.js', async (orig) => ({
   ...(await orig<typeof import('../config.js')>()),
@@ -82,6 +89,7 @@ afterAll(() => {
   process.env.PATH = origPath
   process.env.HOME = realHome
   delete process.env.TOOL_LOG
+  delete process.env.CLAUDECLAW_ENV_DIR
   rmSync(tmpRoot, { recursive: true, force: true })
 })
 
