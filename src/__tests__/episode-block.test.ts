@@ -164,7 +164,9 @@ describe('runner wiring', () => {
   })
 
   it('the stale-refresh tier is the one that passes refresh', () => {
-    expect(block).toMatch(/refresh: decision\.reason\.startsWith\(STALE_REFRESH_REASON_PREFIX\)/)
+    // v1.45.0: the runner reads promptReason (decision.reason, or the stored reason on a resend);
+    // the assertion is the same prefix check on the field the runner really uses.
+    expect(block).toMatch(/refresh: promptReason\.startsWith\(STALE_REFRESH_REASON_PREFIX\)/)
   })
 })
 

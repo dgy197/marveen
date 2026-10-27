@@ -46,7 +46,7 @@ cd "$WORK/cwd" || exit 2
 # Launched like the fleet launches an agent: no Agent view, and IS_SANDBOX on a root host (ROOTRESPAWN1001).
 [ "$(id -u)" != 0 ] || export IS_SANDBOX=1
 env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_MESSAGING_SOCKET \
-    -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_CHILD_SESSION \
+    -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_CHILD_SESSION -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
     CLAUDE_CONFIG_DIR="$WORK/cfg" TELEGRAM_STATE_DIR="$WORK/tg" CLAUDE_CODE_DISABLE_AGENT_VIEW=1 \
     CLAUDE_CODE_OAUTH_TOKEN="$(cat "$TOKEN_FILE")" \
   "$CLAUDE_BIN" -p "Use the Bash tool once to run exactly: python3 probe.py $ALLOW $DENY result.json   Do not change or retry it. Then reply DONE." \

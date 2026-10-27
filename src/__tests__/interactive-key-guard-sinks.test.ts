@@ -223,6 +223,12 @@ export const DIRECT_INVENTORY: DirectEntry[] = [
     note: 'reggeli napindito fallback: exports the whole .env, then claude -p',
   },
   {
+    // BE2-2 (c3c32903, security review): the sandbox e2e's child claude (a real, Haiku-model run) now
+    // drops both key names too, in every mode; it authenticates with CLAUDE_CODE_OAUTH_TOKEN only.
+    file: 'scripts/bash-sandbox-e2e.sh', match: '-u CLAUDE_CODE_CHILD_SESSION -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN', status: 'strips-keys',
+    guard: [], note: 'bash sandbox e2e: the child claude -p strips both key names, in every mode',
+  },
+  {
     file: 'scripts/fix-avx.sh', match: 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN', status: 'strips-keys',
     guard: [], note: 'AVX probe: already strips both names, in every mode',
   },

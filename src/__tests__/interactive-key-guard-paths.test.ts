@@ -463,8 +463,10 @@ describe('scripts/morning-briefing.sh (a direct claude -p after exporting the wh
     return existsSync(keysPath) ? readFileSync(keysPath, 'utf-8').trim() : '<claude never ran>'
   }
 
-  it('allow (no policy line): the exported key names reach claude, exactly as today', () => {
-    expect(run('')).toBe('ANTHROPIC_API_KEY=set\nANTHROPIC_AUTH_TOKEN=set')
+  // v1.45.0 (MORNTIMER2197, upstream): the call always drops the subscription tokens, so under allow
+  // ANTHROPIC_AUTH_TOKEN no longer reaches claude (it blocks MORE than before); ANTHROPIC_API_KEY still does.
+  it('allow (no policy line): the exported ANTHROPIC_API_KEY reaches claude, the auth token is always dropped', () => {
+    expect(run('')).toBe('ANTHROPIC_API_KEY=set\nANTHROPIC_AUTH_TOKEN=unset')
   })
 
   it('forbid: neither name reaches claude, though the .env exports both', () => {

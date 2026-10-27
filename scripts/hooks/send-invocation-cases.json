@@ -1530,9 +1530,10 @@
       "expected": false
     },
     {
-      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): a backslash-newline after --to -- the next token is not a known agent name: a send (fail-closed)",
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): a backslash-newline after --to is a line continuation, so --to has the value diszpecser, a known agent name: not a send",
       "cmd": "$F message post --to \\\n  diszpecser --content-stdin < x.txt",
-      "expected": true
+      "expected": false,
+      "note": "c3c32903 (tests): the security review of the v1.45.0 merge measured that bash runs this exactly like `--to diszpecser --content-stdin < x.txt`; the upstream gate returns false for that command too, so false is parity with upstream and not a loosening of the contract."
     },
     {
       "name": "FLEETTOFLAG1025 v3: 2>&1 after --to -- the tokenizer cuts the segment at &, --to has no value: a send (fail-closed)",

@@ -303,8 +303,31 @@ describe('token caller in the first-run state (no dashboard user): upstream\'s e
   // bridge-service-ports (bridge-service-ports-gate.test.ts) and is exercised directly below.
   beforeEach(firstRun)
 
-  it.each([['off', null], ['on', `${ENABLED}=1`]] as const)('switch %s: the first user, a device key and the Bridge pairing go through, with no gate WARN, audit row or notification of the switch', async (_label, line) => {
-    setEnv(line)
+  // B2 (Brainy 4952, owner-approved; BE-B2 of the security review): the local switch applies at
+  // first run too. Upstream's own expectation was "no switch in front of it"; that is replaced by:
+  // switch off -> 403 and nothing written, switch on -> admitted, with the WARN and the audit trail.
+  it('switch off (B2, Brainy 4952): the first user, a device key and the Bridge pairing are refused, and nothing is written', async () => {
+    setEnv(null)
+    const key = await call('POST', DEVICE_KEYS.path, { auth: TOKEN, body: DEVICE_KEYS.body() })
+    expect(key.status).toBe(403)
+    expect(key.json()).toEqual(OFF_BODY)
+    const br = await call('POST', '/api/security/bridge-enroll', { auth: TOKEN, body: ROUTES[3]!.body() })
+    expect(br.status).toBe(403)
+    expect(br.json()).toEqual(OFF_BODY)
+    expect(bridge.calls).toBe(0)
+    const user = await call('POST', '/api/auth/users', { auth: TOKEN, body: ROUTES[0]!.body(), headers: { 'x-agent-id': 'brainy' } })
+    expect(user.status).toBe(403)
+    expect(user.json()).toEqual(OFF_BODY)
+    expect(getDashboardUser('newuser')).toBeUndefined()
+    expect(warns(ADMITTED)).toEqual([])
+    expect(warns(REFUSED)).toHaveLength(3)
+    expect(auditRows('security.bearer_credential_admin')).toEqual([])
+    expect(notified).toEqual([])
+    expect(trail()).not.toContain(NEW_PW)
+  })
+
+  it('switch on (B2, Brainy 4952): the first user, a device key and the Bridge pairing are admitted, each with the WARN, audit row and notification', async () => {
+    setEnv(`${ENABLED}=1`)
     const key = await call('POST', DEVICE_KEYS.path, { auth: TOKEN, body: DEVICE_KEYS.body() })
     expect(key.status).toBe(201)
     expect(String(key.json().key)).toMatch(/^mvdk_/)
@@ -315,11 +338,12 @@ describe('token caller in the first-run state (no dashboard user): upstream\'s e
     expect(user.status).toBe(201)
     expect(getDashboardUser('newuser')).toBeDefined()
     expect(warns(REFUSED)).toEqual([])
-    expect(warns(ADMITTED)).toEqual([])
-    expect(gateEnvReads()).toEqual([])
-    expect(auditRows('security.bearer_credential_admin')).toEqual([])
-    // Only the Bridge pairing's own, existing notification.
-    expect(notified).toHaveLength(1)
+    expect(warns(ADMITTED).map((w) => w[0].action)).toEqual(['auth.device_keys.create', 'security.bridge_enroll', 'auth.users.create'])
+    // the audit trail: the user and the device key (the Bridge pairing keeps its own existing notification)
+    const rows = auditRows('security.bearer_credential_admin')
+    expect(rows).toHaveLength(2)
+    expect(rows.every((r) => r.actor === 'token' && r.new_value.includes('mode=manual'))).toBe(true)
+    expect(notified.length).toBeGreaterThanOrEqual(2)
     expect(trail()).not.toContain(NEW_PW)
   })
 
