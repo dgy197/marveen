@@ -11,6 +11,14 @@
 // switch admits a token caller only before UNTIL (at most 900 s ahead) and only
 // with an X-Credential-Window header equal to NONCE (constant-time compare).
 //
+// v1.45.0 merge (card c3c32903): upstream's DEVKEYMINT1022 stacks on this switch and
+// comes FIRST. Once a dashboard user exists, issuing a credential takes the owner's
+// session (the shared token gets owner_session_required, the switch cannot open it),
+// and a password reset over HTTP is the CLI's only (token -> cli_recovery_only). So the
+// switch is only reached by a token caller in the first-run state (no dashboard user):
+// the token describes below run in that state (firstRun()); the owner is created by the
+// outer beforeEach for the session cases.
+//
 // The suite runs the REAL handlers (routes/auth.ts, routes/security.ts) against
 // a throwaway install: the .env, store/config-overrides.json and the
 // authorized_keys file live under one mkdtemp directory, the DB is in memory.
@@ -107,6 +115,7 @@ const { hashPassword, verifyPassword } = await import('../web/password-hash.js')
 const { createDeviceKey, resolveDeviceKey, _clearDeviceKeyCacheForTest } = await import('../web/auth-device-keys.js')
 const { _clearSessionCacheForTest } = await import('../web/auth-sessions.js')
 const { _resetThrottleForTest } = await import('../web/login-throttle.js')
+const { admitBearerCredentialAdmin, recordBearerCredentialMint } = await import('../web/credential-admin.js')
 
 const ENABLED = 'BEARER_CREDENTIAL_ADMIN_ENABLED'
 const UNTIL = 'BEARER_CREDENTIAL_ADMIN_UNTIL'
@@ -143,6 +152,14 @@ const ROUTES: Route[] = [
   { action: 'security.bridge_enroll', path: '/api/security/bridge-enroll', ok: 201, body: () => ({ key_line: 'ssh-ed25519 AAAAtest marveen-remote:x', name: 'Gate Phone' }) },
 ]
 const DEVICE_KEYS = ROUTES[1]!
+// The routes a token caller can still reach the switch on (the password reset is CLI-only now).
+const GATED = ROUTES.filter(r => r.action !== 'auth.password.break_glass')
+const OWNER_SESSION_BODY = { error: expect.stringContaining('owner session'), code: 'owner_session_required' }
+
+/** The first-run state: no dashboard user, the only state in which upstream lets the bare token issue a credential. */
+function firstRun(): void {
+  getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users')
+}
 
 function setEnv(lines: string | null): void {
   writeFileSync(ENV_PATH, BASE_ENV + (lines === null ? '' : `${lines}\n`))
@@ -170,6 +187,20 @@ async function call(method: string, path: string, opts: { auth?: Auth; body?: un
   const ctx = { req, res, path, method, url: new URL(`http://127.0.0.1:3420${path}`), auth: opts.auth } as RouteContext
   const handled = path.startsWith('/api/security/') ? await tryHandleSecurity(ctx) : await tryHandleAuth(ctx)
   return { handled, status: out.status, raw: out.raw, json: () => (out.raw ? JSON.parse(out.raw) : {}), bodyRead }
+}
+
+/** The switch decision on its own, as the handlers ask it: the response it writes on a refusal, the admission otherwise. */
+function admit(action: string, headers: Record<string, string | string[]> = {}) {
+  const out = { status: 0, raw: '' }
+  const res: any = {
+    writeHead(status: number) { out.status = status; return res },
+    setHeader() {},
+    end(chunk?: string) { if (chunk !== undefined) out.raw += chunk },
+  }
+  const req: any = { headers: { ...headers } }
+  const ctx = { req, res, path: '/x', method: 'POST', url: new URL('http://127.0.0.1:3420/x'), auth: TOKEN } as RouteContext
+  const admission = admitBearerCredentialAdmin(ctx, action as Parameters<typeof admitBearerCredentialAdmin>[1])
+  return { admission, status: out.status, json: () => (out.raw ? JSON.parse(out.raw) : {}) }
 }
 
 function warns(re: RegExp): any[][] {
@@ -233,109 +264,102 @@ afterAll(() => {
   rmSync(T.root, { recursive: true, force: true })
 })
 
-describe('token caller, switch off: 403 before the body, one WARN, nothing written (G1, L1)', () => {
-  it.each(ROUTES.map(r => [r.action, r] as const))('%s', async (_action, route) => {
-    for (const body of [route.body(), '{']) {
+describe('token caller with a dashboard login present: upstream\'s owner-session rule comes first, the switch cannot open it (v1.45.0)', () => {
+  it.each([['off', null], ['on', `${ENABLED}=1`]] as const)('switch %s: users, device keys and Bridge pairing are owner_session_required, body unread, nothing written, no gate WARN', async (_label, line) => {
+    setEnv(line)
+    for (const route of GATED) {
       const before = snapshot()
-      log.warn.mockClear()
-      const r = await call('POST', route.path, { auth: TOKEN, body, headers: { 'x-agent-id': 'ezermester' } })
-      expect(r.handled).toBe(true)
-      expect(r.status).toBe(403)
-      expect(r.json()).toEqual(OFF_BODY)
-      expect(r.bodyRead).toBe(false)
+      const r = await call('POST', route.path, { auth: TOKEN, body: route.body() })
+      expect(r.status, route.path).toBe(403)
+      expect(r.json(), route.path).toEqual(OWNER_SESSION_BODY)
+      expect(r.bodyRead, route.path).toBe(false)
       expect(snapshot()).toEqual(before)
-      expect(log.warn).toHaveBeenCalledTimes(1)
-      const [w] = warns(REFUSED)
-      expect(w?.[0]).toEqual({ caller: 'ezermester', at: expect.any(String), action: route.action, reason: 'switch_off' })
-      expect(new Date(w![0].at).toISOString()).toBe(w![0].at)
     }
     expect(bridge.calls).toBe(0)
+    expect(warns(REFUSED)).toEqual([])
+    expect(warns(ADMITTED)).toEqual([])
+    expect(notified).toEqual([])
+  })
+
+  it.each([['off', null], ['on', `${ENABLED}=1`]] as const)('switch %s: the token cannot reset a password over HTTP at all (cli_recovery_only), the hash is unchanged', async (_label, line) => {
+    setEnv(line)
+    const hash = getDashboardUser(OWNER)!.password_hash
+    const before = snapshot()
+    const r = await call('POST', '/api/auth/password', { auth: TOKEN, body: ROUTES[2]!.body() })
+    expect(r.status).toBe(403)
+    expect(r.json()).toMatchObject({ code: 'cli_recovery_only' })
+    expect(r.bodyRead).toBe(false)
+    expect(getDashboardUser(OWNER)!.password_hash).toBe(hash)
+    expect(snapshot()).toEqual(before)
+    expect(warns(ADMITTED)).toEqual([])
     expect(notified).toEqual([])
   })
 })
 
-describe('token caller, switch "1" (manual mode): today\'s answer plus the trail (G2, L2)', () => {
-  beforeEach(() => setEnv(`${ENABLED}=1`))
+describe('token caller in the first-run state (no dashboard user): upstream\'s exception, no .env switch in front of it (v1.45.0)', () => {
+  // Upstream's own tests (credential-issuance-owner-session and the ones that seed the
+  // first owner through the token) pin this: the token creates the first user and mints
+  // without BEARER_CREDENTIAL_ADMIN_ENABLED. The switch keeps its effect on
+  // bridge-service-ports (bridge-service-ports-gate.test.ts) and is exercised directly below.
+  beforeEach(firstRun)
 
-  it('POST /api/auth/users: 201, one admission WARN before the body, one audit row, one notification, no password anywhere', async () => {
-    const r = await call('POST', '/api/auth/users', { auth: TOKEN, body: ROUTES[0]!.body(), headers: { 'x-agent-id': 'brainy' } })
-    expect(r.status).toBe(201)
-    expect(r.json()).toMatchObject({ ok: true, user: { username: 'newuser' } })
+  it.each([['off', null], ['on', `${ENABLED}=1`]] as const)('switch %s: the first user, a device key and the Bridge pairing go through, with no gate WARN, audit row or notification of the switch', async (_label, line) => {
+    setEnv(line)
+    const key = await call('POST', DEVICE_KEYS.path, { auth: TOKEN, body: DEVICE_KEYS.body() })
+    expect(key.status).toBe(201)
+    expect(String(key.json().key)).toMatch(/^mvdk_/)
+    const br = await call('POST', '/api/security/bridge-enroll', { auth: TOKEN, body: ROUTES[3]!.body() })
+    expect(br.status).toBe(201)
+    expect(bridge.calls).toBe(1)
+    const user = await call('POST', '/api/auth/users', { auth: TOKEN, body: ROUTES[0]!.body(), headers: { 'x-agent-id': 'brainy' } })
+    expect(user.status).toBe(201)
     expect(getDashboardUser('newuser')).toBeDefined()
+    expect(warns(REFUSED)).toEqual([])
+    expect(warns(ADMITTED)).toEqual([])
+    expect(gateEnvReads()).toEqual([])
+    expect(auditRows('security.bearer_credential_admin')).toEqual([])
+    // Only the Bridge pairing's own, existing notification.
+    expect(notified).toHaveLength(1)
+    expect(trail()).not.toContain(NEW_PW)
+  })
+
+  it('the first user exists afterwards: the very next token mint is owner_session_required', async () => {
+    expect((await call('POST', '/api/auth/users', { auth: TOKEN, body: ROUTES[0]!.body() })).status).toBe(201)
+    const r = await call('POST', DEVICE_KEYS.path, { auth: TOKEN, body: DEVICE_KEYS.body() })
+    expect(r.status).toBe(403)
+    expect(r.json()).toEqual(OWNER_SESSION_BODY)
+  })
+})
+
+describe('the switch itself (admitBearerCredentialAdmin): the decision, the trail, before any body', () => {
+  it('open (manual): one admission WARN with the caller, the audit row and the notification hold no secret', () => {
+    setEnv(`${ENABLED}=1`)
+    const r = admit('auth.users.create', { 'x-agent-id': 'brainy' })
+    expect(r.admission).toEqual({ mode: 'manual' })
+    expect(r.status).toBe(0)
     const w = warns(ADMITTED)
     expect(w).toHaveLength(1)
     expect(w[0]![0]).toEqual({ caller: 'brainy', at: expect.any(String), action: 'auth.users.create', via: 'switch', mode: 'manual' })
-    expect(seq.findIndex(s => /Credential admin by the shared token/.test(s))).toBeLessThan(seq.indexOf('body'))
+    recordBearerCredentialMint('auth.users.create', r.admission!, 'user="newuser" id=7')
     const rows = auditRows('security.bearer_credential_admin')
     expect(rows).toHaveLength(1)
     expect(rows[0]!.actor).toBe('token')
     expect(rows[0]!.new_value).toContain('newuser')
+    expect(rows[0]!.new_value).toContain('mode=manual')
     expect(notified).toHaveLength(1)
     expect(notified[0]).toContain('newuser')
-    expect(trail()).not.toContain(NEW_PW)
   })
 
-  it('POST /api/auth/device-keys: 201, one admission WARN, one audit row (name, id, expiry), one notification, no raw key anywhere', async () => {
-    const r = await call('POST', '/api/auth/device-keys', { auth: TOKEN, body: DEVICE_KEYS.body() })
-    expect(r.status).toBe(201)
-    const body = r.json()
-    expect(String(body.key)).toMatch(/^mvdk_/)
-    const w = warns(ADMITTED)
-    expect(w).toHaveLength(1)
-    expect(w[0]![0]).toMatchObject({ caller: 'unknown', action: 'auth.device_keys.create', via: 'switch', mode: 'manual' })
-    const rows = auditRows('security.bearer_credential_admin')
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!.actor).toBe('token')
-    expect(rows[0]!.new_value).toContain('gate-test')
-    expect(rows[0]!.new_value).toContain(`id=${body.id}`)
-    expect(rows[0]!.new_value).toContain(new Date(Number(body.expires_at) * 1000).toISOString())
-    expect(notified).toHaveLength(1)
-    expect(notified[0]).toContain('gate-test')
-    expect(trail()).not.toContain(String(body.key))
-  })
-
-  it('POST /api/auth/password (token break-glass): 200, the existing audit and notification, one admission WARN, no password anywhere', async () => {
-    const r = await call('POST', '/api/auth/password', { auth: TOKEN, body: ROUTES[2]!.body() })
-    expect(r.status).toBe(200)
-    expect(await verifyPassword(NEW_PW, getDashboardUser(OWNER)!.password_hash)).toBe(true)
-    expect(warns(ADMITTED)).toHaveLength(1)
-    expect(warns(ADMITTED)[0]![0]).toMatchObject({ action: 'auth.password.break_glass', via: 'switch', mode: 'manual' })
-    expect(auditRows('security.break_glass_password_reset')).toHaveLength(1)
-    expect(auditRows('security.bearer_credential_admin')).toHaveLength(0)
-    expect(notified).toHaveLength(1)
-    expect(trail()).not.toContain(NEW_PW)
-  })
-
-  it('POST /api/security/bridge-enroll: 201 (stand-in enroll), the existing audit and notification, one admission WARN', async () => {
-    const before = readFileSync(AUTH_KEYS, 'utf8')
-    const r = await call('POST', '/api/security/bridge-enroll', { auth: TOKEN, body: ROUTES[3]!.body() })
-    expect(r.status).toBe(201)
-    expect(bridge.calls).toBe(1)
-    expect(readFileSync(AUTH_KEYS, 'utf8')).not.toBe(before)
-    expect(warns(ADMITTED)).toHaveLength(1)
-    expect(warns(ADMITTED)[0]![0]).toMatchObject({ action: 'security.bridge_enroll', via: 'switch', mode: 'manual' })
-    expect(auditRows('security.bridge_enroll')).toHaveLength(1)
-    expect(notified).toHaveLength(1)
-  })
-
-  it('a "{" body is parsed only after the gate: 400 on all four, nothing written (D10)', async () => {
-    for (const route of ROUTES) {
-      const before = snapshot()
-      const r = await call('POST', route.path, { auth: TOKEN, body: '{' })
-      expect(r.status, route.path).toBe(400)
-      expect(snapshot()).toEqual(before)
-    }
-    expect(bridge.calls).toBe(0)
-  })
-
-  it('the decision precedes the first body read on every gated route', async () => {
-    for (const route of ROUTES) {
-      seq.length = 0
-      await call('POST', route.path, { auth: TOKEN, body: route.body() })
-      const decided = seq.findIndex(s => /Credential admin by the shared token/.test(s))
-      expect(decided, route.path).toBeGreaterThanOrEqual(0)
-      expect(seq.indexOf('body'), route.path).toBeGreaterThan(decided)
-    }
+  it('closed: 403 with the switch-off body, one REFUSED WARN, nothing else', () => {
+    const r = admit('auth.device_keys.create', { 'x-agent-id': 'ezermester' })
+    expect(r.admission).toBeNull()
+    expect(r.status).toBe(403)
+    expect(r.json()).toEqual(OFF_BODY)
+    expect(log.warn).toHaveBeenCalledTimes(1)
+    const [w] = warns(REFUSED)
+    expect(w?.[0]).toEqual({ caller: 'ezermester', at: expect.any(String), action: 'auth.device_keys.create', reason: 'switch_off' })
+    expect(new Date(w![0].at).toISOString()).toBe(w![0].at)
+    expect(notified).toEqual([])
   })
 })
 
@@ -426,33 +450,35 @@ describe('switch values: only an exact "1" in the .env opens (S1-S3)', () => {
     ['unquoted "1 " (the line is trimmed)', `${ENABLED}=1 `, true],
     ['=1 then =0 (the last wins)', `${ENABLED}=1\n${ENABLED}=0`, false],
     ['=0 then =1 (the last wins)', `${ENABLED}=0\n${ENABLED}=1`, true],
-  ] as const)('%s -> open: %s', async (_label, line, open) => {
+  ] as const)('%s -> open: %s', (_label, line, open) => {
     setEnv(line)
-    const r = await call('POST', DEVICE_KEYS.path, { auth: TOKEN, body: DEVICE_KEYS.body() })
-    expect(r.status).toBe(open ? 201 : 403)
-    if (!open) expect(r.json()).toEqual(OFF_BODY)
+    const r = admit(DEVICE_KEYS.action)
+    expect(r.admission !== null).toBe(open)
+    if (!open) {
+      expect(r.status).toBe(403)
+      expect(r.json()).toEqual(OFF_BODY)
+    }
   })
 
-  it('the process environment does not count (S2)', async () => {
+  it('the process environment does not count (S2)', () => {
     process.env[ENABLED] = '1'
-    const r = await call('POST', DEVICE_KEYS.path, { auth: TOKEN, body: DEVICE_KEYS.body() })
-    expect(r.status).toBe(403)
+    const r = admit(DEVICE_KEYS.action)
+    expect(r.admission).toBeNull()
     expect(warns(REFUSED)[0]![0]).toMatchObject({ reason: 'switch_off' })
   })
 
-  it('store/config-overrides.json does not count (S2)', async () => {
+  it('store/config-overrides.json does not count (S2)', () => {
     writeFileSync(OVERRIDES, JSON.stringify({ [ENABLED]: '1' }))
-    const r = await call('POST', DEVICE_KEYS.path, { auth: TOKEN, body: DEVICE_KEYS.body() })
-    expect(r.status).toBe(403)
+    expect(admit(DEVICE_KEYS.action).admission).toBeNull()
   })
 
-  it('a change of the .env between two requests is followed without a restart (S3)', async () => {
+  it('a change of the .env between two requests is followed without a restart (S3)', () => {
     setEnv(`${ENABLED}=1`)
-    expect((await call('POST', DEVICE_KEYS.path, { auth: TOKEN, body: DEVICE_KEYS.body() })).status).toBe(201)
+    expect(admit(DEVICE_KEYS.action).admission).not.toBeNull()
     setEnv(null)
-    expect((await call('POST', DEVICE_KEYS.path, { auth: TOKEN, body: DEVICE_KEYS.body() })).status).toBe(403)
+    expect(admit(DEVICE_KEYS.action).admission).toBeNull()
     setEnv(`${ENABLED}=1`)
-    expect((await call('POST', DEVICE_KEYS.path, { auth: TOKEN, body: DEVICE_KEYS.body() })).status).toBe(201)
+    expect(admit(DEVICE_KEYS.action).admission).not.toBeNull()
   })
 })
 
@@ -475,10 +501,10 @@ describe('window mode: UNTIL and NONCE next to ENABLED=1 (S6-S9)', () => {
     ].filter(Boolean).join('\n')
   }
 
-  async function mint(header: string | string[] | undefined) {
+  function mint(header: string | string[] | undefined) {
     const headers: Record<string, string | string[]> = { 'x-agent-id': 'credential-window' }
     if (header !== undefined) headers[HEADER] = header
-    return call('POST', DEVICE_KEYS.path, { auth: TOKEN, body: DEVICE_KEYS.body(), headers })
+    return admit(DEVICE_KEYS.action, headers)
   }
 
   const S = (n: number) => String(n)
@@ -512,58 +538,57 @@ describe('window mode: UNTIL and NONCE next to ENABLED=1 (S6-S9)', () => {
     ['UNTIL missing', null, GOOD, GOOD, 'window_malformed'],
     ['both missing, header sent (manual mode, S8)', null, null, GOOD, 'manual'],
     ['both missing, no header (manual mode, S8)', null, null, undefined, 'manual'],
-  ] as const)('%s', async (_label, until, nonce, header, expected) => {
+  ] as const)('%s', (_label, until, nonce, header, expected) => {
     setEnv(windowEnv(until, nonce))
-    const before = snapshot()
-    const r = await mint(header as string | string[] | undefined)
+    const r = mint(header as string | string[] | undefined)
     if (expected === 'window' || expected === 'manual') {
-      expect(r.status).toBe(201)
+      expect(r.admission).toEqual({ mode: expected })
       expect(warns(ADMITTED)).toHaveLength(1)
       expect(warns(ADMITTED)[0]![0]).toMatchObject({ caller: 'credential-window', action: 'auth.device_keys.create', via: 'switch', mode: expected })
+      recordBearerCredentialMint('auth.device_keys.create', r.admission!, 'key="k" id=1')
       expect(auditRows('security.bearer_credential_admin')[0]!.new_value).toContain(`mode=${expected}`)
     } else {
+      expect(r.admission).toBeNull()
       expect(r.status).toBe(403)
       expect(r.json()).toEqual(OFF_BODY)
-      expect(r.bodyRead).toBe(false)
-      expect(snapshot()).toEqual(before)
       expect(log.warn).toHaveBeenCalledTimes(1)
       expect(warns(REFUSED)[0]![0]).toEqual({ caller: 'credential-window', at: expect.any(String), action: 'auth.device_keys.create', reason: expected })
     }
   })
 
-  it.each([['ENABLED=0', '0'], ['ENABLED missing', null]] as const)('%s with a valid window and a matching header: switch_off', async (_label, enabled) => {
+  it.each([['ENABLED=0', '0'], ['ENABLED missing', null]] as const)('%s with a valid window and a matching header: switch_off', (_label, enabled) => {
     setEnv(windowEnv(S(NOW + 60), GOOD, enabled))
-    const r = await mint(GOOD)
-    expect(r.status).toBe(403)
+    const r = mint(GOOD)
+    expect(r.admission).toBeNull()
     expect(warns(REFUSED)[0]![0]).toMatchObject({ reason: 'switch_off' })
   })
 
-  it('UNTIL and NONCE only in the process environment or the overrides: manual mode, the .env alone counts (S2, S9)', async () => {
+  it('UNTIL and NONCE only in the process environment or the overrides: manual mode, the .env alone counts (S2, S9)', () => {
     setEnv(`${ENABLED}=1`)
     process.env[UNTIL] = S(NOW - 100)
     process.env[NONCE] = GOOD
     writeFileSync(OVERRIDES, JSON.stringify({ [UNTIL]: S(NOW - 100), [NONCE]: GOOD }))
-    const r = await mint(undefined)
-    expect(r.status).toBe(201)
+    const r = mint(undefined)
+    expect(r.admission).toEqual({ mode: 'manual' })
     expect(warns(ADMITTED)[0]![0]).toMatchObject({ mode: 'manual' })
   })
 
-  it('the three keys come from ONE .env read per request (S9)', async () => {
+  it('the three keys come from ONE .env read per request (S9)', () => {
     setEnv(windowEnv(S(NOW + 60), GOOD))
     for (const header of [GOOD, undefined]) {
       envReads.length = 0
-      await mint(header)
+      mint(header)
       expect(envReads).toHaveLength(1)
       expect([...envReads[0]!].sort()).toEqual([ENABLED, NONCE, UNTIL].sort())
     }
   })
 
-  it('the nonce never shows up in a response or in any log line', async () => {
+  it('the nonce never shows up in a response or in any log line', () => {
     setEnv(windowEnv(S(NOW + 60), GOOD))
     const raws: string[] = []
-    for (const header of [GOOD, flip(GOOD), undefined, `${GOOD}, ${GOOD}`]) raws.push((await mint(header)).raw)
+    for (const header of [GOOD, flip(GOOD), undefined, `${GOOD}, ${GOOD}`]) raws.push(JSON.stringify(mint(header).json()))
     setEnv(windowEnv(S(NOW - 1), GOOD))
-    raws.push((await mint(GOOD)).raw)
+    raws.push(JSON.stringify(mint(GOOD).json()))
     expect(warns(ADMITTED)).toHaveLength(1)
     expect(warns(REFUSED)).toHaveLength(4)
     expect(raws.join('\n')).not.toContain(GOOD.slice(0, 20))
@@ -571,18 +596,18 @@ describe('window mode: UNTIL and NONCE next to ENABLED=1 (S6-S9)', () => {
     expect(trail()).not.toContain(flip(GOOD).slice(0, 20))
   })
 
-  it('the nonce verdict is timingSafeEqual\'s: forced false refuses an exact match, forced true admits a same-length miss', async () => {
+  it('the nonce verdict is timingSafeEqual\'s: forced false refuses an exact match, forced true admits a same-length miss', () => {
     setEnv(windowEnv(S(NOW + 60), GOOD))
-    expect((await mint(GOOD)).status).toBe(201)
+    expect(mint(GOOD).admission).not.toBeNull()
     expect(ct.lengths).toContain(43)
 
     ct.override = () => false
-    const refused = await mint(GOOD)
-    expect(refused.status).toBe(403)
+    const refused = mint(GOOD)
+    expect(refused.admission).toBeNull()
     expect(warns(REFUSED).at(-1)![0]).toMatchObject({ reason: 'window_nonce_mismatch' })
 
     ct.override = () => true
-    expect((await mint(flip(GOOD))).status).toBe(201)
+    expect(mint(flip(GOOD)).admission).not.toBeNull()
   })
 })
 
@@ -593,9 +618,9 @@ describe('the caller label in the WARN line (L1)', () => {
     ['  ', 'unknown'],
     ['evil\r\nINJECTED {"x":1}', 'evil__INJECTED___x__1_'],
     ['x'.repeat(200), 'x'.repeat(64)],
-  ] as const)('X-Agent-Id %j -> %j', async (agent, expected) => {
+  ] as const)('X-Agent-Id %j -> %j', (agent, expected) => {
     const headers: Record<string, string> = agent === undefined ? {} : { 'x-agent-id': agent }
-    await call('POST', DEVICE_KEYS.path, { auth: TOKEN, body: DEVICE_KEYS.body(), headers })
+    admit(DEVICE_KEYS.action, headers)
     const caller = warns(REFUSED)[0]![0].caller as string
     expect(caller).toBe(expected)
     expect(caller.length).toBeLessThanOrEqual(64)
@@ -607,8 +632,14 @@ describe('not gated: listing and revoking keep today\'s answers, no gate WARN (G
     setEnv(line)
     for (const auth of [TOKEN, SESSION]) {
       const users = await call('GET', '/api/auth/users', { auth })
-      expect(users.status).toBe(200)
-      expect((users.json().users as Array<{ username: string }>).map(u => u.username)).toContain(OWNER)
+      if (auth === TOKEN) {
+        // v1.45.0 (DEVKEYFOLLOW1022): with a login present the user list takes the owner's session
+        expect(users.status).toBe(403)
+        expect(users.json()).toMatchObject({ code: 'owner_session_required' })
+      } else {
+        expect(users.status).toBe(200)
+        expect((users.json().users as Array<{ username: string }>).map(u => u.username)).toContain(OWNER)
+      }
       const keys = await call('GET', '/api/auth/device-keys', { auth })
       expect(keys.status).toBe(200)
       expect(Array.isArray(keys.json().keys)).toBe(true)
@@ -618,8 +649,15 @@ describe('not gated: listing and revoking keep today\'s answers, no gate WARN (G
       expect((await call('DELETE', `/api/auth/device-keys/${key.id}`, { auth })).status).toBe(404)
 
       createDashboardUser('to-delete', OWNER_HASH)
-      expect((await call('DELETE', '/api/auth/users/to-delete', { auth })).status).toBe(200)
-      expect((await call('DELETE', '/api/auth/users/to-delete', { auth })).status).toBe(404)
+      if (auth === TOKEN) {
+        // removing a user takes the owner's session too (upstream), the row stays
+        expect((await call('DELETE', '/api/auth/users/to-delete', { auth })).status).toBe(403)
+        expect(getDashboardUser('to-delete')).toBeDefined()
+        getDb().prepare('DELETE FROM dashboard_users WHERE username = ?').run('to-delete')
+      } else {
+        expect((await call('DELETE', '/api/auth/users/to-delete', { auth })).status).toBe(200)
+        expect((await call('DELETE', '/api/auth/users/to-delete', { auth })).status).toBe(404)
+      }
     }
     const key = createDeviceKey('kept', { expiresInDays: 30 })
     for (const auth of [DEVICE_FULL, DEVICE_OPERATOR, FEDERATION, undefined]) {

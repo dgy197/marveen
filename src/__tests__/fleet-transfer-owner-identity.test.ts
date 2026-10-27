@@ -41,8 +41,10 @@ vi.mock('node:fs', async (importOriginal) => {
 })
 vi.mock('../web/atomic-write.js', () => ({ atomicWriteFileSync: vi.fn() }))
 vi.mock('../web/scheduled-tasks-io.js', () => ({ SCHEDULED_TASKS_DIR: '/mock/tasks' }))
-vi.mock('../config.js', () => ({
+// RESERVED_AGENT_IDS: fleet-transfer.ts reads it since v1.45.0 (the voice channel id); the fixed list is enough here.
+vi.mock('../config.js', async () => ({
   PROJECT_ROOT: '/mock/project', STORE_DIR: '/mock/store', MAIN_AGENT_ID: 'marveen', BOT_NAME: 'Marveen', BRAND_NAME: 'Marveen', OWNER_NAME: 'X', CHANNEL_PROVIDER: 'telegram',
+  RESERVED_AGENT_IDS: (await import('../web/sanitize.js')).FIXED_RESERVED_AGENT_IDS,
 }))
 vi.mock('../channel-provider.js', () => ({ channelStateDir: (p: string) => `/mock/channels/${p}` }))
 vi.mock('../web/vault-bindings.js', () => ({ getBindings: () => [] }))

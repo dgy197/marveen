@@ -57,9 +57,9 @@ describe('credential issuers under src/ (G7, D11)', () => {
       // definitions
       'db.ts': { createDashboardUser: 1, updateDashboardUserPassword: 1 },
       'web/auth-sessions.ts': { createSession: 1 },
-      'web/auth-device-keys.ts': { createDeviceKey: 1 },
-      // import + call: Bridge pairing (gated in routes/security.ts)
-      'web/bridge-enroll.ts': { createDeviceKey: 2 },
+      // definition + the Bridge pairing's call (v1.45.0 moved it here from web/bridge-enroll.ts;
+      // the pairing itself is still gated in routes/security.ts)
+      'web/auth-device-keys.ts': { createDeviceKey: 2 },
       // import + call each: login (session), first user, device key, password
       'web/routes/auth.ts': { createSession: 2, createDeviceKey: 2, createDashboardUser: 2, updateDashboardUserPassword: 2 },
     })

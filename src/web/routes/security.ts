@@ -25,7 +25,7 @@ import { isSshDirGuardError } from '../../ssh-dir.js'
 import { checkEnrollHost } from '../../remote-enroll-core.js'
 import { DEVICE_NAME_RE } from '../auth-device-keys.js'
 import { isIP } from 'node:net'
-import { carriesOwnerSessionCookie, mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { bareTokenNeedsSwitch, mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
 import { admitBearerCredentialAdmin } from '../credential-admin.js'
 import type { RouteContext } from './types.js'
 
@@ -53,7 +53,7 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
   }
   // 053f4e66 B: a bare token caller (no owner session cookie alongside) only
   // through the switch, decided before the body is read.
-  if (auth.kind === 'token' && !carriesOwnerSessionCookie(req) && !admitBearerCredentialAdmin(ctx, 'security.bridge_enroll')) return true
+  if (bareTokenNeedsSwitch(auth, req) && !admitBearerCredentialAdmin(ctx, 'security.bridge_enroll')) return true
 
   let body: Record<string, unknown>
   try {

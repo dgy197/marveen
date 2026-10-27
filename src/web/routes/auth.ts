@@ -158,6 +158,19 @@ export function carriesOwnerSessionCookie(req?: http.IncomingMessage): boolean {
   return !!cookie && resolveSession(cookie) !== null
 }
 
+// Does the local bearer-credential-admin switch (credential-admin.ts) still apply to this
+// caller on a credential-minting route? Only to a bare token once a login exists. The
+// FIRST-RUN token (no dashboard user yet) is upstream's DEVKEYMINT1022 exception: it
+// creates the first user and mints without any .env switch (upstream's own tests pin
+// it), so the switch must not stand in front of it. With a login present the token is
+// refused by mayIssueCredentials before this is asked (the switch cannot open that), and a
+// request that also carries the owner's session cookie is the owner. The switch keeps its
+// real effect on the routes that do not go through mayIssueCredentials
+// (bridge-service-ports).
+export function bareTokenNeedsSwitch(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
+  return auth?.kind === 'token' && !carriesOwnerSessionCookie(req) && countDashboardUsers(true) > 0
+}
+
 export const CLI_RECOVERY_ONLY = {
   error: 'Resetting a password needs the dashboard login and the current password. Without them, recover on the machine itself: npm run dashboard-user -- reset-password <username>.',
   code: 'cli_recovery_only',
@@ -372,7 +385,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     // 053f4e66 B: a bare token caller only through the switch, before the body.
-    const admission = auth!.kind === 'token' && !carriesOwnerSessionCookie(req) ? admitBearerCredentialAdmin(ctx, 'auth.users.create') : undefined
+    const admission = bareTokenNeedsSwitch(auth, req) ? admitBearerCredentialAdmin(ctx, 'auth.users.create') : undefined
     if (admission === null) return true
     let body: Record<string, unknown>
     try {
@@ -426,7 +439,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     // 053f4e66 B: a bare token caller only through the switch, before the body.
-    const admission = auth!.kind === 'token' && !carriesOwnerSessionCookie(req) ? admitBearerCredentialAdmin(ctx, 'auth.device_keys.create') : undefined
+    const admission = bareTokenNeedsSwitch(auth, req) ? admitBearerCredentialAdmin(ctx, 'auth.device_keys.create') : undefined
     if (admission === null) return true
     let body: Record<string, unknown>
     try {
