@@ -84,6 +84,7 @@ function fakeCall(method: string, path: string, rawBody: string, auth?: TestAuth
   }
   const url = new URL(`http://localhost:3420${path}`)
   const req: any = {
+    headers: {},
     on(event: string, cb: (chunk?: Buffer) => void) {
       if (event === 'data') cb(Buffer.from(rawBody))
       if (event === 'end') cb()
