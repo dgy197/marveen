@@ -30,7 +30,7 @@ let intervalTimer: ReturnType<typeof setInterval> | null = null
 
 async function tick(): Promise<void> {
   try {
-    const embedded = await backfillEmbeddings({ maxRows: EMBEDDING_REFRESH_MAX_ROWS })
+    const { embedded } = await backfillEmbeddings({ maxRows: EMBEDDING_REFRESH_MAX_ROWS })
     if (embedded > 0) logger.info({ embedded }, 'Embedding refresh')
   } catch (err) {
     logger.error({ err }, 'Embedding refresh failed')

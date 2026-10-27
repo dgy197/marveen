@@ -247,8 +247,34 @@ except BaseException as exc:
     sys.exit(3)
 `
 
-/** The verified-recipient ledger (opt-in) on the addresses about to be delivered; exit 2 on a refusal. */
+/**
+ * Is the recipient ledger switched on? The same rule as email-approval-gate.py
+ * `ledger_enabled()` / `_env_file_setting()`: MAIN_AGENT_RECIPIENT_LEDGER in the
+ * install .env next to this checkout, NEVER the process environment (a
+ * `KEY=... tsx ...` prefix must not be able to turn the check on or off), the
+ * first non-empty `KEY=` line, quotes stripped, one of 1/true/yes/on. A missing or
+ * unreadable .env is "off", as there. Read here so that the default (off) install
+ * needs no python at all for this step.
+ */
+function ledgerOptedIn(): boolean {
+  const key = 'MAIN_AGENT_RECIPIENT_LEDGER'
+  try {
+    for (const line of readFileSync(resolve(REPO_ROOT, '.env'), 'utf-8').split('\n')) {
+      if (line.startsWith(`${key}=`)) {
+        const val = line.slice(key.length + 1).trim().replace(/^"+|"+$/g, '').replace(/^'+|'+$/g, '')
+        if (val) return ['1', 'true', 'yes', 'on'].includes(val.toLowerCase())
+      }
+    }
+  } catch { /* no .env: off */ }
+  return false
+}
+
+/**
+ * The verified-recipient ledger (opt-in) on the addresses about to be delivered; exit 2 on a refusal.
+ * Off (the default): a no-op. On: exactly upstream's check, and any failure of it refuses (fail-closed).
+ */
 function ledgerCheckOrExit(kind: string, letter: Record<string, unknown>): void {
+  if (!ledgerOptedIn()) return
   const python = trustedPython()
   if (!python) {
     console.error(`${kind}: REFUSED -- no trusted python3 for the recipient-ledger check ` +
