@@ -3,6 +3,9 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { atomicWriteFileSync } from './web/atomic-write.js'
 import { parseEnvContent } from './env-parse.js'
+import { envEntryProblem, InvalidEnvEntryError } from './env-entry.js'
+
+export { InvalidEnvEntryError } from './env-entry.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // CLAUDECLAW_ENV_DIR: test-only escape hatch so the suite can point .env
@@ -11,8 +14,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 // time; production never sets it.
 const PROJECT_ROOT = process.env.CLAUDECLAW_ENV_DIR ?? join(__dirname, '..')
 
+/** The install's .env (CLAUDECLAW_ENV_DIR in tests). */
+export function envFilePath(): string {
+  return join(PROJECT_ROOT, '.env')
+}
+
 export function readEnvFile(keys?: string[]): Record<string, string> {
-  const envPath = join(PROJECT_ROOT, '.env')
+  const envPath = envFilePath()
   let content: string
   try {
     content = readFileSync(envPath, 'utf-8')
@@ -39,12 +47,21 @@ export const ENV_FILE_MODE = 0o600
 // Values are written UNQUOTED: channels.sh parses with `cut -d= -f2-` and does
 // no quote-stripping, so a quoted value would leak the quotes. Only non-empty
 // string values are written; empty updates are a no-op (no file touch).
+//
+// Cards fec6335f / 053f4e66: every entry is checked BEFORE anything is
+// written -- a key must be a plain variable name, a value must not hold CR,
+// LF or NUL (env-entry.ts). One bad entry throws InvalidEnvEntryError and the
+// file stays as it was.
 export function updateEnvFile(updates: Record<string, string>): void {
   const envPath = join(PROJECT_ROOT, '.env')
   const entries = Object.entries(updates).filter(
     ([, v]) => typeof v === 'string' && v.length > 0,
   )
   if (entries.length === 0) return
+  for (const [key, val] of entries) {
+    const problem = envEntryProblem(key, val)
+    if (problem) throw new InvalidEnvEntryError(key, problem)
+  }
 
   let content = ''
   try {

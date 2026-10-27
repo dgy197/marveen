@@ -32,8 +32,9 @@ import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { execFile } from 'node:child_process'
 import { logger } from './logger.js'
+import { isSettingOn } from './setting-flag.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, BOT_NAME } from './config.js'
-import { getUpdates, probeHighWater, mapUpdate, TelegramApiError } from './channel-coordinator/telegram-client.js'
+import { getUpdates, probeHighWater, mapUpdate, redactCallbackData, TelegramApiError } from './channel-coordinator/telegram-client.js'
 import { probeNativeChannelDown } from './channel-coordinator/liveness.js'
 import {
   initIngestDb,
@@ -183,6 +184,12 @@ export function neutralizeChannelTags(text: string): string {
   return text.replace(/<\s*\/?\s*channel\b[^>]*>/gi, '[stripped-tag]')
 }
 
+// The topic of a message is part of the tag only while TELEGRAM_TOPICS_ENABLED
+// is on, as with the native plugin, whose topics patch is applied only then.
+function topicsEnabled(): boolean {
+  return isSettingOn('TELEGRAM_TOPICS_ENABLED')
+}
+
 // Mirror the native plugin's <channel ...> block so the message-router can
 // deliver it as channel-inbound and Marveen replies exactly as she would to a
 // native message (reply with chat_id), while the body stays untrusted.
@@ -195,10 +202,12 @@ export function buildHandoffContent(ev: {
   content: string
   tg_date: number | null
   meta?: Record<string, unknown>
-}): string {
+}, topics: boolean = topicsEnabled()): string {
   const ts = ev.tg_date ? new Date(ev.tg_date * 1000).toISOString() : ''
   const voiceMeta = ev.meta?.voice as { file_id?: string } | undefined
   const voiceFileId = voiceMeta?.file_id ?? ''
+  const thread = ev.meta?.message_thread_id
+  const threadId = topics && Number.isSafeInteger(thread) && (thread as number) > 0 ? thread as number : null
   const attrs = [
     `source="telegram"`,
     ev.chat_id != null ? `chat_id="${ev.chat_id}"` : '',
@@ -206,11 +215,16 @@ export function buildHandoffContent(ev: {
     ev.username ? `user="${neutralizeChannelTags(ev.username).replace(/"/g, '')}"` : '',
     ev.user_id != null ? `user_id="${ev.user_id}"` : '',
     ts ? `ts="${ts}"` : '',
+    threadId != null ? `message_thread_id="${threadId}"` : '',
     ev.kind !== 'message' ? `kind="${ev.kind}"` : '',
     voiceFileId ? `attachment_kind="voice"` : '',
     voiceFileId ? `attachment_file_id="${voiceFileId}"` : '',
   ].filter(Boolean).join(' ')
-  const body = neutralizeChannelTags(ev.content || '(empty message)')
+  // mapUpdate already redacts approval-button data; this second pass covers a
+  // callback row stored before that redaction existed and replayed by
+  // reconcilePending, so a nonce never reaches agent_messages either way.
+  const text = ev.kind === 'callback_query' ? redactCallbackData(ev.content) : ev.content
+  const body = neutralizeChannelTags(text || '(empty message)')
   return `<channel ${attrs}>\n${body}\n</channel>`
 }
 
@@ -230,7 +244,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // Process one getUpdates batch. For each update: normalize, dedup-insert, and
 // (if newly inserted) hand off to Marveen. Returns the highest update_id seen
 // so the caller can advance the offset AFTER the whole batch is durable.
-function processBatch(updates: { update_id: number }[]): number | null {
+export function processBatch(updates: { update_id: number }[]): number | null {
   let maxUpdateId: number | null = null
   for (const raw of updates) {
     maxUpdateId = maxUpdateId == null ? raw.update_id : Math.max(maxUpdateId, raw.update_id)

@@ -1,0 +1,123 @@
+{
+  "_comment": "graph-forward review round 1 (Brainy 2958): GS1 and GR2. gs1: commands that run the Graph CLI's forward with a verb the SHELL assembles (brace expansion, variable, command substitution, ANSI-C quote, glob, an unclosed quote, a wrapper) -- the gates must read every one as a forward and refuse it at every level, because the strict forward reader cannot extract a letter from it. argv0 is what the CLI's argv[2] is when a real shell runs the command with a stub CLI (the test proves it in bash and, if present, zsh; null = not run, the shell refuses it or reads another verb). gr2: a plain send whose text mentions the forward command -- it stays a send, never a forward. The CLI is written `npx tsx scripts/graph-mail.ts`; the shell proof rewrites it to a stub path. ASCII only.",
+  "gs1": [
+    {
+      "name": "brace expansion of the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts fo{r,r}ward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "argv0": "forward"
+    },
+    {
+      "name": "brace list that starts with the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts {forward,send} --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "argv0": "forward"
+    },
+    {
+      "name": "verb in a variable",
+      "cmd": "V=forward; npx tsx scripts/graph-mail.ts $V --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "argv0": "forward"
+    },
+    {
+      "name": "verb in a double-quoted variable",
+      "cmd": "V=forward; npx tsx scripts/graph-mail.ts \"$V\" --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "argv0": "forward"
+    },
+    {
+      "name": "verb in a braced variable",
+      "cmd": "V=forward; npx tsx scripts/graph-mail.ts ${V} --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "argv0": "forward"
+    },
+    {
+      "name": "verb from a command substitution",
+      "cmd": "npx tsx scripts/graph-mail.ts $(echo forward) --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "argv0": "forward"
+    },
+    {
+      "name": "verb from a backtick substitution",
+      "cmd": "npx tsx scripts/graph-mail.ts `echo forward` --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "argv0": "forward"
+    },
+    {
+      "name": "ANSI-C hex escape in the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts $'\\x66orward' --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "argv0": "forward"
+    },
+    {
+      "name": "ANSI-C octal escape in the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts $'\\146orward' --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "argv0": "forward"
+    },
+    {
+      "name": "glob star in the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts fo*ward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "argv0": "forward"
+    },
+    {
+      "name": "glob question mark in the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts fo?ward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "argv0": "forward"
+    },
+    {
+      "name": "glob bracket in the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts fo[r]ward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "argv0": "forward"
+    },
+    {
+      "name": "redirect before the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts >/dev/null forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "argv0": "forward"
+    },
+    {
+      "name": "unclosed double quote inside the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts fo\"rward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "argv0": null
+    },
+    {
+      "name": "unclosed single quote inside the verb",
+      "cmd": "npx tsx scripts/graph-mail.ts fo'rward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment \"Szia!\" --orig-subject \"Targy\"",
+      "argv0": null
+    },
+    {
+      "name": "unparsable ANSI-C quote earlier, brace verb later",
+      "cmd": "echo $'it\\'s'; npx tsx scripts/graph-mail.ts fo{r,r}ward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'Targy'",
+      "argv0": "forward"
+    },
+    {
+      "name": "unparsable ANSI-C quote earlier, a decoy send word later, brace verb",
+      "cmd": "echo $'it\\'s'; npx tsx scripts/graph-mail.ts fo{r,r}ward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'send' --orig-subject 'Targy'",
+      "argv0": "forward"
+    },
+    {
+      "name": "a quoted send is not a literal verb (stricter than the shell, deliberate)",
+      "cmd": "npx tsx scripts/graph-mail.ts 'send' --to kovacs@fireeng.hu --subject 'Re' --body 'Szia!'",
+      "argv0": null
+    },
+    {
+      "name": "brace verb inside bash -c",
+      "cmd": "bash -c \"npx tsx scripts/graph-mail.ts fo{r,r}ward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment Szia\"",
+      "argv0": "forward"
+    },
+    {
+      "name": "brace verb in a heredoc fed to bash",
+      "cmd": "bash <<'EOF'\nnpx tsx scripts/graph-mail.ts fo{r,r}ward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment Szia\nEOF",
+      "argv0": "forward"
+    }
+  ],
+  "gr2": [
+    {
+      "name": "single-quoted body that quotes the forward command",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to kovacs@fireeng.hu --subject 'Re' --body 'futtasd: npx tsx scripts/graph-mail.ts forward --id X'"
+    },
+    {
+      "name": "double-quoted body that mentions the forward verb",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to kovacs@fireeng.hu --subject 'Re' --body \"a scripts/graph-mail.ts forward kesobb lesz\""
+    },
+    {
+      "name": "subject that mentions the forward command",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to kovacs@fireeng.hu --subject 'graph-mail forward teszt' --body 'Szia'"
+    },
+    {
+      "name": "body that quotes a bash -c forward",
+      "cmd": "npx tsx scripts/graph-mail.ts send --to kovacs@fireeng.hu --subject 'Re' --body 'bash -c \"npx tsx scripts/graph-mail.ts forward --id X\"'"
+    }
+  ]
+}

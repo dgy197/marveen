@@ -15,6 +15,9 @@ import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
 import { resolveOwnerChatId } from './owner-chat.js'
 import { initDatabase, backfillEmbeddings } from './db.js'
+import { startEmbeddingRefreshRunner, stopEmbeddingRefreshRunner } from './web/embedding-refresh-runner.js'
+import { startEmbeddingKeepWarmRunner, stopEmbeddingKeepWarmRunner } from './web/embedding-keepwarm-runner.js'
+import { startMemoryGateRunner, stopMemoryGateRunner } from './web/memory-gate-runner.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { DECAY_SWEEP_INTERVAL_MS } from './db.js'
 import { initHeartbeat, stopHeartbeat, ensureHeartbeatWorkerHidden } from './heartbeat.js'
@@ -436,6 +439,9 @@ const shutdown = (): void => {
     try { stopInviteMonitor() } catch (err) { logger.warn({ err }, 'stopInviteMonitor threw during shutdown') }
     try { stopChannelRequestWatcher() } catch (err) { logger.warn({ err }, 'stopChannelRequestWatcher threw during shutdown') }
     try { stopStoreWatcher() } catch (err) { logger.warn({ err }, 'stopStoreWatcher threw during shutdown') }
+    try { stopEmbeddingRefreshRunner() } catch (err) { logger.warn({ err }, 'stopEmbeddingRefreshRunner threw during shutdown') }
+    try { stopEmbeddingKeepWarmRunner() } catch (err) { logger.warn({ err }, 'stopEmbeddingKeepWarmRunner threw during shutdown') }
+    try { stopMemoryGateRunner() } catch (err) { logger.warn({ err }, 'stopMemoryGateRunner threw during shutdown') }
     if (decayInterval) clearInterval(decayInterval)
     if (digestTimer) clearTimeout(digestTimer)
     if (digestInterval) clearInterval(digestInterval)
@@ -499,6 +505,14 @@ async function main(): Promise<void> {
   backfillEmbeddings().then(count => {
     if (count > 0) logger.info({ count }, 'Embedding backfill befejezve')
   }).catch(err => logger.warn({ err }, 'Embedding backfill hiba (Ollama nem elerheto)'))
+  // Re-embedding after boot (card d4e7fea7): edited or late rows get their
+  // vector within a minute, and updateMemory's nudge is armed from here on.
+  startEmbeddingRefreshRunner()
+  // Keep-warm of the loaded embedding model (card 94f8d99f, w3 DW3): after
+  // EMBED_KEEPWARM_MINUTES without an embedding call, one ping that does not
+  // extend the model's keep_alive window.
+  startEmbeddingKeepWarmRunner()
+  try { startMemoryGateRunner() } catch (err) { logger.warn({ err }, 'startMemoryGateRunner threw') }
 
   // Memory decay (24h cycle)
   runDecaySweep()

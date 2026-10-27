@@ -3802,6 +3802,10 @@ function renderAgents() {
           <span class="agent-reauth-reason">${escapeHtml(agent.reauthReason || t('agents.reauth.reason'))}</span>
           <button class="btn-danger btn-compact agent-login-btn" data-phase="start">${t('agents.btn.login')}</button>
         </div>` : ''}
+      ${Array.isArray(agent.sharedEnvAuthKeys) && agent.sharedEnvAuthKeys.length ? `
+        <div class="agent-sharedenv-banner" title="${escapeHtml(t('agents.sharedEnvAuth.tip'))}">
+          <span class="agent-sharedenv-text">${escapeHtml(t('agents.sharedEnvAuth.label'))}: ${escapeHtml(agent.sharedEnvAuthKeys.join(', '))}</span>
+        </div>` : ''}
       <div class="agent-card-actions">
         <button class="btn-secondary btn-compact agent-conversation-btn" title="${t('agents.btn.conversation')}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -14036,20 +14040,7 @@ function _renderApprovalsTable() {
     const time = a.requested_at ? new Date(a.requested_at * 1000).toLocaleString('hu-HU', { dateStyle: 'short', timeStyle: 'short' }) : '-'
     const badge = _approvalBadge(a.status)
     const countdown = isPending && a.timeout_at ? `<span class="approvals-countdown" data-timeout="${a.timeout_at}" id="cd-${a.id}"></span>` : (a.timeout_at ? '-' : '')
-    const actions = isPending
-      ? `<div style="display:flex;gap:4px">
-           <button class="btn-primary btn-compact approvals-decide" data-id="${escapeAttr(a.id)}" data-decision="approved" style="font-size:11px">${t('approvals.btn.approve')}</button>
-           <button class="btn-danger btn-compact approvals-decide" data-id="${escapeAttr(a.id)}" data-decision="rejected" style="font-size:11px">${t('approvals.btn.reject')}</button>
-         </div>`
-      : (() => {
-          const resolvedBy = escapeHtml(a.resolved_by || '')
-          if (!a.resolved_at) return `<span style="font-size:12px;color:var(--text-muted)">${resolvedBy}</span>`
-          const resolvedDate = new Date(a.resolved_at * 1000)
-          const requestedDate = a.requested_at ? new Date(a.requested_at * 1000) : null
-          const sameDay = requestedDate && resolvedDate.toDateString() === requestedDate.toDateString()
-          const resolvedStr = resolvedDate.toLocaleString('hu-HU', sameDay ? { timeStyle: 'short' } : { dateStyle: 'short', timeStyle: 'short' })
-          return `<span style="font-size:12px;color:var(--text-muted)">${resolvedBy}<br><span style="font-size:11px;opacity:0.7">${escapeHtml(resolvedStr)}</span></span>`
-        })()
+    const actions = _approvalActionsHtml(a)
     return `<tr style="${rowStyle}">
       <td style="white-space:nowrap;font-size:12px">${escapeHtml(time)}</td>
       <td><code style="font-size:12px">${escapeHtml(a.agent_id)}</code></td>
@@ -14067,6 +14058,32 @@ function _renderApprovalsTable() {
   tbody.querySelectorAll('.approvals-decide').forEach(btn => {
     btn.addEventListener('click', () => _resolveApproval(btn.dataset.id, btn.dataset.decision))
   })
+}
+
+// fec6335f N2b: a credit-gate request is decided only by the owner's Telegram
+// button (the gate accepts nothing else), so the dashboard shows it without a
+// decision: a dashboard approve would count for nothing.
+function _approvalIsTelegramOnly(a) {
+  return !!a && typeof a.category === 'string' && a.category.startsWith('credit_gate_')
+}
+
+function _approvalActionsHtml(a) {
+  if (a.status === 'pending') {
+    if (_approvalIsTelegramOnly(a)) {
+      return `<span style="font-size:12px;color:var(--text-muted)">${t('approvals.telegram_only')}</span>`
+    }
+    return `<div style="display:flex;gap:4px">
+           <button class="btn-primary btn-compact approvals-decide" data-id="${escapeAttr(a.id)}" data-decision="approved" style="font-size:11px">${t('approvals.btn.approve')}</button>
+           <button class="btn-danger btn-compact approvals-decide" data-id="${escapeAttr(a.id)}" data-decision="rejected" style="font-size:11px">${t('approvals.btn.reject')}</button>
+         </div>`
+  }
+  const resolvedBy = escapeHtml(a.resolved_by || '')
+  if (!a.resolved_at) return `<span style="font-size:12px;color:var(--text-muted)">${resolvedBy}</span>`
+  const resolvedDate = new Date(a.resolved_at * 1000)
+  const requestedDate = a.requested_at ? new Date(a.requested_at * 1000) : null
+  const sameDay = requestedDate && resolvedDate.toDateString() === requestedDate.toDateString()
+  const resolvedStr = resolvedDate.toLocaleString('hu-HU', sameDay ? { timeStyle: 'short' } : { dateStyle: 'short', timeStyle: 'short' })
+  return `<span style="font-size:12px;color:var(--text-muted)">${resolvedBy}<br><span style="font-size:11px;opacity:0.7">${escapeHtml(resolvedStr)}</span></span>`
 }
 
 function _approvalBadge(status) {
@@ -14115,6 +14132,8 @@ function _renderApprovalsPagination(total) {
 }
 
 async function _resolveApproval(id, decision) {
+  const target = _approvalsAll.find(a => a.id === id)
+  if (_approvalIsTelegramOnly(target)) { showToast(t('approvals.telegram_only')); return }
   try {
     const res = await fetch(`/api/approvals/${id}`, {
       method: 'PATCH',
@@ -14259,6 +14278,25 @@ function bridgeEnrollErrorText(data) {
   return (data && data.error) || t('auth.card.err_generic')
 }
 
+// The shared Bearer token may not issue credentials unless the install switch is
+// open (card 053f4e66 B): the dashboard answers 403 with the stable code
+// `bearer_credential_admin_off`. `kind` says which action was refused ('device',
+// 'operator' or 'user'), so the text can name the way forward for that action.
+// Same contract as bridgeEnrollErrorText: translate on the code, fall back to
+// the server's own sentence for an unknown code, then to the generic message;
+// a raw key name never reaches the screen.
+const CREDENTIAL_ADMIN_ERR_KEYS = { bearer_credential_admin_off: 'off' }
+function credentialAdminErrorText(data, kind) {
+  const code = data && typeof data.code === 'string' ? data.code : ''
+  const slot = Object.prototype.hasOwnProperty.call(CREDENTIAL_ADMIN_ERR_KEYS, code) ? CREDENTIAL_ADMIN_ERR_KEYS[code] : ''
+  if (slot && kind) {
+    const key = `auth.credadmin.${slot}.${kind}`
+    const translated = t(key)
+    if (translated !== key) return translated
+  }
+  return (data && data.error) || t('auth.card.err_generic')
+}
+
 async function bridgeEnrollFromUi() {
   const msg = document.getElementById('authBridgeMsg')
   const out = document.getElementById('authBridgeBundle')
@@ -14317,7 +14355,7 @@ function renderDeviceKeysSection(body) {
     `<div id="authDeviceKeyList"></div>` +
     `<div class="auth-form auth-device-mint">` +
       `<input id="authDevName" type="text" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="${t('auth.devices.name_placeholder')}">` +
-      `<input id="authDevExpiry" type="number" min="1" max="3650" placeholder="${t('auth.devices.expiry_placeholder')}">` +
+      `<input id="authDevExpiry" type="number" min="1" max="365" placeholder="${t('auth.devices.expiry_placeholder')}">` +
       `<button class="btn-secondary" id="authDevMintBtn">${t('auth.devices.mint')}</button>` +
       `<div class="auth-form-msg" id="authDevMsg"></div>` +
       `<div id="authDevMinted" hidden></div>` +
@@ -14389,7 +14427,7 @@ async function mintDeviceKey() {
       body: JSON.stringify(payload),
     })
     const data = await r.json().catch(() => ({}))
-    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = credentialAdminErrorText(data, 'device'); return }
     document.getElementById('authDevName').value = ''
     document.getElementById('authDevExpiry').value = ''
     minted.hidden = false
@@ -14497,7 +14535,7 @@ async function mintOperatorKey() {
   try {
     const r = await fetch('/api/auth/device-keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
     const data = await r.json().catch(() => ({}))
-    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = credentialAdminErrorText(data, 'operator'); return }
     document.getElementById('opKeyName').value = ''
     document.getElementById('opKeyExpiry').value = ''
     const url = `${location.origin}/operator`
@@ -14543,7 +14581,7 @@ function renderCreateLoginForm(body) {
       })
       const data = await r.json().catch(() => ({}))
       if (r.ok) { msg.classList.add('ok'); msg.textContent = t('auth.card.created'); renderAuthCard(); initAuthBanner() }
-      else { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic') }
+      else { msg.classList.add('err'); msg.textContent = credentialAdminErrorText(data, 'user') }
     } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
   })
 }

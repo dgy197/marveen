@@ -24,6 +24,11 @@ Ezek a fájlok a dashboard által kezelt, futásidőben módosuló konfiguráci�
 | `store/custom-providers.json` | dashboard UI (Beállítások > Provider-ok) | Egyéni Anthropic Messages API-kompatibilis végpontok listája -- ld. docs/custom-providers.md |
 | `store/config-overrides.json` | dashboard UI | Beállítások-oldal által mentett felülbírálatok (plain értékek, sosem tartalmaz titkokat) |
 | `store/update.pid` | automatikus | Frissítési folyamat PID fájl (concurrency lock) |
+| `store/interactive-key-guard-events.jsonl` | automatikus | Az interaktív kulcs-őr guard-eseményei (csak nevek, érték soha) -- ld. [INTERACTIVE_ANTHROPIC_KEY_POLICY](#interactive_anthropic_key_policy----interaktív-kulcs-őr) |
+| `store/interactive-key-guard-audit.jsonl` | automatikus | A futásidejű őr `allow` módú találatai (csak nevek, 0600) |
+| `store/interactive-key-guard-owner-alerts.json` | automatikus | A tulajdonosi Telegram-riasztások dedupe-naplója (0600) |
+| `store/interactive-key-guard-runner.json` | automatikus | A futásidejű őr kurzora és riasztási naplója (0600) |
+| `store/.channels-key-guard-refused` | automatikus (channels.sh) | A fő ágens indításának elutasítás-jelölője `forbid` alatt |
 
 ### A dashboard nyelve
 
@@ -148,6 +153,8 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 |-------|-------|-----------|--------|-------------|
 | `DASHBOARD_PUBLIC_URL` | string | (üres) | A dashboard nyilvánosan elérhető URL-je | igen |
 | `OLLAMA_URL` | string | `http://localhost:11434` | Ollama API alap-URL | igen |
+| `EMBED_KEEP_ALIVE` | string | `24h` | Meddig tartsa az Ollama betöltve az embedding-modellt az utolsó kérés után (a kérés `keep_alive` mezője). Ollama időtartam (`24h`, `30m`, `90s`, `500ms`) vagy egész másodperc; a `-1` (örökre), a `0` és a hibás érték nem elfogadott: az alapértékre esik vissza, és egyszer WARN kerül a naplóba. A `0` (`0s`, `0ms` stb.) azért nem, mert az Ollama ekkor minden kérés után kiüríti a modellt, és minden keresés hidegindítással indulna. A Beállítások oldal ezeket mentéskor elutasítja | igen |
+| `EMBED_KEEPWARM_MINUTES` | int | `5` | Melegen tartás: ennyi perc embedding-hívás nélküli idő után a dashboard egy rövid, rögzített szövegű embedding-kérést küld a már betöltött modellnek, hogy a tétlenség utáni első keresés ne legyen lassú. Előtte a `GET /api/ps`-ből megnézi, hogy az `EMBED_MODEL` be van-e töltve, és mennyi ideje van hátra: a ping `keep_alive`-ja ez a hátralévő idő (egész másodperc, lefelé kerekítve), így az `EMBED_KEEP_ALIVE` ablakát nem hosszabbítja, és modellt soha nem tölt be. Nincs ping, ha a modell nincs betöltve, ha legfeljebb 60 másodperc vagy 30 napnál több van hátra, futó embedding-hívás vagy backfill alatt, embedding-kimaradás alatt, és ha az `EMBED_URL` nem loopback cím (127.0.0.1, ::1, localhost). Hiba után 15 perc szünet, duplázva legfeljebb 4 óráig; egy sikeres valódi embedding-hívás véget vet neki. `0` = kikapcsolva; érvényes még az 5-10 egész. Hibás érték = 5, egyszer WARN; a Beállítások oldal mentéskor elutasítja. Csak a `store/config-overrides.json`-ből és a `.env`-ből olvassa, a launchd plist kulcsa NEM számít | igen |
 | `MEMORY_IMPORT_CATEGORIZE_MODEL` | string | (üres) | Memória-import besoroló Ollama modellje (felülbírálás); üres = telepített `gemma4` felismerése, olyan híján minden warm | igen |
 
 **Registry -- Heartbeat modul:**
@@ -169,6 +176,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | Kulcs | Típus | Alapérték | Platform | Újraindítás |
 |-------|-------|-----------|----------|-------------|
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (ki) | csak macOS | igen |
+| `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (ki) | mind | igen (csatorna-indítás) |
 
 #### `MAIN_AGENT_ISOLATED_CONFIG` -- a fő agent config-izolációja (macOS)
 
@@ -208,6 +216,56 @@ rotálódó `credentials.json`-t ehelyett a külön credentials-guard kezeli.
 **Visszaállítás.** Kapcsold KI (dashboard) vagy `MAIN_AGENT_ISOLATED_CONFIG=0`
 (`.env`), majd indítsd újra a channels sessiont -- mindhárom indítási út visszaáll
 a közös `~/.claude` viselkedésre.
+
+#### `TELEGRAM_TOPICS_ENABLED`: a válasz abba a témába megy, ahonnan az üzenet jött
+
+**Mire szolgál.** A Telegram a bot privát chatjében is enged témákat (a BotFather-ben
+kapcsolható be a botnál). Ilyenkor minden üzenet egy témában születik, de a Telegram
+plugin a téma azonosítóját nem adja tovább az ügynöknek, és a `reply` tool nem tud
+témát címezni: a válasz a témán kívülre kerül.
+
+**Mit csinál bekapcsolva.** A csatorna indításakor a `scripts/patch-telegram-plugin.py`
+(ugyanaz a script, ami a `/status`-t és a bejövő-naplót is intézi) egy kiegészítést
+tesz a plugin forrására:
+- a témából jött üzenet `<channel>` tagje `message_thread_id` attribútumot kap (csak
+  valódi téma-üzenetnél, `is_topic_message`);
+- a gépelés-jelzés a témában jelenik meg;
+- a `reply` tool új, opcionális `message_thread_id` paramétere a szöveg minden darabját
+  és minden csatolt fájlt a témába küldi; nem pozitív egész értékre hibát ad, és nem
+  küld semmit;
+- a plugin utasítása és a `telegram-reply-directive.py` hook kéri az ügynököt, hogy a
+  témát adja vissza.
+
+A Marveen saját válasz-útjai ugyanígy a témába mennek: a „Dolgozom rajta” helyőrző és
+annak tartalék-küldései (`telegram_progress*.py`), a hookból megválaszolt parancsok
+(`marveen-commands.py`, a futás közbeni parancsok is), és a tartalék-poller
+(`channel-coordinator`) átadása.
+
+Téma nélküli üzenetnél minden hívás pontosan ugyanaz, mint kikapcsolva.
+
+**Közös plugin-cache.** A kiegészítés a plugin-cache-ben lévő forrást módosítja
+(`$CLAUDE_CONFIG_DIR/plugins/cache`, ennek hiányában `~/.claude/plugins/cache`), és ebből
+tölti a Telegram plugint minden Claude Code session, amely ugyanezt a cache-t használja, a
+Marveen-en kívüliek is. Azokban is megjelenik a `reply` tool opcionális `message_thread_id`
+paramétere és a témából jött üzenet tagjének attribútuma; amíg nem adják meg a paramétert,
+a viselkedésük változatlan.
+
+**Ami nem változik.** A `chat_id` ugyanaz marad, ezért a gazda-azonosítás, a parancsok
+jogosultsága és a jóváhagyások nem érintettek. A riasztások, a jóváhagyás-kérések, az
+ütemezett feladatok eredménye és a hang-válasz továbbra is téma nélkül mennek ki.
+
+**Bekapcsolás.** Dashboard: *Beállítások → Csatornák → `TELEGRAM_TOPICS_ENABLED`*, vagy
+`.env`-ben `TELEGRAM_TOPICS_ENABLED=1`. A csatorna következő indításakor lép életbe. A
+`/status` „Telegram plugin-patch” sora bekapcsolva a kiegészítést is méri: ha hiányzik,
+`HIÁNYZIK (témák)` sor jelzi.
+
+**Visszaállítás.** Kapcsold KI, és indítsd újra a csatornát: a script leveszi a
+kiegészítést, a plugin fájlja bájtra a kiegészítés előtti.
+
+**Plugin-frissítés után.** Az új plugin-verziót a következő csatorna-indítás foltozza. Ha
+a kiegészítés horgonyai nem illeszkednek, a kiegészítés egészében kimarad (egy hangos
+sor a `store/channels-failures.log`-ban, és a `/status` is jelzi); a válaszok ilyenkor a
+témán kívülre mennek, a csatorna maga működik tovább.
 
 **API végpontok:**
 
@@ -316,6 +374,56 @@ A megoldás: egy 1 éves, nem rotálódó setup-token (`claude setup-token`) a `
 
 ---
 
+## INTERACTIVE_ANTHROPIC_KEY_POLICY -- interaktív kulcs-őr
+
+**Mire szolgál.** Egy interaktív Claude Code session (minden tmux-ágens, a worker, a fő ágens, a háttérfeladat) API-kulccsal futtatva a kulcs saját, előre fizetett egyenlegét fogyasztja, nem az előfizetést. A `forbid` ezt zárja ki minden first-party Claude-ágensnél, minden indítási úton, amit ez a telepítés birtokol. First-party: `claude-` modell custom provider nélkül; olyan custom provider, amelyik maga az Anthropic (`*.anthropic.com` végpont, vagy a közös `ANTHROPIC_API_KEY_BATCH` kulcsot olvassa); és minden olyan út, amelyik nem exportál provider-URL-t (a worker, a távoli ssh-indítás, a `scripts/watchdog.sh`), ott a modellnévtől függetlenül (egy `opus` alias is). Az `authMode: api` elutasítására ez útonként eltér, ld. a `forbid`, al-ágens pontot.
+
+**Értékek.** Csak a `.env`-ből olvasva, a Beállítások oldal és a `config-overrides.json` nem írja (egy Bearer-hívás nem kapcsolhatja át; a fleet-import sem írhatja a `.env`-be).
+
+| `.env` sor | Hatás |
+|------------|-------|
+| nincs ilyen sor, nincs `.env`, vagy üres érték | `allow` (az eddigi viselkedés, bájtra azonos) |
+| `INTERACTIVE_ANTHROPIC_KEY_POLICY=allow` | `allow` |
+| `INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid` | `forbid` |
+| bármi más (`Allow`, `frobid`, `export ...` előtag, olvashatatlan `.env`) | `forbid` (fail-closed: egy elírás nem kapcsolhatja ki az őrt) |
+
+Több sor esetén az UTOLSÓ illeszkedő `INTERACTIVE_ANTHROPIC_KEY_POLICY=...` sor nyer, akkor is, ha az értéke érvénytelen (az `=frobid` mint utolsó sor `forbid`; egy korábbi érvénytelen sort viszont egy későbbi `=allow` felülír). Ettől független: ha bárhol van egy nem-komment sor, amelyik a nevet más alakban hordozza (`export ` előtag, Unicode-szóköz a név körül), az `forbid`, a sorrendtől függetlenül. A dashboard folyamatonként egyszer olvassa (változás a dashboard újraindításával lép életbe), a shell-indítók (`channels.sh`, `channel-watchdog.sh`, `stuck-modal-guard.sh`, `watchdog.sh`, `morning-briefing.sh`) futásonként. A TS- és a shell-olvasó ugyanarra a szövegre ugyanazt adja (tesztben rögzítve).
+
+**Viselkedés módonként.**
+
+- **`allow`**: minden indítási parancs változatlan. A futásidejű őr ekkor is fut, de csak az audit-naplóba ír (lenyomatonként naponta egy sor), üzenetet és guard-eseményt nem küld, INCIDENT-et nem okoz.
+- **`forbid`, al-ágens** (dashboard-indítás, távoli ssh-indítás, worker, háttérfeladat; a `watchdog.sh` külön pont, lent): az indítás nem indul el, és guard-esemény keletkezik, ha `authMode: api`, ha a custom provider maga az Anthropic, vagy ha a session által betöltött settings-fájlok valamelyike (`env` alatt `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`, vagy felső szintű `apiKeyHelper`) kulcs-utat hordoz, mert a settings `env` felülírja a shell `unset`-et. Minden megengedett indítás `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN`-nel kezdődik (a tmux-pane a szerver globális env-jét örökli), és a kész parancsot a sink előtt még egyszer ellenőrzi (`assertLaunchCmdClean`). A dashboard ágens-módosító végpontjai 422-vel utasítják el azt a változtatást, amelyik egy first-party ágenst kulcsra tenne.
+  - *Az `authMode: api` elutasítása útonként más.* A dashboard-indítás és a 422-es végpontok csak `claude-` modellnél utasítanak el (`agent-process.ts:2210`, `routes/agents.ts:252`; ott csak ilyenkor kerül az ágens saját kulcsa az indításba, `agent-process.ts:2256`). A távoli ssh-indítás viszont alias modellnél (`opus`, `sonnet`, `chatgpt/...`) is elutasít, mert nem exportál provider-URL-t (`directAnthropic: true`, `agent-process.ts:1981`, az `authMode` a konfigból jön, `:1982`). A worker és a háttérfeladat fix `authMode: 'shared'`-del hívja a döntést (`agent-worker.ts:662`, `routes/background-tasks.ts:104`), ezért ott `authMode` miatt soha nincs elutasítás; ott a settings-kulcs és az Anthropic custom provider utasít el.
+- **`forbid`, `scripts/watchdog.sh`** (a cron-os újraindító az al-ágenseknek): nem úgy viselkedik, mint a dashboard-utak.
+  - *Nincs guard-esemény.* Elutasításkor csak a saját naplójába ír egy sort (`logs/watchdog.log`, `$LOG`, `scripts/watchdog.sh:352`): `[watchdog] <ügynök>: interactive-key-guard <ok> (INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid), not starting`. A `store/interactive-key-guard-events.jsonl`-be nem kerül semmi, ezért ebből az elutasításból nem lesz fő ágensnek szóló üzenet és tulajdonosi riasztás sem: aki `forbid` alatt eseményt vár egy watchdog-elutasításról, ott nem találja, a `logs/watchdog.log`-ban keresse (`grep interactive-key-guard logs/watchdog.log`). Az ágens addig nem indul, amíg az ok meg nem szűnik, és a watchdog minden futásnál újra naplózza.
+  - *A custom provider nem számít.* A `customProvider` mezőt nem olvassa, ezért a `customProvider` = Anthropic esetet nem utasítja el, hanem `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN`-nel indítja az ágenst (`scripts/watchdog.sh:354`; a döntés függvénye `interactive_key_decision`, `:131`-től). Ez biztonságos, mert a watchdog kulcsot nem exportál, és provider-URL-t sem (ezért minden ügynöke first-party, modellnévtől függetlenül).
+  - *`authMode: api` csak `claude-` modellnél* utasít el (`:144`, `startswith('claude-')`). Alias modellnél (`opus`, `sonnet`, `chatgpt/...`) `unset`-tel indul, mert a watchdog az ügynök saját kulcsát soha nem teszi az indításba. Itt tér el a távoli ssh-úttól, amelyik aliasnál is elutasít (ld. fent).
+  - *Nincs `assertLaunchCmdClean`.* A kész parancsot nem ellenőrzi még egyszer; a védelem a döntés (`allow` / `unset` / `refuse:<ok>`) és az `unset` előtag. Az okok: `auth-mode-api`, `settings-auth-key` (bármely modellnévnél, a betöltött settings-fájlokban kulcs-név vagy `apiKeyHelper`), `settings-unreadable`, `guard-error`.
+  - A fő ágens újraindítását a watchdog a `channels.sh`-ra bízza (`scripts/watchdog.sh:293`), így arra a `channels.sh`-ra vonatkozó szabályok érvényesek (lent).
+- **`forbid`, fő ágens**: a `channels.sh` nem olvassa és nem exportálja a `.env` kulcsát, az örökölt értéket is törli, a tmux-szerver globális env-jéből `-g -u`-val kiveszi, a pane-parancs `unset`-tel kezdődik. Ha a fő ágens settings-fájljaiban kulcs-út van, a fő ágens MÉGIS elindul (a csatorna elérhetősége az első), de guard-esemény és közvetlen Telegram-riasztás megy a tulajdonosnak. Ha a fő ágens customProvider-e maga az Anthropic, a `channels.sh` nem indítja el (a helper 3-as kilépési kódja), és a döntést 300 másodpercig tartja (`store/.channels-key-guard-refused`), hogy a launchd ne ismételje 30 másodpercenként.
+- **Futásidejű őr**: induláskor és 10 percenként, csak neveket nézve, végignézi a tmux globális és session-env-jét, a settings-fájlokat, a `.env`-et, a dashboard saját env-jét, a shell rc-fájlokat, a telepítés launchd plistjeit és a futó `claude` folyamatok env-neveit; percenként beolvassa az indítási utak guard-eseményeit. `forbid` alatt a fő ágensnek üzen (lenyomatonként naponta egyszer), a fő ágensre vonatkozó eseményről a tulajdonos Telegramot is kap (óránként legfeljebb egyet). Automatikus javítás nincs. Egy nem-Anthropic custom provider ágens saját kulcsa nem riaszt.
+
+**Store-fájlok.** Mindegyikben csak nevek és helyek vannak, érték soha.
+
+| Fájl | Ki írja | Tartalom |
+|------|---------|----------|
+| `store/interactive-key-guard-events.jsonl` | minden indítási út, `channels.sh`, a futásidejű őr (csak `forbid`); a `scripts/watchdog.sh` NEM ír ide, az elutasítást a `logs/watchdog.log`-ba naplózza | Soronként egy guard-esemény: `{ts, source, where, names, agent}`. A PR-B kredit-kapu ebből lép INCIDENT-be. |
+| `store/interactive-key-guard-audit.jsonl` | a futásidejű őr, csak `allow` alatt | A találatok, lenyomatonként naponta egy sor. |
+| `store/interactive-key-guard-owner-alerts.json` | a dashboard | A tulajdonosi riasztások közös dedupe-naplója (24 óra lenyomatonként, óránként legfeljebb egy riasztás), túléli a dashboard újraindítását. |
+| `store/interactive-key-guard-runner.json` | a futásidejű őr | Az eseményfájl olvasási kurzora és a fő ágensnek küldött riasztások naplója. |
+| `store/.channels-key-guard-refused` | `channels.sh` | `<epoch> <a döntés bemeneteinek sha256-ja>`. Csak `forbid` alatt, saját uid-ú sima fájlként (nem symlink), jövőbeli idő nélkül és változatlan bemenet-hash mellett számít. |
+
+**Ismert korlátok.**
+
+- *Hamis jelölő.* Bármely azonos uid-ú folyamat tud érvényes hash-sel jelölőt írni (a bemenetek olvashatók). Ekkor a dashboard a „session eltűnt, újraindítom” riasztás helyett a naponta egyszeri „customProvider = Anthropic” riasztást küldi. A `channels.sh` ilyenkor is elindul, és újra dönt, tehát a jelölő a döntést nem kerüli meg, csak a riasztás szövegét cseréli. A riasztás ezért kimondja, hogy a jelölő alapján szól, és megadja az útját; ha a `store/channels-failures.log`-ban nincs friss `main-agent-custom-provider refused` sor, a jelölőt nem a `channels.sh` írta.
+- *Távoli ssh-indítás nem-Anthropic custom providerrel.* Szándékosan nincs `unset`: az ágens nem first-party, a provider-útja a távoli gép saját env-jéből jön (a parancs nem exportál semmit), és a custom provider pontosan ezekkel a nevekkel hitelesít. Ha a távoli gép env-jében nincs provider-URL, az ott lévő kulcs őrizetlenül az Anthropicot éri el; a futásidejű őr a távoli gépet nem látja.
+- *A guard-esemény `where` mezője* a fő ágensnek küldött üzenetben csak akkor jelenik meg, ha (a) ismert indítási címke (`<indító>:<rögzített ok>`), vagy (b) a home, illetve a telepítés alatti settings-fájl: `.claude/settings.json`, `.claude/settings.local.json`, `.claude-config/settings.json`, `.claude-config/settings.local.json`, vagy ugyanezek `agents/<id>/` előtaggal, ahol az `<id>` az ügynök-azonosító szűrőn átmenő szöveg: ugyanaz a minta, mint az eseményfájl `agent` mezőjét szűrő `AGENT_ID_RX` (`interactive-key-guard-runner.ts:742`, `^[A-Za-z0-9_-]{1,64}$`), a `SETTINGS_UNDER_ROOT_RX` (`:759`) saját, azonos mintájával (`shownGuardWhere`, `:761`). Tehát a fő ágensnek szóló üzenet idézheti az `agents/<id>/...` útvonalat, de az `<id>` csak ASCII betű, szám, `_` és `-` lehet, legfeljebb 64 karakter. A `main-agent-custom-provider:` címke után álló azonosító helyén `<egyéb>` áll; minden más helyén `<egyéb>` áll (a teljes sor az eseményfájlban marad).
+- Az indításkori `unset` csak az új sessionöket védi; egy már futó sessiont az őr jelez, de nem állít le.
+
+**Visszaállítás (rollback).** A `.env`-ben `INTERACTIVE_ANTHROPIC_KEY_POLICY=allow` (vagy a sor törlése), majd a dashboard újraindítása; a shell-indítók a következő futásukkor már `allow`-t olvasnak. `allow` alatt minden indítási parancs bájtra a régi, a jelölőnek nincs hatása, és a `channels.sh` a következő indításkor a `.env` kulcsát ismét beteszi a tmux globális env-be. A store-fájlokat nem kell törölni: `allow` alatt a jelölő hatástalan, a futásidejű őr nem ír guard-eseményt és nem riaszt.
+
+---
+
 ## templates/ -- ágens-létrehozási sablonok
 
 Ezek a sablonok az ágens scaffold során töltődnek ki és kerülnek az `agents/<name>/` mappába.
@@ -360,6 +468,20 @@ el, csak eszköznév; a mező csak BŐVÍTENI tudja a tiltást, szűkíteni nem.
   "toolDeny": ["Artifact", "Workflow", "AskUserQuestion", "ReportFindings", "SendFeedback", "ListAgents", "Skill"]
 }
 ```
+
+---
+
+## Memória: napi napló tükör és dátumszűrő
+
+Nincs hozzá beállítás: mindkettő mindig be van kapcsolva. Részletek: [memory-system.md](memory-system.md).
+
+| Mi | Viselkedés |
+|----|------------|
+| Napló-tükör | Minden `POST /api/daily-log` bejegyzés egy `cold` tier-ű, `episodic` szektorú `memories` sort is létrehoz (`[Napló ÉÉÉÉ-HH-NN ÓÓ:PP] <szöveg>`, kulcsszó `napi-naplo, ÉÉÉÉ-HH-NN`), a kapcsolatot a `daily_log_memory` tábla tartja. A memória-tartalomszűrőn elbukó szöveg a naplóba ettől még bekerül, tükör nélkül (`memory_mirror: "skipped:content-filter"`). |
+| Backfill | `npx tsx scripts/daily-log-backfill-memories.ts [--db <út>] [--apply]`. Alapból szárazon fut és nem ír semmit (csak olvasásra nyitja az adatbázist, migráció nélkül); `--apply` ír, idempotens. |
+| Dátumszűrő | `GET /api/memories?...&date=<kifejezés>` vagy `&since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN`, telepítési időzóna (`APP_TZ`) szerinti naptári napokra. SQL-ben, a LIMIT előtt, minden keresési ágban. Érvénytelen érték 400. A `X-Memory-Search` fejléc `date=<tól>..<ig>` mezője mutatja a használt tartományt. |
+| Relevancia | A hasonlósági küszöb (`MEMORY_VECTOR_MIN_MARGIN`, `MEMORY_VECTOR_BASELINE_MIN_ROWS`, `MEMORY_VECTOR_SMALL_CORPUS_MIN_SIMILARITY`) a dátumablakba eső jelöltekből számolódik; egy szűk ablak a kis-korpusz padlóra eshet. |
+| Indexek | `memories(agent_id, created_at)`, `memories(category, created_at)` (indításkor, idempotensen). |
 
 ---
 
@@ -423,9 +545,31 @@ A főbb konfigurációs változók a launchd plist-ben (`~/Library/LaunchAgents/
 | `SLACK_CHANNEL_ID` | Slack csatorna ID |
 | `WEB_PORT` | Dashboard port (alapértelmezett: 3420). Telepítéskor megadható a `--port <N>` CLI flaggel (`./install-linux.sh --port 3421`) vagy env-változóként (`WEB_PORT=3421 ./install.sh`). |
 | `ANTHROPIC_API_KEY` | Claude API kulcs |
+| `INTERACTIVE_ANTHROPIC_KEY_POLICY` | `allow` (alap, hiányzó vagy üres is) vagy `forbid` (minden más érték is): tilos-e API-kulccsal indítani interaktív first-party Claude-sessiont. Csak a `.env`-ből. Ld. [fent](#interactive_anthropic_key_policy----interaktív-kulcs-őr) |
 | `OWNER_NAME` | A tulajdonos neve (pl. "Jónás Gergő") |
 | `BOT_NAME` | A főágens neve (pl. "Jarvis") |
 | `VOICE_TRANSCRIBE_INBOUND` | `1` = a text módú ügynököknél is átirat készül a bejövő hangüzenetről (alapból ki; az ügynökönkénti `voice.transcribeInbound` felülírja). Lásd `voice.md` |
+| `MEMORY_ABSTAIN_MIN_COS` | Csak a `store/config-overrides.json`-ből és a `.env`-ből olvassa (ebben a sorrendben); a folyamat környezete, így a launchd plist kulcsa is, NEM számít. A hibrid memóriakeresés relevancia-címkéjének küszöbe (0-1). Csak az `abstain=1`-gyel hívott `GET /api/memories?mode=hybrid` használja: az `X-Memory-Search` fejléc végére `; top-cos=<x.xx>; overlap=<n>; relevance=<low\|ok\|unknown>` kerül. Címke, nem szűrő: a találatok ugyanazok. Pontszám = topCos + `W_GAP` * (topCos - második cos) + `W_OVERLAP` * min(átfedés, 2) + `W_FTS` * (szigorú kulcsszavas találat); `low`, ha a pontszám a küszöb alatt van. Üres (alap) vagy hibás érték = kikapcsolva: `relevance=unknown`. A vektoros ág kiesésekor (embedding-hiba) mindig `unknown`, soha `low`. Kalibrálva (2026-10-17, v2-mérce, bge-m3): 0.53, minden súly 0; Brainy hold-out mérése előtt NE állítsd be (6 negatív kérdésre illesztve, a felső margó 0.011) |
+| `MEMORY_ABSTAIN_W_GAP` | Csak a `store/config-overrides.json`-ből és a `.env`-ből olvassa (ebben a sorrendben); a folyamat környezete, így a launchd plist kulcsa is, NEM számít. A relevancia-pontszámban a rés (legjobb mínusz második koszinusz) súlya, 0-10, alap 0. Hibás érték = 0 |
+| `MEMORY_ABSTAIN_W_OVERLAP` | Csak a `store/config-overrides.json`-ből és a `.env`-ből olvassa (ebben a sorrendben); a folyamat környezete, így a launchd plist kulcsa is, NEM számít. A két ág top10-ében közös sorok (legfeljebb 2) súlya, 0-1, alap 0. Hibás érték = 0 |
+| `MEMORY_ABSTAIN_W_FTS` | Csak a `store/config-overrides.json`-ből és a `.env`-ből olvassa (ebben a sorrendben); a folyamat környezete, így a launchd plist kulcsa is, NEM számít. A szigorú (nem lazított) kulcsszavas találat súlya, 0-1, alap 0. Hibás érték = 0 |
+| `MEMORY_HYBRID_RECENCY_WEIGHT` | Csak a `store/config-overrides.json`-ből és a `.env`-ből olvassa (ebben a sorrendben); a folyamat környezete, így a launchd plist kulcsa is, NEM számít. A hibrid memóriakeresés frissesség-tagjának súlya, 0-1, alap 0 (kikapcsolva: a sorrend bitre a korábbi). A sor pontszáma `RRF + súly * exp(-kor / TAU)`, a kor a `created_at`-ből (nem az `updated_at`-ből, azt a rétegmozgatás is átírja; jövőbeli érték = 0 nap). Az RRF egy ág első helye kb. 0.0164, tehát 0.005 körüli súly két közel egyforma sor közül a frissebbet teszi előre, a 0.02 már egy egész ágat felülírhat. Hibás érték = 0, egyszer WARN |
+| `MEMORY_HYBRID_RECENCY_TAU_DAYS` | Csak a `store/config-overrides.json`-ből és a `.env`-ből olvassa (ebben a sorrendben); a folyamat környezete, így a launchd plist kulcsa is, NEM számít. A frissesség-tag időállandója napokban, 0-nál nagyobb, legfeljebb 3650, alap 30. Hibás érték = 30, egyszer WARN |
+| `MEMORY_HYBRID_FTS_RECENCY` | Csak a `store/config-overrides.json`-ből és a `.env`-ből olvassa (ebben a sorrendben); a folyamat környezete, így a launchd plist kulcsa is, NEM számít. `on` (alap) vagy `off`: a hibrid keresés kulcsszavas ágán belüli saját frissesség-átrangsorolás (λ 0.7, τ 7 nap). `off` = az ág a sima bm25-sorrendet adja, így az időjel nem számít kétszer. A csak kulcsszavas keresést nem érinti. Hibás érték = `on`, egyszer WARN |
+| `MEMORY_GATE_MODE` | Csak a `.env`-ből olvassa (a `store/config-overrides.json`, a folyamat környezete és a Beállítások oldal NEM számít); változtatás dashboard-újraindítást kér. Ld. [memory-write-gate.md](memory-write-gate.md). Az írási kapu módja: `off` (alap; hiányzó, üres vagy ismeretlen érték is), `shadow` vagy `active`. A b1-ben csak naplóz: semmit nem ír a `memories` táblába; az `active` is `shadow`-ként fut (WARN) |
+| `MEMORY_GATE_OWNERS` | Csak a `.env`-ből olvassa (a `store/config-overrides.json`, a folyamat környezete és a Beállítások oldal NEM számít); változtatás dashboard-újraindítást kér. Ld. [memory-write-gate.md](memory-write-gate.md). Vesszővel elválasztott ágens-azonosítók (`[a-z0-9_-]{1,32}`), akiknek `warm`/`cold` emlékei a kapu elé kerülhetnek. Üres (alap) = a kapu nem csinál semmit. Hibás elem vagy `feszek` = konfigurációs hiba, az egész kapu áll |
+| `MEMORY_GATE_MAIN_AGENT_OK` | Csak a `.env`-ből olvassa (a `store/config-overrides.json`, a folyamat környezete és a Beállítások oldal NEM számít); változtatás dashboard-újraindítást kér. Ld. [memory-write-gate.md](memory-write-gate.md). `tg-<szám>` alakú hivatkozás a tulajdonos döntésére; csak ezzel számít a főágens tulajdonosnak. Más alak vagy üres = a főágens kihagyva, a többi tulajdonos dolgozik tovább |
+| `MEMORY_GATE_BATCH_DIR` | Csak a `.env`-ből olvassa (a `store/config-overrides.json`, a folyamat környezete és a Beállítások oldal NEM számít); változtatás dashboard-újraindítást kér. Ld. [memory-write-gate.md](memory-write-gate.md). A közös batch-kliens mappájának abszolút útja (`batch_client.py`, `usage_log.py`). Kötelező, ha a kapu hívna; hiányzó vagy relatív érték = konfigurációs hiba |
+| `MEMORY_GATE_MODEL` | Csak a `.env`-ből olvassa (a `store/config-overrides.json`, a folyamat környezete és a Beállítások oldal NEM számít); változtatás dashboard-újraindítást kér. Ld. [memory-write-gate.md](memory-write-gate.md). Az osztályozó modell azonosítója, alap `claude-haiku-5-5` |
+| `MEMORY_GATE_MAX_CALLS_PER_DAY` | Csak a `.env`-ből olvassa (a `store/config-overrides.json`, a folyamat környezete és a Beállítások oldal NEM számít); változtatás dashboard-újraindítást kér. Ld. [memory-write-gate.md](memory-write-gate.md). Napi hívásplafon budapesti napra, 1-2000, alap 300. Hibás érték = konfigurációs hiba |
+| `MEMORY_GATE_DAILY_USD` | Csak a `.env`-ből olvassa (a `store/config-overrides.json`, a folyamat környezete és a Beállítások oldal NEM számít); változtatás dashboard-újraindítást kér. Ld. [memory-write-gate.md](memory-write-gate.md). Napi költségplafon USD-ben, 0.01-0.50, legfeljebb két tizedes, alap 0.50. A felső határ a kódban rögzített: a `.env` csak csökkentheti. Minden hívás előtt foglalás. Hibás érték = konfigurációs hiba |
+| `MEMORY_GATE_MAX_PROMPT_BYTES` | Csak a `.env`-ből olvassa (a `store/config-overrides.json`, a folyamat környezete és a Beállítások oldal NEM számít); változtatás dashboard-újraindítást kér. Ld. [memory-write-gate.md](memory-write-gate.md). A kimenő prompt felső mérete bájtban, 2000-48000, alap 12000 |
+| `MEMORY_GATE_MAX_TOKENS` | Csak a `.env`-ből olvassa (a `store/config-overrides.json`, a folyamat környezete és a Beállítások oldal NEM számít); változtatás dashboard-újraindítást kér. Ld. [memory-write-gate.md](memory-write-gate.md). A válasz hossza tokenben, 64-1000, alap 300 |
+| `MEMORY_GATE_CANDIDATES` | Csak a `.env`-ből olvassa (a `store/config-overrides.json`, a folyamat környezete és a Beállítások oldal NEM számít); változtatás dashboard-újraindítást kér. Ld. [memory-write-gate.md](memory-write-gate.md). Jelöltek száma hívásonként, 1-5, alap 5 |
+| `MEMORY_GATE_SUPERSEDE_MIN_CONF` | Csak a `.env`-ből olvassa (a `store/config-overrides.json`, a folyamat környezete és a Beállítások oldal NEM számít); változtatás dashboard-újraindítást kér. Ld. [memory-write-gate.md](memory-write-gate.md). A `SUPERSEDE` döntés bizonyossági küszöbe, 0.5-1, alap 0.85. A b1-ben csak a `would_apply` kiértékelésében számít |
+| `MEMORY_GATE_OTHER_MIN_CONF` | Csak a `.env`-ből olvassa (a `store/config-overrides.json`, a folyamat környezete és a Beállítások oldal NEM számít); változtatás dashboard-újraindítást kér. Ld. [memory-write-gate.md](memory-write-gate.md). A többi, hatást kiváltó döntés küszöbe, 0.5-1, alap 0.70. A b1-ben csak a `would_apply` kiértékelésében számít |
+| `MEMORY_GATE_MAX_SUPERSEDE_PER_DAY` | Csak a `.env`-ből olvassa (a `store/config-overrides.json`, a folyamat környezete és a Beállítások oldal NEM számít); változtatás dashboard-újraindítást kér. Ld. [memory-write-gate.md](memory-write-gate.md). Napi legfeljebb ennyi `SUPERSEDE` kaphat `would_apply` jelölést, 0-1000, alap 20 |
+| `MEMORY_GATE_MAX_CONTRADICT_PER_DAY` | Csak a `.env`-ből olvassa (a `store/config-overrides.json`, a folyamat környezete és a Beállítások oldal NEM számít); változtatás dashboard-újraindítást kér. Ld. [memory-write-gate.md](memory-write-gate.md). Napi legfeljebb ennyi `CONTRADICT` kaphat `would_apply` jelölést, 0-1000, alap 20 |
 
 ---
 

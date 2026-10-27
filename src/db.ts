@@ -1,12 +1,18 @@
 import Database from 'better-sqlite3'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
+import { createHmac, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync, statSync } from 'node:fs'
-import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, EMBED_URL, EMBED_MODEL, EMBED_DIMS, MAIN_AGENT_ID } from './config.js'
+import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, EMBED_URL, EMBED_MODEL, EMBED_DIMS, EMBED_KEEP_ALIVE, EMBED_KEEP_ALIVE_INVALID, MAIN_AGENT_ID, MEMORY_HYBRID_RECENCY, MEMORY_HYBRID_RECENCY_INVALID, type AbstainConfig, type HybridRecencyConfig } from './config.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { triggerLikeClause } from './homoglyph.js'
+import { ensureContactsSchema } from './contacts-db.js'
 import type { LiveKanban } from './web/heartbeat-kanban-verify.js'
+import { CREDIT_GATE_APPROVAL_CATEGORIES, creditGateBinding, isCreditGateCategory } from './web/credit-gate/approval-payload.js'
+import { toBudapestTs, type TsRange } from './date-range.js'
+import { migrateMemoryGate } from './memory-gate/schema.js'
 
 let db: Database.Database
 // The path the CURRENT handle was opened on (null for ':memory:'). Kept so
@@ -48,6 +54,8 @@ export function initDatabase(dbPathOverride?: string): void {
   const useOverride = dbPathOverride !== undefined
   const isMemory = dbPathOverride === ':memory:'
   if (!useOverride) mkdirSync(STORE_DIR, { recursive: true })
+  // Row ids of the previous handle mean nothing in the new one.
+  embeddingBackoff.clear()
   // Idempotent re-init: close a previous handle before opening a new one
   // so repeated calls (tests, hot-reload, recovery paths) do not leak
   // the old better-sqlite3 fd.
@@ -246,6 +254,13 @@ export function initDatabase(dbPathOverride?: string): void {
   }
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id, category)`)
+  // The date filter of GET /api/memories (card f90928e3) is a range on
+  // created_at inside one agent's rows: this index makes it a range scan.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent_created ON memories(agent_id, created_at)`)
+  // Every agent's list also carries the shared rows (`agent_id = ? OR category
+  // = 'shared'`). SQLite can serve an OR from indexes only when BOTH sides have
+  // one, so without this the dated listing is a full scan.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_category_created ON memories(category, created_at)`)
 
   // --- Conversation-continuity ledger (deterministic; P0 2026-06-02) ---
   // A durable ROLLING TRANSCRIPT of every channel turn -- inbound user messages
@@ -372,6 +387,8 @@ export function initDatabase(dbPathOverride?: string): void {
       db.exec(`CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN INSERT INTO memories_fts(memories_fts, rowid, content, keywords) VALUES('delete', old.id, old.content, old.keywords); INSERT INTO memories_fts(rowid, content, keywords) VALUES (new.id, new.content, new.keywords); END`)
       db.exec(`INSERT INTO memories_fts(memories_fts) VALUES('rebuild')`)
       db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id, category)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent_created ON memories(agent_id, created_at)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_category_created ON memories(category, created_at)`)
     }
   } catch (err) {
     // Previously this silently swallowed every error which masked the
@@ -504,6 +521,20 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_daily_logs_date ON daily_logs(agent_id, date)`)
+
+  // Link between a daily-log row and the searchable memories row that mirrors
+  // it (card f90928e3). UNIQUE on both sides: one log row has at most one
+  // mirror, and one memory is the mirror of at most one log row -- that is what
+  // makes the backfill idempotent. No foreign key on purpose: when somebody
+  // deletes a mirror row the link stays, so a later backfill does not quietly
+  // resurrect a memory that was removed deliberately.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS daily_log_memory (
+      daily_log_id INTEGER NOT NULL UNIQUE,
+      memory_id INTEGER NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL
+    )
+  `)
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_status ON kanban_cards(status, archived_at)`)
 
@@ -1335,6 +1366,9 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN ssh_key_id TEXT REFERENCES vault_ssh_keys(id)') } catch { /* already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_vault_ssh_servers_key ON vault_ssh_servers(ssh_key_id)`)
 
+  // --- Contacts (append-only values, name/org FTS, read audit) ---
+  ensureContactsSchema(db)
+
   // --- Approvals (HITL) ---
   db.exec(`
     CREATE TABLE IF NOT EXISTS approvals (
@@ -1371,6 +1405,15 @@ export function initDatabase(dbPathOverride?: string): void {
   // used it. Rows consumed by the gate leave both NULL.
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_by TEXT') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_ref TEXT') } catch { /* already exists */ }
+  // 345f34e2: the Telegram approve and reject buttons each carry their OWN
+  // one-time 128-bit nonce in their callback_data, so whoever learns one
+  // button's data cannot take the other decision with it. Only the sha256s are
+  // kept, so nothing that can read the DB or the API can forge a press. NULL =
+  // no button bound, or the one decision the nonces allowed has already been
+  // made (a win clears both). Never part of an approval read (see
+  // APPROVAL_PUBLIC_COLUMNS).
+  try { db.exec('ALTER TABLE approvals ADD COLUMN callback_nonce_hash_approve TEXT') } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE approvals ADD COLUMN callback_nonce_hash_reject TEXT') } catch { /* already exists */ }
   // Every consume call leaves a row here, the refused ones too: a second send
   // attempt on a used approval is exactly the event worth seeing afterwards.
   // consumed_backfill is for a one-off data fix of rows a past send never
@@ -1387,6 +1430,25 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approval_events_approval ON approval_events(approval_id, created_at)`)
+  // fec6335f N2b (BE-3b MED-1): the trace of a decision made by the owner's
+  // Telegram button. resolved_by alone proves nothing (it is a string any
+  // writer of the row can set), so the button decision writes this row in the
+  // SAME transaction as the decision itself, and isOwnerVerified() reads it.
+  // Written only by resolveApprovalFromTelegram (the one INSERT below); no
+  // route, PATCH or other module touches this table. A row decided before
+  // this table existed has no trace, so it is never owner-verified.
+  // nonce_hash is the stored button binding that matched (single-use, its
+  // button is spent); content_hash is the approval's hash at the decision.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_owner_resolutions (
+      approval_id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('approved','rejected')),
+      nonce_hash TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      resolved_at INTEGER NOT NULL
+    )
+  `)
 
   // --- Control-bot custom commands (CMD920 3.12) ---
   // The owner's own slash commands. DB, not a file, so a later web admin writes
@@ -1510,6 +1572,9 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_otel_spans_trace ON otel_spans(trace_id, start_ms)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_otel_spans_agent ON otel_spans(agent_id, start_ms)`)
+
+  // Memory write gate b1 (card 3e9f6c28): five additive tables. A failure must never stop the boot (GB4).
+  try { migrateMemoryGate(db) } catch { /* flagged inside: migration_failed */ }
 
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
@@ -1668,10 +1733,10 @@ export function saveMemory(
   // log digest (memory.ts, "[Napi naplo ...]") is saved here, so every night
   // one memory was missing from semantic search until the Dream Engine
   // backfilled it by hand.
+  // Compare-and-set (card d4e7fea7): this path inserts no keywords, so the
+  // embedded text is `content` alone and the stored keywords are NULL.
   generateEmbedding(content).then(emb => {
-    if (emb) {
-      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
-    }
+    if (emb) storeEmbeddingIfUnchanged(id, content, null, emb)
   }).catch(() => {})
 }
 
@@ -1741,6 +1806,15 @@ export function buildFtsMatchExpression(query: string, join: 'AND' | 'OR' = 'AND
  * need the hard answer pass allowRelaxed=false and get silence when there is
  * no strict match.
  */
+// ` AND <col> >= ? AND <col> <= ?` for an optional created_at window (card
+// f90928e3), plus its bound parameters. Every memory read path appends this to
+// its WHERE so the window is applied in SQL, ahead of any LIMIT.
+function tsClause(col: string, range?: TsRange): { sql: string; params: number[] } {
+  return range
+    ? { sql: ` AND ${col} >= ? AND ${col} <= ?`, params: [range.fromTs, range.toTs] }
+    : { sql: '', params: [] }
+}
+
 function ftsWithOrFallback<T>(
   query: string,
   run: (terms: string) => T[],
@@ -1809,24 +1883,25 @@ function withoutRank<T extends { rank: number }>(rows: T[]): Omit<T, 'rank'>[] {
   return rows.map(({ rank: _rank, ...rest }) => rest)
 }
 
-export function searchMemories(query: string, chatId: string, limit = 3, allowRelaxed = true, category?: string): Memory[] {
+export function searchMemories(
+  query: string,
+  chatId: string,
+  limit = 3,
+  allowRelaxed = true,
+  category?: string,
+  // Card f90928e3: a created_at window, pushed into the query (see tsClause).
+  range?: TsRange,
+): Memory[] {
   try {
+    const dt = tsClause('m.created_at', range)
     const { rows } = ftsWithOrFallback(query, (terms) =>
-      (category
-        ? db.prepare(
-            `SELECT m.*, f.rank AS rank FROM memories m
-             JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.content MATCH ? AND m.chat_id = ? AND m.category = ?
-             ORDER BY rank
-             LIMIT ?`
-          ).all(terms, chatId, category, limit * RECENCY_OVERSAMPLE)
-        : db.prepare(
-            `SELECT m.*, f.rank AS rank FROM memories m
-             JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.content MATCH ? AND m.chat_id = ?
-             ORDER BY rank
-             LIMIT ?`
-          ).all(terms, chatId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
+      db.prepare(
+        `SELECT m.*, f.rank AS rank FROM memories m
+         JOIN memories_fts f ON m.id = f.rowid
+         WHERE f.content MATCH ? AND m.chat_id = ?${category ? ' AND m.category = ?' : ''}${dt.sql}
+         ORDER BY rank
+         LIMIT ?`
+      ).all(terms, chatId, ...(category ? [category] : []), ...dt.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
       , allowRelaxed)
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
   } catch {
@@ -1867,15 +1942,18 @@ export function decayMemories(): void {
   db.prepare('UPDATE memories SET salience = MAX(salience * 0.995, 0.01) WHERE created_at < ?').run(oneWeekAgo)
 }
 
-export function getMemoriesForChat(chatId: string, limit = 10, offset = 0): Memory[] {
+export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, range?: TsRange): Memory[] {
   // id DESC tie-break (#947): accessed_at has 1-second granularity, so a bulk
   // import leaves hundreds of rows sharing one value; without a stable
   // secondary sort SQLite may order the ties differently between queries, and
   // LIMIT/OFFSET over them can repeat a row on one page and never return
   // another. id is the unique insertion order, so it makes paging total.
+  //
+  // The date range (card f90928e3) goes into the query, ahead of the LIMIT.
+  const dt = tsClause('created_at', range)
   return db
-    .prepare('SELECT * FROM memories WHERE chat_id = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?')
-    .all(chatId, limit, offset) as Memory[]
+    .prepare(`SELECT * FROM memories WHERE chat_id = ?${dt.sql} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .all(chatId, ...dt.params, limit, offset) as Memory[]
 }
 
 // --- In-process memory cache (TTL-based) ---
@@ -1935,11 +2013,7 @@ export function saveAgentMemory(
   keywords?: string,
   autoGenerated: boolean = false
 ): { id: number } {
-  const now = Math.floor(Date.now() / 1000)
-  const info = db.prepare(
-    'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at, agent_id, category, auto_generated, keywords) VALUES (?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?, ?)'
-  ).run(ALLOWED_CHAT_ID, null, content, 'semantic', now, now, agentId, category, autoGenerated ? 1 : 0, keywords ?? null)
-  const id = Number(info.lastInsertRowid)
+  const id = insertMemoryRow(agentId, content, category, keywords, autoGenerated, 'semantic', Math.floor(Date.now() / 1000))
 
   // A new 'shared' row joins EVERY agent's list, not just the author's, so
   // evicting the author alone would leave every other agent serving a list
@@ -1947,14 +2021,37 @@ export function saveAgentMemory(
   if (category === 'shared') clearMemoryCache()
   else memoryCacheInvalidate(agentId)
 
-  // Fire-and-forget: generate embedding asynchronously
-  generateEmbedding(content + (keywords ? ' ' + keywords : '')).then(emb => {
-    if (emb) {
-      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
-    }
-  }).catch(() => {})
+  scheduleEmbedding(id, content, keywords)
 
   return { id }
+}
+
+// The bare INSERT shared by saveAgentMemory and the daily-log mirror. No cache
+// eviction and no embedding here: the mirror runs this inside a transaction
+// that may still roll back, so side effects wait for the commit.
+function insertMemoryRow(
+  agentId: string,
+  content: string,
+  category: string,
+  keywords: string | undefined,
+  autoGenerated: boolean,
+  sector: 'semantic' | 'episodic',
+  createdAt: number,
+): number {
+  const info = db.prepare(
+    'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at, agent_id, category, auto_generated, keywords) VALUES (?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?, ?)'
+  ).run(ALLOWED_CHAT_ID, null, content, sector, createdAt, createdAt, agentId, category, autoGenerated ? 1 : 0, keywords ?? null)
+  return Number(info.lastInsertRowid)
+}
+
+// Fire-and-forget: generate the embedding asynchronously. A backend that is
+// down leaves the column NULL and the existing backfill picks the row up later.
+// Compare-and-set: an edit that lands before Ollama answers must not receive
+// this (old) vector.
+function scheduleEmbedding(id: number, content: string, keywords: string | undefined): void {
+  generateEmbedding(content + (keywords ? ' ' + keywords : '')).then(emb => {
+    if (emb) storeEmbeddingIfUnchanged(id, content, keywords ?? null, emb)
+  }).catch(() => {})
 }
 
 // The category filter belongs in SQL, ahead of the LIMIT. Filtering the rows
@@ -1962,21 +2059,20 @@ export function saveAgentMemory(
 // accessed memories" instead of "the N most recent <category> memories", so an
 // older-but-still-active memory would drop out of the list with no truncation
 // signal -- invisible to the caller, and worst right after a restart.
-export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0): Memory[] {
+export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0, range?: TsRange): Memory[] {
   // offset is part of the cache key (#947): without it page 2 would be served
   // page 1's cached rows for up to MEMORY_CACHE_TTL_MS. id DESC tie-break for
   // the same reason getMemoriesForChat has one -- accessed_at ties are common
-  // after a bulk import and make LIMIT/OFFSET non-total without it.
-  const key = `${agentId}:${limit}:${category ?? ''}:${offset}`
+  // after a bulk import and make LIMIT/OFFSET non-total without it. The date
+  // range (card f90928e3) is part of the key for the same reason, and goes
+  // into the query ahead of the LIMIT, never after it.
+  const key = `${agentId}:${limit}:${category ?? ''}:${offset}${range ? `:${range.fromTs}-${range.toTs}` : ''}`
   const cached = memoryCacheGet(key)
   if (cached) return cached
-  const result = (category
-    ? db.prepare(
-        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?"
-      ).all(agentId, category, limit, offset)
-    : db.prepare(
-        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?"
-      ).all(agentId, limit, offset)) as Memory[]
+  const dt = tsClause('created_at', range)
+  const result = db.prepare(
+    `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${dt.sql} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`
+  ).all(agentId, ...(category ? [category] : []), ...dt.params, limit, offset) as Memory[]
   memoryCacheSet(key, result)
   return result
 }
@@ -1997,34 +2093,51 @@ export function searchAgentMemories(
   trace?: { relaxed: boolean },
   allowRelaxed = true,
   category?: string,
+  // Card f90928e3: a created_at window, pushed into every query below for the
+  // same reason as `category` -- a window applied after the LIMIT would answer
+  // "which of the N best matches fall in the window", not "the best matches
+  // inside the window".
+  range?: TsRange,
 ): Memory[] {
+  return searchAgentMemoriesOn(db, agentId, query, limit, trace, allowRelaxed, category, undefined, true, range)
+}
+
+// The body of searchAgentMemories on an explicit handle, so hybridSearchWith
+// can run it on a read-only one (card 94f8d99f, R0). SELECTs only. `nowSec`
+// pins the recency re-rank's clock; omitted, it is "now", as before.
+// `recencyReRank` false keeps the plain bm25 order (the hybrid search's
+// MEMORY_HYBRID_FTS_RECENCY=off, card 94f8d99f, R2). `range` (card f90928e3)
+// is a created_at window, appended last so every existing call is unchanged.
+function searchAgentMemoriesOn(
+  handle: Database.Database,
+  agentId: string,
+  query: string,
+  limit: number,
+  trace: { relaxed: boolean } | undefined,
+  allowRelaxed: boolean,
+  category: string | undefined,
+  nowSec?: number,
+  recencyReRank: boolean = true,
+  range?: TsRange,
+): Memory[] {
+  const dt = tsClause('m.created_at', range)
   try {
     const { rows, relaxed } = ftsWithOrFallback(query, (terms) =>
-      (category
-        ? db.prepare(
-            `SELECT m.*, f.rank AS rank FROM memories m
-             JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
-               AND m.category = ?
-             ORDER BY rank LIMIT ?`
-          ).all(terms, agentId, category, limit * RECENCY_OVERSAMPLE)
-        : db.prepare(
-            `SELECT m.*, f.rank AS rank FROM memories m
-             JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
-             ORDER BY rank LIMIT ?`
-          ).all(terms, agentId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
+      handle.prepare(
+        `SELECT m.*, f.rank AS rank FROM memories m
+         JOIN memories_fts f ON m.id = f.rowid
+         WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')${category ? ' AND m.category = ?' : ''}${dt.sql}
+         ORDER BY rank LIMIT ?`
+      ).all(terms, agentId, ...(category ? [category] : []), ...dt.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
     , allowRelaxed)
     if (trace) trace.relaxed = relaxed
-    return withoutRank(reRankByRecency(rows, limit)) as Memory[]
+    // The SQL already orders by bm25 rank, so "no re-rank" is the first `limit` rows.
+    return withoutRank(recencyReRank ? reRankByRecency(rows, limit, nowSec) : rows.slice(0, limit)) as Memory[]
   } catch {
-    return (category
-      ? db.prepare(
-          "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?"
-        ).all(agentId, category, `%${query}%`, `%${query}%`, limit)
-      : db.prepare(
-          "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?"
-        ).all(agentId, `%${query}%`, `%${query}%`, limit)) as Memory[]
+    const ld = tsClause('created_at', range)
+    return handle.prepare(
+      `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${ld.sql} AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?`
+    ).all(agentId, ...(category ? [category] : []), ...ld.params, `%${query}%`, `%${query}%`, limit) as Memory[]
   }
 }
 
@@ -2099,6 +2212,7 @@ export function deleteMemoryById(id: number): boolean {
     db.prepare('DELETE FROM memory_versions WHERE memory_id = ?').run(id)
     db.prepare('DELETE FROM memories WHERE id = ?').run(id)
   })()
+  clearEmbeddingBackoff(id)
   // A shared row is listed for every agent, so evicting one owner is not enough.
   if (before.category === 'shared') clearMemoryCache()
   else if (before.agent_id) memoryCacheInvalidate(before.agent_id)
@@ -2154,7 +2268,8 @@ export function updateMemory(id: number, content: string, category?: string, age
   // resends the unchanged body on a category-only edit), so presence alone says
   // nothing about a change.
   const keywordsChanged = keywords !== undefined && (before?.keywords ?? null) !== keywords
-  if (before && (before.content !== content || keywordsChanged)) sets.push('embedding = NULL')
+  const embeddedTextChanged = !!before && (before.content !== content || keywordsChanged)
+  if (embeddedTextChanged) sets.push('embedding = NULL')
   if (category) { sets.push('category = ?'); params.push(category) }
   if (agentId) { sets.push('agent_id = ?'); params.push(agentId) }
   if (keywords !== undefined) { sets.push('keywords = ?'); params.push(keywords) }
@@ -2175,19 +2290,196 @@ export function updateMemory(id: number, content: string, category?: string, age
       if (before?.agent_id) memoryCacheInvalidate(before.agent_id)
       if (agentId && agentId !== before?.agent_id) memoryCacheInvalidate(agentId)
     }
+    // The row is NULL now; ask for a re-embed instead of waiting for the next
+    // runner tick (card d4e7fea7). After the commit, never inside it. New text
+    // also gets a fresh chance: a backoff earned by the old text is dropped (MN5).
+    if (embeddedTextChanged) clearEmbeddingBackoff(id)
+    if (embeddedTextChanged) requestEmbeddingRefresh()
   }
   return changed
 }
 
 // --- Daily logs ---
 
-export function appendDailyLog(agentId: string, content: string): void {
+// Tier of the searchable copy of a log entry: cold, so the hot list (the
+// "what is in flight right now" list) does not fill up with diary lines that
+// would read as open tasks.
+const DAILY_LOG_MIRROR_CATEGORY = 'cold'
+
+/**
+ * Text and keywords of the memories row that mirrors one daily-log entry:
+ * `[Napló ÉÉÉÉ-HH-NN ÓÓ:PP] <text>`. The date is the log row's own date; the
+ * clock time is the entry's created_at in the install zone.
+ */
+export function dailyLogMirrorText(date: string, createdAt: number, text: string): { content: string; keywords: string } {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: APP_TZ, hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(createdAt * 1000))
+  const get = (t: string) => parts.find(p => p.type === t)?.value ?? '00'
+  return {
+    content: `[Napló ${date} ${get('hour')}:${get('minute')}] ${text}`,
+    keywords: `napi-naplo, ${date}`,
+  }
+}
+
+/**
+ * Appends a daily-log entry. With `mirror: true` the same transaction also
+ * inserts the searchable memories row and the link row, so the log entry is
+ * findable by the memory search the moment this returns (FTS comes from the
+ * memories_ai trigger; the embedding follows asynchronously). Any DB error
+ * rolls BOTH rows back and throws. Content-filter decisions are the caller's:
+ * a refused entry is simply appended with `mirror: false`.
+ */
+export function appendDailyLog(
+  agentId: string,
+  content: string,
+  opts: { mirror?: boolean } = {},
+): { id: number; memoryId: number | null } {
   const now = Math.floor(Date.now() / 1000)
   // Budapest calendar day, not UTC -- otherwise an entry written 00:00-02:00
   // local time lands on the previous day and the "ma" recall query misses it.
   // en-CA formats as YYYY-MM-DD.
   const today = new Date().toLocaleDateString('en-CA', { timeZone: APP_TZ })
-  db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run(agentId, today, content, now)
+  const mirror = opts.mirror === true ? dailyLogMirrorText(today, now, content) : null
+  const result = db.transaction((): { id: number; memoryId: number | null } => {
+    const info = db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run(agentId, today, content, now)
+    const id = Number(info.lastInsertRowid)
+    if (!mirror) return { id, memoryId: null }
+    const memoryId = insertMemoryRow(agentId, mirror.content, DAILY_LOG_MIRROR_CATEGORY, mirror.keywords, true, 'episodic', now)
+    db.prepare('INSERT INTO daily_log_memory (daily_log_id, memory_id, created_at) VALUES (?, ?, ?)').run(id, memoryId, now)
+    return { id, memoryId }
+  })()
+  if (mirror && result.memoryId !== null) {
+    memoryCacheInvalidate(agentId)
+    scheduleEmbedding(result.memoryId, mirror.content, mirror.keywords)
+  }
+  return result
+}
+
+export interface DailyLogBackfillResult {
+  /** daily_logs rows in the table */
+  total: number
+  /** rows that already had a mirror (link row present) */
+  already: number
+  /** mirrors written (apply) */
+  created: number
+  /** mirrors a --apply run would write (dry run) */
+  wouldCreate: number
+  /** log rows whose mirror memory already exists unlinked (fleet import): link row only */
+  relinked: number
+  /** relinks a --apply run would do (dry run) */
+  wouldRelink: number
+  /** refused by the content filter or empty: no mirror, log row untouched */
+  skipped: number
+  /** rows whose mirror insert threw (the others are unaffected) */
+  failed: number
+}
+
+// Looks for a memory that already IS the mirror of this log row but has no link
+// row: a fleet import brings daily_logs and the `[Napló ...]` memories without
+// daily_log_memory. Same agent, exact mirror content, same created_at; memories
+// in `taken` (claimed by an earlier identical row in this run) are skipped.
+function findUnlinkedMirror(
+  handle: Database.Database,
+  row: { agent_id: string; date: string; content: string; created_at: number },
+  taken: Set<number>,
+  linkTable: boolean,
+): number | null {
+  const m = dailyLogMirrorText(row.date, row.created_at, row.content)
+  const cands = handle.prepare(
+    `SELECT id FROM memories WHERE agent_id = ? AND content = ? AND created_at = ?${linkTable
+      ? ' AND NOT EXISTS (SELECT 1 FROM daily_log_memory k WHERE k.memory_id = memories.id)'
+      : ''} ORDER BY id`
+  ).all(row.agent_id, m.content, row.created_at) as { id: number }[]
+  const hit = cands.find(c => !taken.has(c.id))
+  return hit ? hit.id : null
+}
+
+/**
+ * Mirrors every daily_logs row that has no link yet, with its own created_at.
+ * Idempotent: the link table is the "done" marker, so a second run finds
+ * nothing to do. A row whose mirror memory already exists without a link (fleet
+ * import) is only re-linked, never mirrored twice. Dry run unless `apply`. Embeddings are left to the existing
+ * backfill (the CLI process exits before an async embed could land).
+ */
+export function backfillDailyLogMemories(opts: { apply: boolean; reject?: (content: string) => boolean }): DailyLogBackfillResult {
+  const total = (db.prepare('SELECT COUNT(*) AS n FROM daily_logs').get() as { n: number }).n
+  const pending = db.prepare(
+    `SELECT l.id, l.agent_id, l.date, l.content, l.created_at FROM daily_logs l
+      LEFT JOIN daily_log_memory k ON k.daily_log_id = l.id
+      WHERE k.daily_log_id IS NULL ORDER BY l.id`
+  ).all() as { id: number; agent_id: string; date: string; content: string; created_at: number }[]
+  const result: DailyLogBackfillResult = { total, already: total - pending.length, created: 0, wouldCreate: 0, relinked: 0, wouldRelink: 0, skipped: 0, failed: 0 }
+  const link = db.prepare('INSERT INTO daily_log_memory (daily_log_id, memory_id, created_at) VALUES (?, ?, ?)')
+  const taken = new Set<number>()
+  for (const row of pending) {
+    if (!row.content.trim() || opts.reject?.(row.content)) { result.skipped++; continue }
+    const existing = findUnlinkedMirror(db, row, taken, true)
+    if (existing !== null) {
+      taken.add(existing)
+      if (!opts.apply) { result.wouldRelink++; continue }
+      try {
+        link.run(row.id, existing, Math.floor(Date.now() / 1000))
+        result.relinked++
+      } catch (err) {
+        result.failed++
+        logger.warn({ err: (err as Error)?.message, dailyLogId: row.id }, 'daily-log backfill: relink failed')
+      }
+      continue
+    }
+    if (!opts.apply) { result.wouldCreate++; continue }
+    try {
+      const m = dailyLogMirrorText(row.date, row.created_at, row.content)
+      db.transaction(() => {
+        const memoryId = insertMemoryRow(row.agent_id, m.content, DAILY_LOG_MIRROR_CATEGORY, m.keywords, true, 'episodic', row.created_at)
+        link.run(row.id, memoryId, Math.floor(Date.now() / 1000))
+      })()
+      result.created++
+    } catch (err) {
+      result.failed++
+      logger.warn({ err: (err as Error)?.message, dailyLogId: row.id }, 'daily-log backfill: mirror insert failed')
+    }
+  }
+  if (result.created > 0) clearMemoryCache()
+  return result
+}
+
+/**
+ * Dry run of the backfill against a handle the CALLER opened read-only, with
+ * no migration: it must not write anything, not even the empty link table.
+ * A database that never ran the mirror migration has no daily_log_memory
+ * table; then every log row counts as pending and `linkTableMissing` says
+ * that `--apply` would create the table first. A database without even a
+ * daily_logs table reports zero rows.
+ */
+export function dryRunDailyLogBackfill(
+  handle: Database.Database,
+  opts: { reject?: (content: string) => boolean } = {},
+): DailyLogBackfillResult & { linkTableMissing: boolean } {
+  const has = (name: string) =>
+    handle.prepare("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined
+  const linkTableMissing = !has('daily_log_memory')
+  if (!has('daily_logs')) {
+    return { total: 0, already: 0, created: 0, wouldCreate: 0, relinked: 0, wouldRelink: 0, skipped: 0, failed: 0, linkTableMissing }
+  }
+  const total = (handle.prepare('SELECT COUNT(*) AS n FROM daily_logs').get() as { n: number }).n
+  const pending = (linkTableMissing
+    ? handle.prepare('SELECT id, agent_id, date, content, created_at FROM daily_logs ORDER BY id')
+    : handle.prepare(
+        `SELECT l.id, l.agent_id, l.date, l.content, l.created_at FROM daily_logs l
+          LEFT JOIN daily_log_memory k ON k.daily_log_id = l.id
+          WHERE k.daily_log_id IS NULL ORDER BY l.id`
+      )).all() as { id: number; agent_id: string; date: string; content: string; created_at: number }[]
+  const result = { total, already: total - pending.length, created: 0, wouldCreate: 0, relinked: 0, wouldRelink: 0, skipped: 0, failed: 0, linkTableMissing }
+  const canRelink = has('memories')
+  const taken = new Set<number>()
+  for (const row of pending) {
+    if (!row.content.trim() || opts.reject?.(row.content)) { result.skipped++; continue }
+    const existing = canRelink ? findUnlinkedMirror(handle, row, taken, !linkTableMissing) : null
+    if (existing !== null) { taken.add(existing); result.wouldRelink++ }
+    else result.wouldCreate++
+  }
+  return result
 }
 
 export function getDailyLog(agentId: string, date: string): { id: number; content: string; created_at: number }[] {
@@ -2206,25 +2498,17 @@ export interface RecallResult {
   dateRange: { from: string; to: string }
 }
 
-function toBudapestTs(dateStr: string, endOfDay: boolean): number {
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: APP_TZ,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  })
-  const refDate = new Date(`${dateStr}T${endOfDay ? '23:59:59' : '00:00:00'}`)
-  const parts = fmt.formatToParts(refDate)
-  const get = (t: string) => parts.find(p => p.type === t)?.value || '0'
-  const localStr = `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}`
-  const localMs = new Date(localStr + 'Z').getTime()
-  const offsetMs = localMs - refDate.getTime()
-  const target = new Date(`${dateStr}T${endOfDay ? '23:59:59' : '00:00:00'}Z`)
-  return Math.floor((target.getTime() - offsetMs) / 1000)
-}
-
+// toBudapestTs moved to ./date-range.js (card f90928e3): the memory date filter
+// and recall share one day-boundary implementation.
 function escapeLike(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
 }
+
+// SQL fragments: the memory row is NOT the mirror of a daily-log entry. The
+// mirror is already in `logs`, so recall leaves it out of `memories` and every
+// entry shows once (card f90928e3).
+const NOT_MIRROR = 'NOT EXISTS (SELECT 1 FROM daily_log_memory dlm WHERE dlm.memory_id = id)'
+const NOT_MIRROR_M = 'NOT EXISTS (SELECT 1 FROM daily_log_memory dlm WHERE dlm.memory_id = m.id)'
 
 export function recallByDateRange(from: string, to: string, agentId?: string): RecallResult {
   const logSql = agentId
@@ -2236,8 +2520,8 @@ export function recallByDateRange(from: string, to: string, agentId?: string): R
   const fromTs = toBudapestTs(from, false)
   const toTs = toBudapestTs(to, true)
   const memSql = agentId
-    ? "SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND (agent_id = ? OR category = 'shared') ORDER BY created_at ASC"
-    : 'SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? ORDER BY created_at ASC'
+    ? `SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND (agent_id = ? OR category = 'shared') AND ${NOT_MIRROR} ORDER BY created_at ASC`
+    : `SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND ${NOT_MIRROR} ORDER BY created_at ASC`
   const memParams = agentId ? [fromTs, toTs, agentId] : [fromTs, toTs]
   const memories = db.prepare(memSql).all(...memParams) as Memory[]
 
@@ -2253,8 +2537,8 @@ export function recallSearch(query: string, agentId?: string, limit = 50): Recal
       // same λ-blend as the other search paths, so a strongly matching older
       // memory can still surface above barely-matching fresh noise.
       const sql = agentId
-        ? `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared') ORDER BY rank LIMIT ?`
-        : `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? ORDER BY rank LIMIT ?`
+        ? `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared') AND ${NOT_MIRROR_M} ORDER BY rank LIMIT ?`
+        : `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND ${NOT_MIRROR_M} ORDER BY rank LIMIT ?`
       const { rows } = ftsWithOrFallback(query, (terms) =>
         agentId
           ? db.prepare(sql).all(terms, agentId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
@@ -2263,8 +2547,8 @@ export function recallSearch(query: string, agentId?: string, limit = 50): Recal
       memories = withoutRank(reRankByRecency(rows, limit)) as Memory[]
     } catch {
       const sql = agentId
-        ? "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY created_at DESC LIMIT ?"
-        : "SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY created_at DESC LIMIT ?"
+        ? `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') AND ${NOT_MIRROR} ORDER BY created_at DESC LIMIT ?`
+        : `SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') AND ${NOT_MIRROR} ORDER BY created_at DESC LIMIT ?`
       const pat = `%${escaped}%`
       memories = agentId
         ? db.prepare(sql).all(agentId, pat, pat, limit) as Memory[]
@@ -4492,17 +4776,80 @@ export function backfillNeedsWarning(pending: number, embedded: number): boolean
   return pending > 0 && embedded === 0
 }
 
-export async function generateEmbedding(text: string): Promise<number[] | null> {
+// An invalid EMBED_KEEP_ALIVE fell back to the default at boot (config.ts); say
+// so once, at the first embedding request, when the logger is available.
+let embedKeepAliveWarned = false
+
+// Embedding activity (card 94f8d99f, w3 DW3), read by the keep-warm runner
+// (web/embedding-keepwarm-runner.ts): it pings only after a stretch with no
+// call, never while one runs, and a success ends its backoff. Counted for
+// every caller of generateEmbedding; nothing here changes what a call does.
+// The clock is process.hrtime: monotonic, and not performance.now(), whose
+// reads the Server-Timing test counts per search (finding WE1).
+let embeddingInFlight = 0
+let lastEmbeddingDoneMono: number | null = null
+let embeddingSuccesses = 0
+
+/** Monotonic milliseconds (the clock of EmbeddingActivity.lastDoneMono). */
+export function embeddingMonoMs(): number {
+  return Number(process.hrtime.bigint() / 1_000_000n)
+}
+
+export interface EmbeddingActivity {
+  /** generateEmbedding calls running now. */
+  inFlight: number
+  /** When the last call finished, success or not (embeddingMonoMs); null = none yet. */
+  lastDoneMono: number | null
+  /** Calls that returned a vector, since process start. */
+  successes: number
+  /** The outage latch: a failure WARNed, no success since. */
+  outageLatched: boolean
+  /** A backfillEmbeddings pass runs (between its rows too). */
+  backfillInFlight: boolean
+}
+
+/** Whether generateEmbedding's outage latch is set (first failure WARNed, no success since). */
+export function isEmbeddingOutageLatched(): boolean {
+  return embeddingBackendWarned
+}
+
+/** Read-only snapshot of the embedding activity; touches no DB. */
+export function getEmbeddingActivity(): EmbeddingActivity {
+  return {
+    inFlight: embeddingInFlight,
+    lastDoneMono: lastEmbeddingDoneMono,
+    successes: embeddingSuccesses,
+    outageLatched: embeddingBackendWarned,
+    backfillInFlight: isBackfillInFlight(),
+  }
+}
+
+/**
+ * `quiet`: a failure is logged at debug and leaves the outage latch alone. The
+ * backfill uses it per row, because a row the backend refuses is not an outage;
+ * it then asks once, loudly, with a known-good probe (MN5). A success always
+ * re-arms the latch.
+ */
+export async function generateEmbedding(text: string, opts: { quiet?: boolean } = {}): Promise<number[] | null> {
+  if (EMBED_KEEP_ALIVE_INVALID !== undefined && !embedKeepAliveWarned) {
+    embedKeepAliveWarned = true
+    logger.warn(
+      { value: EMBED_KEEP_ALIVE_INVALID, using: EMBED_KEEP_ALIVE },
+      'EMBED_KEEP_ALIVE is not an Ollama duration (e.g. 24h, 30m) or a number of seconds; -1 and 0 (unload after every request) are not accepted either -- using the default',
+    )
+  }
+  embeddingInFlight++
   try {
     const resp = await fetch(`${EMBED_URL}/api/embeddings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: EMBED_MODEL, prompt: text.slice(0, 2000) }),
+      body: JSON.stringify({ model: EMBED_MODEL, prompt: text.slice(0, 2000), keep_alive: EMBED_KEEP_ALIVE }),
       signal: AbortSignal.timeout(TOOL_TIMEOUTS['ollama-embedding']),
     })
     const data = await resp.json() as { embedding?: number[] }
     if (!data.embedding || data.embedding.length === 0) return null
     embeddingBackendWarned = false
+    embeddingSuccesses++
     // Matryoshka truncation. Only ever CUT, never pad: slicing a vector that is
     // already shorter than EMBED_DIMS would silently store a dimension that
     // does not match what the model produces.
@@ -4514,15 +4861,20 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
     // failures: debug, so a host without Ollama does not spam default INFO
     // logs while "why does hybrid search only return FTS results?" stays
     // diagnosable.
-    const level = decideEmbeddingFailureLevel(embeddingBackendWarned)
-    embeddingBackendWarned = true
+    const level = opts.quiet ? 'debug' : decideEmbeddingFailureLevel(embeddingBackendWarned)
+    if (!opts.quiet) embeddingBackendWarned = true
     logger[level](
       { err: (err as Error)?.message ?? String(err), embedUrl: EMBED_URL, embedModel: EMBED_MODEL },
-      level === 'warn'
-        ? 'Embedding generation failed -- embedding backend unreachable or model missing (Ollama not installed/running at EMBED_URL?). Memory search runs FTS-only until it recovers; further failures are logged at debug.'
-        : 'Embedding generation failed (backend still unavailable)',
+      opts.quiet
+        ? 'Embedding generation failed (backfill row; the pass checks the backend itself)'
+        : level === 'warn'
+          ? 'Embedding generation failed -- embedding backend unreachable or model missing (Ollama not installed/running at EMBED_URL?). Memory search runs FTS-only until it recovers; further failures are logged at debug.'
+          : 'Embedding generation failed (backend still unavailable)',
     )
     return null
+  } finally {
+    embeddingInFlight--
+    lastEmbeddingDoneMono = embeddingMonoMs()
   }
 }
 
@@ -4536,16 +4888,46 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
 }
 
-function vectorSearch(agentId: string, queryEmbedding: number[], limit: number = 10, category?: string): Memory[] {
+/** One vector-branch row with its cosine similarity to the query. */
+export interface VectorHit {
+  memory: Memory
+  score: number
+}
+
+// Returns the cosine with each row (card 94f8d99f, R0: the relevance signal
+// reads it); the order and the cut are unchanged.
+// `timing` (card 94f8d99f, w3 DW1) receives the two stage times in ms: vecsql =
+// the SELECT that reads every embedded row, vecscore = JSON.parse + cosine +
+// sort + cut. Two clock reads around each stage as a whole, none per row.
+function vectorSearch(
+  handle: Database.Database,
+  agentId: string,
+  queryEmbedding: number[],
+  limit: number = 10,
+  category?: string,
+  timing?: Pick<SearchStageTimes, 'vecsql' | 'vecscore'>,
+  // Card f90928e3: a created_at window; the similarity floor is then computed
+  // over the windowed rows only.
+  range?: TsRange,
+): VectorHit[] {
+  // A zero-norm or non-finite QUERY vector has no direction: every cosine
+  // would be 0/0 (counted as 0 below), and a list of rows all at cosine 0
+  // reads like "searched, nothing similar" -- topCos 0, relevance=low. It is a
+  // broken embedding, not an answer, so the branch returns nothing and the
+  // label says unknown, as for any embedding failure (card 94f8d99f, MR3).
+  let queryNorm = 0
+  for (const x of queryEmbedding) queryNorm += x * x
+  if (!Number.isFinite(queryNorm) || queryNorm === 0) return []
+
   // Same push-down as searchAgentMemories: this branch scores EVERY embedded
   // row in JS, so filtering in SQL is both correct and strictly less work.
-  const rows = (category
-    ? db.prepare(
-        "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND category = ?"
-      ).all(agentId, category)
-    : db.prepare(
-        "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')"
-      ).all(agentId)) as Memory[]
+  const tSql = timing ? performance.now() : 0
+  const dt = tsClause('created_at', range)
+  const rows = handle.prepare(
+    `SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${dt.sql}`
+  ).all(agentId, ...(category ? [category] : []), ...dt.params) as Memory[]
+  const tScore = timing ? performance.now() : 0
+  if (timing) timing.vecsql = tScore - tSql
 
   // A vector written by a DIFFERENT model has a different length, and the
   // cosine loop walks the QUERY's length: the missing entries read as undefined
@@ -4553,18 +4935,26 @@ function vectorSearch(agentId: string, queryEmbedding: number[], limit: number =
   // neither sorts to the top nor raises -- the search quietly returns junk.
   // Drop the mismatches instead, so a half-migrated table degrades to "fewer
   // results" rather than "wrong results".
+  //
+  // A zero-norm stored vector gives 0/0 = NaN, and a NaN in the sort
+  // comparator makes the whole order arbitrary, not just that row's place; it
+  // would also surface as topCos. A non-finite cosine counts as 0, like a
+  // malformed vector, before the sort (card 94f8d99f, MR1).
   const scored = rows.flatMap(m => {
     try {
       const emb = JSON.parse(m.embedding!) as number[]
       if (emb.length !== queryEmbedding.length) return []
-      return [{ memory: m, score: cosineSimilarity(queryEmbedding, emb) }]
+      const cos = cosineSimilarity(queryEmbedding, emb)
+      return [{ memory: m, score: Number.isFinite(cos) ? cos : 0 }]
     } catch {
       return [{ memory: m, score: 0 }]
     }
   })
 
   scored.sort((a, b) => b.score - a.score)
-  return scored.slice(0, limit).map(s => s.memory)
+  const cut = scored.slice(0, limit)
+  if (timing) timing.vecscore = performance.now() - tScore
+  return cut
 }
 
 /**
@@ -4581,6 +4971,211 @@ export interface HybridSearchTrace {
   ftsRelaxed: boolean
   /** Every returned row came from the vector branch alone. */
   vectorOnly: boolean
+  // Relevance signals (card 94f8d99f, R0), filled by hybridSearchWith. Optional
+  // so the existing callers' trace literals stay valid; classifyRelevance reads them.
+  /** Cosine of the best vector-branch row; null when that branch returned nothing (embedding failure, no vectors). */
+  topCos?: number | null
+  /** Cosine of the second vector-branch row; null when there is none. */
+  secondCos?: number | null
+  /** How many ids the two branches' top HYBRID_OVERLAP_TOP rows share. */
+  overlap?: number
+}
+
+/** Reciprocal Rank Fusion constant of the hybrid search. */
+export const HYBRID_RRF_K = 60
+/** The overlap signal compares this many top rows of each branch. */
+export const HYBRID_OVERLAP_TOP = 10
+
+/** The relevance score counts at most this many shared top rows. */
+export const RELEVANCE_OVERLAP_CAP = 2
+
+export type Relevance = 'low' | 'ok' | 'unknown'
+
+/**
+ * The relevance label of one hybrid answer (card 94f8d99f, point 3). A label,
+ * not a filter: the caller still gets every row. The score is monotone in each
+ * signal (a higher cosine, a wider lead, more shared rows, or a strict keyword
+ * match never lowers it), see AbstainConfig in config.ts for the formula.
+ *
+ * `unknown`, never `low`, when the vector branch gave nothing to judge by
+ * (embedding failure or timeout, no stored vectors: topCos null) or no
+ * threshold is configured: an outage must not read as "there is no memory".
+ */
+export function classifyRelevance(
+  trace: HybridSearchTrace,
+  cfg: AbstainConfig,
+): { relevance: Relevance; score: number | null } {
+  const top = trace.topCos
+  if (top === undefined || top === null || !Number.isFinite(top) || trace.vectorHits === 0) {
+    return { relevance: 'unknown', score: null }
+  }
+  const second = trace.secondCos
+  const gap = second === undefined || second === null || !Number.isFinite(second) ? 0 : Math.max(0, top - second)
+  const overlap = Math.min(Math.max(0, trace.overlap ?? 0), RELEVANCE_OVERLAP_CAP)
+  const ftsStrict = trace.ftsHits > 0 && !trace.ftsRelaxed ? 1 : 0
+  const score = top + cfg.wGap * gap + cfg.wOverlap * overlap + cfg.wFts * ftsStrict
+  if (cfg.minCos === null) return { relevance: 'unknown', score }
+  return { relevance: score < cfg.minCos ? 'low' : 'ok', score }
+}
+
+/**
+ * The X-Memory-Search fields an abstain=1 caller gets after the usual ones:
+ * `; top-cos=<0.00-1.00 | none>; overlap=<n>; relevance=<low|ok|unknown>`.
+ * Lower-case ASCII only, so the whole header still fits the recall hook's
+ * `[a-z0-9=;. -]{1,200}` check.
+ */
+export function relevanceHeaderFields(trace: HybridSearchTrace, relevance: Relevance): string {
+  const top = trace.topCos
+  const cos = top === undefined || top === null || !Number.isFinite(top) ? 'none' : Math.min(1, Math.max(0, top)).toFixed(2)
+  return `; top-cos=${cos}; overlap=${trace.overlap ?? 0}; relevance=${relevance}`
+}
+
+/** One fused hybrid row with the numbers behind its place. */
+export interface HybridHit {
+  memory: Memory
+  /**
+   * RRF score: sum of 1 / (k + rank) over the branches that returned the row
+   * (rank 1-based), plus the recency term when its weight is above 0 (R2).
+   */
+  score: number
+  /** 1-based rank in the keyword (FTS) branch; null if that branch did not return the row. */
+  ftsRank: number | null
+  /** 1-based rank in the vector branch; null if that branch did not return the row. */
+  vecRank: number | null
+  /** Cosine similarity to the query; null if the vector branch did not return the row. */
+  cosine: number | null
+}
+
+/**
+ * Reciprocal Rank Fusion of the two branches, as a pure function. The
+ * arithmetic and the tie order are the pre-R0 ones on purpose: the score is
+ * accumulated FTS first, then vector; rows are kept in first-seen order (FTS
+ * rows, then vector-only rows) and the sort is stable, so equal scores keep
+ * that order; a row both branches returned carries the vector branch's row
+ * object (the old byId map was overwritten by the vector pass).
+ *
+ * `recency` (card 94f8d99f, R2) adds hybridRecencyBonus to each row's score
+ * after the RRF sum and before the sort. Omitted or weight 0: not a single
+ * operation is added, so the result is the previous one bit for bit.
+ */
+export function fuseRanked(
+  fts: Memory[],
+  vec: VectorHit[],
+  limit: number,
+  k: number = HYBRID_RRF_K,
+  recency?: HybridRecencyTerm,
+): HybridHit[] {
+  const hits: Map<number, HybridHit> = new Map()
+  const add = (m: Memory, rank: number): HybridHit => {
+    const prev = hits.get(m.id)
+    const hit: HybridHit = prev ?? { memory: m, score: 0, ftsRank: null, vecRank: null, cosine: null }
+    hit.score = hit.score + 1 / (k + rank + 1)
+    hit.memory = m
+    if (!prev) hits.set(m.id, hit)
+    return hit
+  }
+  fts.forEach((m, rank) => {
+    const hit = add(m, rank)
+    if (hit.ftsRank === null) hit.ftsRank = rank + 1
+  })
+  vec.forEach(({ memory, score }, rank) => {
+    const hit = add(memory, rank)
+    if (hit.vecRank === null) {
+      hit.vecRank = rank + 1
+      hit.cosine = score
+    }
+  })
+  if (recency && recency.weight > 0) {
+    for (const hit of hits.values()) {
+      hit.score += hybridRecencyBonus(hit.memory.created_at, recency)
+    }
+  }
+  return [...hits.values()].sort((a, b) => b.score - a.score).slice(0, limit)
+}
+
+/** The recency term's parameters, resolved for one search. */
+export interface HybridRecencyTerm {
+  weight: number
+  tauSec: number
+  /** The clock (unix seconds) the age is measured from. */
+  nowSec: number
+}
+
+/**
+ * weight * exp(-age / tau), age = nowSec - createdAt clipped at 0, so a
+ * created_at in the future counts as brand new, not as a bonus above the
+ * weight. 0 for anything that is not a usable number (a NaN or non-positive
+ * weight or tau, a missing created_at): a broken value must not reorder rows.
+ * Monotone: a newer row never gets a smaller term than an older one.
+ */
+export function hybridRecencyBonus(createdAt: number, term: HybridRecencyTerm): number {
+  const { weight, tauSec, nowSec } = term
+  if (!(weight > 0) || !Number.isFinite(weight) || !(tauSec > 0) || !Number.isFinite(tauSec)) return 0
+  if (typeof createdAt !== 'number' || !Number.isFinite(createdAt) || !Number.isFinite(nowSec)) return 0
+  const ageSec = Math.max(0, nowSec - createdAt)
+  return weight * Math.exp(-ageSec / tauSec)
+}
+
+/**
+ * Stage times of one hybrid search in milliseconds (card 94f8d99f, w3 DW1),
+ * filled by hybridSearchWith when the caller passes one in
+ * HybridSearchOptions.timing. A stage that did not run stays 0 (the embedding
+ * failed or was supplied by the caller, the query vector is unusable).
+ */
+export interface SearchStageTimes {
+  /** The keyword branch (searchAgentMemoriesOn), the relaxed OR retry included. */
+  fts: number
+  /** The wait for generateEmbedding. */
+  embed: number
+  /** The vector branch's SELECT of every embedded row. */
+  vecsql: number
+  /** The vector branch's parse + cosine + sort. */
+  vecscore: number
+  /** fuseRanked. */
+  fuse: number
+}
+
+export interface HybridSearchOptions {
+  /**
+   * A query vector the caller already has (a measurement run embeds each
+   * question once and reuses it). null = no vector branch, as when the
+   * embedding call fails. Omitted = generateEmbedding(query), as before.
+   */
+  queryEmbedding?: number[] | null
+  /** Clock (unix seconds) of the FTS branch's recency re-rank and of the fusion's recency term. Omitted = now. */
+  nowSec?: number
+  /** Recency settings (R2). Omitted = the dashboard's MEMORY_HYBRID_RECENCY_* config; a measurement run passes its own. */
+  recency?: HybridRecencyConfig
+  /** Filled with the stage times (ms) when given; omitted = no clock is read. The result is the same either way. */
+  timing?: SearchStageTimes
+  /** Card f90928e3: a created_at window, applied in SQL in both branches. Omitted = no window, as before. */
+  range?: TsRange
+}
+
+// An invalid MEMORY_HYBRID_RECENCY_* value fell back to its default at boot
+// (config.ts); say so once, at the first hybrid search.
+let hybridRecencyWarned = false
+
+/**
+ * Per-process random salt for queryLogFields. Generated at module load, never
+ * persisted and never logged, so it is gone when the process exits.
+ */
+const QUERY_LOG_SALT = randomBytes(16)
+
+/**
+ * A search query is the user's own words and can carry anything (names, case
+ * details, a pasted secret), so it never goes into a log line. Length and a
+ * short keyed hash (HMAC-SHA256 under a random per-process salt) are enough to
+ * tell two log lines about the same query apart within one run. The hash is NOT
+ * comparable across runs (the salt changes on every start) and is not suitable
+ * for recovering the query: a short keyword query cannot be dictionary-checked
+ * against it without the in-memory salt.
+ */
+export function queryLogFields(query: string): { queryLen: number; queryHash: string } {
+  return {
+    queryLen: query.length,
+    queryHash: createHmac('sha256', QUERY_LOG_SALT).update(query).digest('hex').slice(0, 12),
+  }
 }
 
 export async function hybridSearch(
@@ -4589,73 +5184,346 @@ export async function hybridSearch(
   limit: number = 10,
   trace?: HybridSearchTrace,
   category?: string,
+  range?: TsRange,
 ): Promise<Memory[]> {
-  const k = 60 // RRF constant
+  return (await hybridSearchWith(db, agentId, query, limit, trace, category, range ? { range } : {})).map(h => h.memory)
+}
 
+/**
+ * The hybrid search on an explicit DB handle, returning the fused rows with
+ * their scores (card 94f8d99f, R0). hybridSearch is this on the module handle,
+ * minus the scores. It only ever reads: every statement is a SELECT, so it runs
+ * on a read-only handle (the measurement harness opens the store that way). The
+ * accessed_at stamp a search makes is the route's (touchMemoriesAccessed), not
+ * this function's.
+ */
+export async function hybridSearchWith(
+  handle: Database.Database,
+  agentId: string,
+  query: string,
+  limit: number = 10,
+  trace?: HybridSearchTrace,
+  category?: string,
+  opts: HybridSearchOptions = {},
+): Promise<HybridHit[]> {
+  if (opts.recency === undefined && MEMORY_HYBRID_RECENCY_INVALID.length > 0 && !hybridRecencyWarned) {
+    hybridRecencyWarned = true
+    logger.warn(
+      { keys: MEMORY_HYBRID_RECENCY_INVALID, using: MEMORY_HYBRID_RECENCY },
+      'memory search: invalid MEMORY_HYBRID_RECENCY_* / MEMORY_HYBRID_FTS_RECENCY value ignored, using the default',
+    )
+  }
+  const recency = opts.recency ?? MEMORY_HYBRID_RECENCY
+  const tm = opts.timing
+  let mark = 0
+  if (tm) {
+    tm.fts = 0
+    tm.embed = 0
+    tm.vecsql = 0
+    tm.vecscore = 0
+    tm.fuse = 0
+    mark = performance.now()
+  }
   // FTS5 results
   const ftsTrace = { relaxed: false }
   // Relaxed on purpose, and unchanged by the strict default introduced for the
   // endpoint: the hybrid answer fuses two rankings and already reports which
   // branch produced it, so a loose lexical hit here is labelled, not silent.
-  const ftsResults = searchAgentMemories(agentId, query, limit * 2, ftsTrace, true, category)
+  const ftsResults = searchAgentMemoriesOn(handle, agentId, query, limit * 2, ftsTrace, true, category, opts.nowSec, recency.ftsRecency, opts.range)
+  if (tm) {
+    const t = performance.now()
+    tm.fts = t - mark
+    mark = t
+  }
 
   // Vector results
-  const queryEmbedding = await generateEmbedding(query)
-  const vecResults = queryEmbedding ? vectorSearch(agentId, queryEmbedding, limit * 2, category) : []
+  const queryEmbedding = opts.queryEmbedding !== undefined ? opts.queryEmbedding : await generateEmbedding(query)
+  if (tm) {
+    const t = performance.now()
+    tm.embed = t - mark
+    mark = t
+  }
+  const vecResults = queryEmbedding ? vectorSearch(handle, agentId, queryEmbedding, limit * 2, category, tm, opts.range) : []
+  // The trace bookkeeping below belongs to no stage: the fuse stage starts here.
+  if (tm) mark = performance.now()
 
   if (trace) {
     trace.ftsHits = ftsResults.length
     trace.vectorHits = vecResults.length
     trace.ftsRelaxed = ftsTrace.relaxed
     trace.vectorOnly = ftsResults.length === 0 && vecResults.length > 0
+    trace.topCos = vecResults.length > 0 ? vecResults[0].score : null
+    trace.secondCos = vecResults.length > 1 ? vecResults[1].score : null
+    const ftsTop = new Set(ftsResults.slice(0, HYBRID_OVERLAP_TOP).map(m => m.id))
+    trace.overlap = vecResults.slice(0, HYBRID_OVERLAP_TOP).filter(v => ftsTop.has(v.memory.id)).length
   }
   if (ftsResults.length === 0 && vecResults.length > 0) {
     logger.warn(
-      { agentId, query, vectorHits: vecResults.length },
+      { agentId, ...queryLogFields(query), vectorHits: vecResults.length },
       'hybrid search: the keyword branch found nothing, the answer comes from the vector branch alone',
     )
   }
 
-  // Reciprocal Rank Fusion
-  const scores: Map<number, number> = new Map()
-  const byId: Map<number, Memory> = new Map()
-
-  ftsResults.forEach((m, rank) => {
-    scores.set(m.id, (scores.get(m.id) || 0) + 1 / (k + rank + 1))
-    byId.set(m.id, m)
-  })
-
-  vecResults.forEach((m, rank) => {
-    scores.set(m.id, (scores.get(m.id) || 0) + 1 / (k + rank + 1))
-    byId.set(m.id, m)
-  })
-
-  const ranked = [...scores.entries()].sort((a, b) => b[1] - a[1])
-  return ranked.slice(0, limit).map(([id]) => byId.get(id)!)
+  // Reciprocal Rank Fusion, plus the created_at recency term when its weight is above 0.
+  const term: HybridRecencyTerm | undefined = recency.weight > 0
+    ? { weight: recency.weight, tauSec: recency.tauDays * 86400, nowSec: opts.nowSec ?? Math.floor(Date.now() / 1000) }
+    : undefined
+  const fused = fuseRanked(ftsResults, vecResults, limit, HYBRID_RRF_K, term)
+  if (tm) tm.fuse = performance.now() - mark
+  return fused
 }
 
-export async function backfillEmbeddings(): Promise<number> {
-  const rows = db.prepare('SELECT id, content, keywords FROM memories WHERE embedding IS NULL').all() as { id: number; content: string; keywords: string | null }[]
+// --- Re-embedding (card d4e7fea7) ---
+// Measured 2026-10-17: an edited memory stayed out of the vector branch until
+// the next dashboard restart (updateMemory NULLs the vector, and the backfill
+// ran only at boot and on POST /api/memories/backfill). Worse, both writers of
+// the vector -- the save path's fire-and-forget and the backfill -- wrote it
+// back UNCONDITIONALLY after the Ollama call, so an edit that landed while the
+// call was in flight got the OLD text's vector next to the NEW text, with no
+// NULL left for a later pass to repair. Three pieces close it:
+//  - storeEmbeddingIfUnchanged is the only vector write, and it lands only if
+//    the row still carries the text that was embedded (compare-and-set);
+//  - backfillEmbeddings is single-flight: a second caller (runner tick, nudge,
+//    route, fleet import, boot) joins the pass in flight instead of embedding
+//    the same rows a second time (an uncapped caller queues behind a capped
+//    pass instead of joining it);
+//  - requestEmbeddingRefresh is updateMemory's nudge, debounced, live only
+//    while the embedding-refresh runner has armed it (the dashboard process).
+//    The runner's 60 s tick is the floor for every other writer.
+
+/**
+ * Compare-and-set vector write: the vector lands only if the row's embedded
+ * text (content + keywords, the same pair the embedding was made from) is
+ * unchanged. Returns whether it landed. A miss leaves the row as the edit left
+ * it (NULL), and the next pass embeds the current text. No transaction spans
+ * the Ollama call: this single statement is the whole check.
+ */
+export function storeEmbeddingIfUnchanged(id: number, expectedContent: string, expectedKeywords: string | null, vector: number[]): boolean {
+  return db.prepare('UPDATE memories SET embedding = ? WHERE id = ? AND content = ? AND keywords IS ?')
+    .run(JSON.stringify(vector), id, expectedContent, expectedKeywords).changes > 0
+}
+
+/** Per-pass row cap of the runner and the nudge: a mass NULL (outage, model switch) must not stall the dashboard. */
+export const EMBEDDING_REFRESH_MAX_ROWS = 50
+const EMBEDDING_REFRESH_DEBOUNCE_MS = 2_000
+
+let embeddingRefreshArmed = false
+let embeddingRefreshTimer: ReturnType<typeof setTimeout> | null = null
+let backfillInFlight: Promise<number> | null = null
+// Whether the pass in flight is capped (runner tick, nudge). An uncapped caller
+// must not join a capped pass: it would come back after at most
+// EMBEDDING_REFRESH_MAX_ROWS rows with the rest still NULL (finding MN4).
+let backfillInFlightCapped = false
+// The runner retries every minute, so the outage WARN below is once per
+// outage, not once per pass (SILENTOLLAMA926 rule). A pass that hears back
+// from the backend re-arms it.
+let backfillOutageWarned = false
+
+// MN5: a row the backend refuses every time (it answers others) would sit in
+// the newest-first window of every capped pass, and 50 such rows would starve
+// every older NULL row: 50 useless calls a minute, no progress. A refused row
+// gets a per-id backoff instead: skipped by the capped passes until nextAt,
+// 1 min doubling to a 1 h cap. In memory only (a restart retries everything,
+// and the boot backfill ignores it anyway, like every uncapped caller). Cleared
+// when the row's vector lands and when its text is edited.
+//
+// "Refused" needs proof that the backend is up, or an outage would put every
+// row into backoff and delay the recovery by up to an hour: a pass with failed
+// rows asks once more with a fixed probe text, and only if the probe gets a
+// vector are the failures the rows' own.
+//
+// The backoff belongs to the TEXT that was refused, not to the id (MN7): an
+// edit can land between the refusal and the probe, and the new text has never
+// been tried. So the entry carries the refused content + keywords, it is set
+// only if the row still holds exactly that text (and is still NULL), and a
+// capped pass skips the row only while its current text matches -- an edit by
+// any writer, this process or another, releases it.
+const EMBEDDING_BACKOFF_BASE_MS = 60_000
+export const EMBEDDING_BACKOFF_MAX_MS = 60 * 60_000
+const EMBEDDING_PROBE_TEXT = 'embedding backend health probe'
+interface EmbeddingBackoffEntry { fails: number; nextAt: number; content: string; keywords: string | null }
+const embeddingBackoff = new Map<number, EmbeddingBackoffEntry>()
+
+/** Pure: how long a row waits after its `fails`-th refusal in a row. */
+export function embeddingBackoffDelayMs(fails: number): number {
+  return Math.min(EMBEDDING_BACKOFF_BASE_MS * 2 ** Math.max(0, fails - 1), EMBEDDING_BACKOFF_MAX_MS)
+}
+
+/** Forget a row's backoff (its vector landed, or its text changed). */
+export function clearEmbeddingBackoff(id: number): void {
+  embeddingBackoff.delete(id)
+}
+
+/** Called by the embedding-refresh runner on start (true) and stop (false). */
+export function setEmbeddingRefreshArmed(armed: boolean): void {
+  embeddingRefreshArmed = armed
+  if (!armed && embeddingRefreshTimer) {
+    clearTimeout(embeddingRefreshTimer)
+    embeddingRefreshTimer = null
+  }
+}
+
+/**
+ * Ask for a re-embed soon (after an edit NULLed a vector). Debounced: the
+ * first request schedules one pass EMBEDDING_REFRESH_DEBOUNCE_MS later, and
+ * the requests until then ride on it -- the pass reads its rows when it
+ * starts, so every edit committed before that is covered. A no-op unless the
+ * runner armed it, so a test or a CLI process that edits a memory does not
+ * start embedding work it will not wait for.
+ */
+export function requestEmbeddingRefresh(): void {
+  if (!embeddingRefreshArmed || embeddingRefreshTimer) return
+  embeddingRefreshTimer = setTimeout(() => {
+    embeddingRefreshTimer = null
+    // A pass in flight may have read its rows before the edit, and joining it
+    // would return without the edited row. Queue a fresh pass behind it
+    // instead; single-flight still holds, the first caller after the pass
+    // ends starts the next one and any other joins it.
+    const run = () => backfillEmbeddings({ maxRows: EMBEDDING_REFRESH_MAX_ROWS })
+    const next = backfillInFlight ? backfillInFlight.then(run, run) : run()
+    next.then(
+      (embedded) => { if (embedded > 0) logger.info({ embedded }, 'Embedding refresh after edit') },
+      (err) => logger.warn({ err }, 'Embedding refresh after edit failed'),
+    )
+  }, EMBEDDING_REFRESH_DEBOUNCE_MS)
+  embeddingRefreshTimer.unref?.()
+}
+
+/** Whether a backfillEmbeddings pass is running (the keep-warm does not ping during one). */
+export function isBackfillInFlight(): boolean {
+  return backfillInFlight !== null
+}
+
+function isRowCap(maxRows: number | undefined): maxRows is number {
+  return maxRows !== undefined && Number.isInteger(maxRows) && maxRows > 0
+}
+
+/**
+ * Embed the rows whose vector is NULL. Single-flight: one pass at a time.
+ * `maxRows` caps one pass (the runner and the nudge use it); without it the
+ * pass takes every pending row, as before (boot, the route, fleet import).
+ * A caller that arrives while a pass runs joins it and gets its result --
+ * except an uncapped caller behind a capped pass: that one queues behind it
+ * and then takes every row still NULL, so "backfill everything" never comes
+ * back with only the capped pass's rows done.
+ * Returns the number of vectors written (by the pass the caller ran or joined).
+ */
+export async function backfillEmbeddings(opts: { maxRows?: number } = {}): Promise<number> {
+  const capped = isRowCap(opts.maxRows)
+  if (backfillInFlight) {
+    if (capped || !backfillInFlightCapped) return backfillInFlight
+    const run = () => backfillEmbeddings(opts)
+    return backfillInFlight.then(run, run)
+  }
+  const pass: Promise<number> = runBackfillPass(capped ? opts.maxRows : undefined).finally(() => {
+    if (backfillInFlight === pass) backfillInFlight = null
+  })
+  backfillInFlight = pass
+  backfillInFlightCapped = capped
+  return pass
+}
+
+async function runBackfillPass(maxRows?: number): Promise<number> {
+  // SQLite reads a negative LIMIT as "no limit".
+  const limit = isRowCap(maxRows) ? maxRows : -1
+  // A capped pass skips the rows in backoff, so its window moves on to the
+  // rows behind them; an uncapped pass (boot, route, fleet import) takes all.
+  // A row is skipped only while it still holds the refused text: an entry whose
+  // row was edited (by anyone), got its vector or is gone is dropped here.
+  const now = Date.now()
+  const skip: number[] = []
+  if (isRowCap(maxRows)) {
+    const stillRefused = db.prepare('SELECT 1 FROM memories WHERE id = ? AND content = ? AND keywords IS ? AND embedding IS NULL')
+    for (const [id, b] of [...embeddingBackoff]) {
+      if (!stillRefused.get(id, b.content, b.keywords)) embeddingBackoff.delete(id)
+      else if (b.nextAt > now) skip.push(id)
+    }
+  }
+  // Most recently written first, so under a backlog a fresh edit is not queued
+  // behind thousands of old rows.
+  const rows = db.prepare(
+    'SELECT id FROM memories WHERE embedding IS NULL AND id NOT IN (SELECT value FROM json_each(?)) ORDER BY COALESCE(updated_at, created_at) DESC, id DESC LIMIT ?'
+  ).all(JSON.stringify(skip), limit) as { id: number }[]
+  const readPending = db.prepare('SELECT content, keywords FROM memories WHERE id = ? AND embedding IS NULL')
+  // count: rows settled without an outage -- the backend answered (even if the
+  // compare-and-set then missed because the row was edited during the call),
+  // or the row needed no call any more. It feeds the outage signal below, so a
+  // row that is no longer pending must not read as "the backend is down".
+  // stored: vectors this pass wrote (the return value). answered: the backend
+  // returned a vector at least once (only that re-arms the outage WARN).
   let count = 0
-  for (const row of rows) {
-    const text = row.content + (row.keywords ? ' ' + row.keywords : '')
-    const emb = await generateEmbedding(text)
-    if (emb) {
-      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), row.id)
+  let stored = 0
+  let answered = false
+  // The refused rows WITH the text that was refused (MN7): the backoff below
+  // must land on that text, not on whatever an edit put there since.
+  const failed: Array<{ id: number; content: string; keywords: string | null }> = []
+  for (const { id } of rows) {
+    // Read the text right before the call: it is the text of NOW, and a row
+    // that got its vector in the meantime (the save path) or was deleted is
+    // skipped.
+    const row = readPending.get(id) as { content: string; keywords: string | null } | undefined
+    if (!row) {
       count++
+      clearEmbeddingBackoff(id)
+      continue
+    }
+    const text = row.content + (row.keywords ? ' ' + row.keywords : '')
+    // Quiet: one row failing says nothing yet about the backend (see the probe).
+    const emb = await generateEmbedding(text, { quiet: true })
+    if (emb) {
+      count++
+      answered = true
+      if (storeEmbeddingIfUnchanged(id, row.content, row.keywords, emb)) {
+        stored++
+        clearEmbeddingBackoff(id)
+      }
+    } else {
+      failed.push({ id, content: row.content, keywords: row.keywords })
     }
     // Small delay to not overwhelm Ollama
     await new Promise(r => setTimeout(r, 100))
   }
+  if (failed.length > 0 && await generateEmbedding(EMBEDDING_PROBE_TEXT)) {
+    // The backend is up: the failed rows were refused for themselves. Back them
+    // off, and count them as settled -- they are not the outage signature, so
+    // they must not raise the "backend answered none" WARN below.
+    answered = true
+    count += failed.length
+    const at = Date.now()
+    const fresh: number[] = []
+    // Compare-and-set, like the vector write: a row edited (or embedded)
+    // since its refusal holds text nobody has tried yet, and gets no backoff.
+    const stillRefused = db.prepare('SELECT 1 FROM memories WHERE id = ? AND content = ? AND keywords IS ? AND embedding IS NULL')
+    for (const { id, content, keywords } of failed) {
+      if (!stillRefused.get(id, content, keywords)) continue
+      const prev = embeddingBackoff.get(id)
+      const fails = prev && prev.content === content && prev.keywords === keywords ? prev.fails + 1 : 1
+      embeddingBackoff.set(id, { fails, nextAt: at + embeddingBackoffDelayMs(fails), content, keywords })
+      if (fails === 1) fresh.push(id)
+    }
+    // One line per pass, only for rows refused for the first time: a row that
+    // keeps failing is not re-announced every time its backoff expires.
+    if (fresh.length > 0) {
+      logger.warn(
+        { ids: fresh.slice(0, 20), refused: fresh.length, embedModel: EMBED_MODEL },
+        'Embedding backfill: the backend is up but returned no vector for these memories; they are retried with backoff (1 min doubling to 1 h) so they do not hold up the rest',
+      )
+    }
+  }
   if (backfillNeedsWarning(rows.length, count)) {
     // The 2026-09-24/25 signature: work pending, nothing embedded, no error
-    // surfaced. One WARN per run names it.
-    logger.warn(
-      { pending: rows.length, embedUrl: EMBED_URL, embedModel: EMBED_MODEL },
-      'Embedding backfill embedded 0 of the pending memories -- the embedding backend answered none of them (Ollama not installed/running, or EMBED_MODEL missing); the backlog stays until it does',
-    )
+    // surfaced. One WARN per outage names it.
+    if (!backfillOutageWarned) {
+      backfillOutageWarned = true
+      logger.warn(
+        { pending: rows.length, embedUrl: EMBED_URL, embedModel: EMBED_MODEL },
+        'Embedding backfill embedded 0 of the pending memories -- the embedding backend answered none of them (Ollama not installed/running, or EMBED_MODEL missing); the backlog stays until it does',
+      )
+    }
+  } else if (answered) {
+    backfillOutageWarned = false
   }
-  return count
+  return stored
 }
 
 // --- Pending Channel Requests ---
@@ -5593,26 +6461,309 @@ export function createApproval(params: {
   }
 }
 
+// 345f34e2: every column an approval read hands out, in table order. The
+// callback-nonce hashes are deliberately left out: they stay inside this file,
+// so no API response, list or log line built from an Approval can carry them. A
+// column added to the table later has to be listed here on purpose
+// (approvals-telegram-db.test.ts pins this list against the table).
+const APPROVAL_PUBLIC_COLUMNS = [
+  'id', 'agent_id', 'category', 'action_description', 'action_payload', 'status',
+  'timeout_at', 'telegram_message_id', 'requested_at', 'resolved_at', 'resolved_by',
+  'content_hash', 'consumed_at', 'consumed_by', 'consumed_ref',
+].join(', ')
+
 export function getApproval(id: string): Approval | undefined {
-  return db.prepare('SELECT * FROM approvals WHERE id = ?').get(id) as Approval | undefined
+  return db.prepare(`SELECT ${APPROVAL_PUBLIC_COLUMNS} FROM approvals WHERE id = ?`).get(id) as Approval | undefined
 }
 
+// 345f34e2 (BE-3 low): an email_send action_payload is the whole letter, BCC
+// included, and GET /api/approvals hands it to every bearer holder. Nothing
+// reads it once the approval is decided (the notifier reads it at create
+// time, the /approvals command lists pending rows only, the send gates match
+// on content_hash), so it is replaced with this marker as soon as the letter
+// can no longer be sent: rejected, timed out, consumed, or approved and left
+// unconsumed past the send window. A NULL payload stays NULL, and every other
+// category keeps its payload exactly as before.
+export const CLEARED_EMAIL_PAYLOAD = '{"envelope_v":1,"cleared":true}'
+
+// True for an `envelope_v: 1` payload (the requester helper's envelope), the
+// only payload ever cleared: any other email_send payload (older requesters)
+// stays byte for byte. json_extract runs only on valid JSON (the CASE), so a
+// non-JSON payload is skipped, not an error.
+const IS_ENVELOPE_V1 = `(CASE WHEN json_valid(action_payload)
+  THEN json_extract(action_payload, '$.envelope_v') END) = 1`
+
+// SQL for the payload column of a row whose decision is `statusParam`: the
+// marker for an email_send envelope row closed by that decision, the stored
+// value otherwise. Takes two parameters: the status, the marker.
+const CLEAR_PAYLOAD_ON_CLOSE = `CASE WHEN category = 'email_send' AND ${IS_ENVELOPE_V1}
+  AND ? IN ('rejected', 'timeout') THEN ? ELSE action_payload END`
+
+// True when an attribution claims the owner's Telegram button, in any case,
+// spacing or compatibility spelling (a full-width colon folds to ':' under
+// NFKC; zero-width and other invisible format characters are dropped).
+function claimsOwnerTelegramAttribution(resolvedBy: string): boolean {
+  return resolvedBy.normalize('NFKC').replace(/[\s\p{Cf}]/gu, '').toLowerCase().startsWith('owner:telegram:')
+}
+
+// fec6335f N2b (BE-3b MED-1): owner:telegram:<id> is written ONLY by
+// resolveApprovalFromTelegram, together with its trace. Every other caller
+// (the legacy PATCH, scripts) is refused here, whatever the route checked.
 export function resolveApproval(id: string, status: 'approved' | 'rejected' | 'timeout', resolvedBy: string, telegramMessageId?: number | null): boolean {
+  if (typeof resolvedBy !== 'string' || claimsOwnerTelegramAttribution(resolvedBy)) {
+    logger.warn({ id }, 'resolveApproval refused: the owner:telegram: attribution is written only by the owner\'s button decision')
+    return false
+  }
   const now = Math.floor(Date.now() / 1000)
   return db.prepare(`
     UPDATE approvals
     SET status = ?, resolved_at = ?, resolved_by = ?,
-        telegram_message_id = COALESCE(?, telegram_message_id)
+        telegram_message_id = COALESCE(?, telegram_message_id),
+        action_payload = ${CLEAR_PAYLOAD_ON_CLOSE}
     WHERE id = ? AND status = 'pending'
-  `).run(status, now, resolvedBy, telegramMessageId ?? null, id).changes > 0
+  `).run(status, now, resolvedBy, telegramMessageId ?? null, status, CLEARED_EMAIL_PAYLOAD, id).changes > 0
 }
 
 // The CREATE path stamps the owner-notification message id onto the row
 // (APPROVALVAK821): until this existed, telegram_message_id was only writable
 // through resolveApproval, so a pending request could never carry it.
+// 345f34e2: the first stamp wins. A button press is checked against the stored
+// id, so a later stamp (a retry, a second notifier) must not move it.
 export function setApprovalTelegramMessageId(id: string, telegramMessageId: number): boolean {
-  return db.prepare('UPDATE approvals SET telegram_message_id = ? WHERE id = ?')
+  return db.prepare('UPDATE approvals SET telegram_message_id = ? WHERE id = ? AND telegram_message_id IS NULL')
     .run(telegramMessageId, id).changes > 0
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/
+// A Telegram user id as the owner attribution carries it: a positive decimal
+// integer, no sign, no leading zero.
+const TELEGRAM_USER_ID = /^[1-9][0-9]{0,15}$/
+
+// The column that holds the nonce hash of one button. The only two names that
+// ever reach SQL text: the decision is checked to be one of the two first.
+const CALLBACK_NONCE_COLUMN = {
+  approved: 'callback_nonce_hash_approve',
+  rejected: 'callback_nonce_hash_reject',
+} as const
+
+// The categories an owner's Telegram button may decide: email_send (345f34e2,
+// bound by its envelope) and the three credit-gate requests (fec6335f N2b,
+// bound by their canonical payload, web/credit-gate/approval-payload.ts). Fixed
+// names checked against a fixed alphabet: the only category text that reaches
+// SQL as a literal.
+export const TELEGRAM_BUTTON_CATEGORIES: readonly string[] = ['email_send', ...CREDIT_GATE_APPROVAL_CATEGORIES]
+const TELEGRAM_BUTTON_CATEGORY_SQL = TELEGRAM_BUTTON_CATEGORIES.map((c) => {
+  if (!/^[a-z_]{1,64}$/.test(c)) throw new Error(`not a button category name: ${c}`)
+  return `'${c}'`
+}).join(', ')
+
+// fec6335f N2b (BE-3b LOW-1): on a credit-gate row a button's stored value
+// binds its nonce to the content it was sent with: sha256 of the nonce's
+// sha256, ':' and the content hash. The press must match it against the
+// content_hash the row has at the decision, so a payload and hash rewritten
+// together after the message went out no longer match any button. The nonce's
+// own sha256 is kept nowhere for such a row. email_send keeps the plain sha256.
+function creditGateNonceBinding(nonceHash: string, contentHash: string): string {
+  return createHash('sha256').update(`${nonceHash}:${contentHash}`, 'utf8').digest('hex')
+}
+
+// 345f34e2: binds the two button nonces (their sha256s only) to a pending
+// email_send approval, both at once and once, before the button message goes
+// out -- hence the message id must still be unset. Anything that is not a
+// sha256 hex (a raw nonce passed by mistake, say) is refused rather than
+// stored, and so are two equal hashes: each button must prove its own press.
+// Only a row a button could ever decide (it has a content anchor and a
+// deadline) is bound. fec6335f N2b: a credit-gate approval too, each value
+// bound to the row's content hash (creditGateNonceBinding).
+export function setApprovalCallbackNonceHashes(id: string, hashes: { approved: string; rejected: string }): boolean {
+  const approved = hashes?.approved
+  const rejected = hashes?.rejected
+  if (typeof approved !== 'string' || !SHA256_HEX.test(approved)
+    || typeof rejected !== 'string' || !SHA256_HEX.test(rejected)
+    || approved === rejected) return false
+  return db.transaction((): boolean => {
+    const pre = db.prepare('SELECT category, content_hash FROM approvals WHERE id = ?')
+      .get(id) as Pick<Approval, 'category' | 'content_hash'> | undefined
+    if (!pre) return false
+    const creditGate = isCreditGateCategory(pre.category)
+    if (creditGate && (typeof pre.content_hash !== 'string' || !SHA256_HEX.test(pre.content_hash))) return false
+    const storeApproved = creditGate ? creditGateNonceBinding(approved, pre.content_hash as string) : approved
+    const storeRejected = creditGate ? creditGateNonceBinding(rejected, pre.content_hash as string) : rejected
+    return db.prepare(`
+      UPDATE approvals SET callback_nonce_hash_approve = ?, callback_nonce_hash_reject = ?
+       WHERE id = ? AND status = 'pending' AND category IN (${TELEGRAM_BUTTON_CATEGORY_SQL})
+         AND content_hash IS NOT NULL AND timeout_at IS NOT NULL
+         AND callback_nonce_hash_approve IS NULL AND callback_nonce_hash_reject IS NULL
+         AND telegram_message_id IS NULL
+         ${creditGate ? 'AND content_hash = ?' : ''}
+    `).run(storeApproved, storeRejected, id, ...(creditGate ? [pre.content_hash] : [])).changes > 0
+  }).immediate()
+}
+
+// 345f34e2: why a Telegram button decision was refused. As with the consume
+// refusals, classified AFTER the write failed. bad_request = the arguments
+// themselves are malformed (the route validates first, so this is a backstop).
+// payload_mismatch (fec6335f N2b): a credit-gate row whose payload is no longer
+// the one its content_hash approves (changed or broken after the create). The
+// press closes such a row: rejected, resolved_by PAYLOAD_MISMATCH_RESOLVER.
+export type ApprovalTelegramRefusal =
+  | 'bad_request' | 'not_found' | 'wrong_category' | 'already_resolved' | 'expired'
+  | 'not_bound' | 'message_mismatch' | 'bad_nonce' | 'payload_mismatch'
+
+export const PAYLOAD_MISMATCH_RESOLVER = 'system:payload_mismatch'
+
+export interface ApprovalTelegramResult {
+  ok: boolean
+  reason?: ApprovalTelegramRefusal
+  approval?: Approval
+}
+
+// The owner's decision from a Telegram button (345f34e2). The single
+// conditional UPDATE is the whole decision: the row must still be pending, an
+// email_send with a content anchor, inside its deadline (checked here, the
+// sweeper may not have run yet), the stored message id must match, and the
+// nonce hash must match the one stored for THIS decision's button (the approve
+// nonce cannot reject, the reject nonce cannot approve: bad_nonce). The win
+// clears both hashes, so no press can ever decide twice; one call wins against
+// another button press, the legacy PATCH and the sweeper alike. The submitted
+// message id is only compared, never written.
+// fec6335f N2b: a credit-gate row (TELEGRAM_BUTTON_CATEGORIES) is decided only
+// while its payload is still the canonical payload its content_hash approves
+// (creditGateBinding, re-checked here, inside the transaction); the UPDATE also
+// requires the very payload and hash that were checked, so nothing changed in
+// between can be decided. BEGIN IMMEDIATE: the check and the write see one state.
+// A pending, unexpired credit-gate row whose payload no longer binds is closed
+// right here (rejected by PAYLOAD_MISMATCH_RESOLVER, BE-3b LOW-2): it can never
+// become valid again, and the owner's message must not keep live buttons. Its
+// button values are bound to the content hash (creditGateNonceBinding), so a
+// payload and hash rewritten together fail as bad_nonce (BE-3b LOW-1). A win
+// writes the approval_owner_resolutions trace in the same transaction (MED-1).
+export function resolveApprovalFromTelegram(params: {
+  id: string
+  status: 'approved' | 'rejected'
+  ownerId: string
+  messageId: number
+  nonceHash: string
+  nowS?: number
+}): ApprovalTelegramResult {
+  const { id, status, ownerId, messageId, nonceHash } = params
+  if (typeof id !== 'string' || (status !== 'approved' && status !== 'rejected')
+    || typeof ownerId !== 'string' || !TELEGRAM_USER_ID.test(ownerId)
+    || !Number.isSafeInteger(messageId) || messageId <= 0
+    || typeof nonceHash !== 'string' || !SHA256_HEX.test(nonceHash)) {
+    return { ok: false, reason: 'bad_request' }
+  }
+  const now = params.nowS ?? Math.floor(Date.now() / 1000)
+  const column = CALLBACK_NONCE_COLUMN[status]
+  return db.transaction((): ApprovalTelegramResult => {
+    const pre = db.prepare('SELECT category, action_payload, content_hash, status, timeout_at FROM approvals WHERE id = ?')
+      .get(id) as Pick<Approval, 'category' | 'action_payload' | 'content_hash' | 'status' | 'timeout_at'> | undefined
+    const creditGate = pre !== undefined && isCreditGateCategory(pre.category)
+    if (creditGate && pre.status === 'pending' && pre.timeout_at != null && pre.timeout_at > now
+      && !creditGateBinding(pre).bound) {
+      db.prepare(`
+        UPDATE approvals SET status = 'rejected', resolved_at = ?, resolved_by = ?,
+               callback_nonce_hash_approve = NULL, callback_nonce_hash_reject = NULL
+         WHERE id = ? AND status = 'pending'
+      `).run(now, PAYLOAD_MISMATCH_RESOLVER, id)
+      return { ok: false, reason: 'payload_mismatch', approval: getApproval(id) }
+    }
+    const presented = creditGate && typeof pre.content_hash === 'string'
+      ? creditGateNonceBinding(nonceHash, pre.content_hash) : nonceHash
+    const changes = db.prepare(`
+      UPDATE approvals SET status = ?, resolved_at = ?, resolved_by = ?,
+             callback_nonce_hash_approve = NULL, callback_nonce_hash_reject = NULL,
+             action_payload = ${CLEAR_PAYLOAD_ON_CLOSE}
+       WHERE id = ? AND status = 'pending' AND category IN (${TELEGRAM_BUTTON_CATEGORY_SQL}) AND content_hash IS NOT NULL
+         AND timeout_at IS NOT NULL AND timeout_at > ?
+         AND telegram_message_id = ? AND ${column} = ?
+         ${creditGate ? 'AND action_payload = ? AND content_hash = ?' : ''}
+    `).run(
+      status, now, `owner:telegram:${ownerId}`, status, CLEARED_EMAIL_PAYLOAD, id, now, messageId, presented,
+      ...(creditGate ? [pre.action_payload, pre.content_hash] : []),
+    ).changes
+    const row = getApproval(id)
+    if (changes === 1 && row) {
+      db.prepare(`
+        INSERT INTO approval_owner_resolutions (approval_id, owner_id, status, nonce_hash, content_hash, resolved_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(id, ownerId, status, presented, row.content_hash, row.resolved_at)
+      return { ok: true, approval: row }
+    }
+    let reason: ApprovalTelegramRefusal
+    if (!row) reason = 'not_found'
+    else if (!TELEGRAM_BUTTON_CATEGORIES.includes(row.category)) reason = 'wrong_category'
+    else if (row.status === 'timeout') reason = 'expired'
+    else if (row.status !== 'pending') reason = 'already_resolved'
+    else if (row.timeout_at != null && row.timeout_at <= now) reason = 'expired'
+    else if (row.content_hash == null || row.timeout_at == null || row.telegram_message_id == null
+      || !approvalHasCallbackNonce(id, column)) reason = 'not_bound'
+    else if (row.telegram_message_id !== messageId) reason = 'message_mismatch'
+    else reason = 'bad_nonce'
+    return { ok: false, reason, approval: row }
+  }).immediate()
+}
+
+/**
+ * fec6335f N2b (BE-3b MED-1): true only for an APPROVED approval decided by
+ * the owner's Telegram button: its approval_owner_resolutions trace exists
+ * (written only by resolveApprovalFromTelegram), names an owner, says
+ * approved, and still matches the row (resolved_by owner:telegram:<that
+ * owner>, the same resolved_at and content_hash); a credit-gate row must also
+ * still carry the payload its hash approves. With `expectedOwnerId` (N2c
+ * passes the strict owner, resolveAlertOwnerChat) the trace must name exactly
+ * that user. A legacy PATCH, a direct resolveApproval, or a row decided before
+ * the trace existed is never verified.
+ */
+export function isOwnerVerified(approvalId: string, expectedOwnerId?: string): boolean {
+  if (typeof approvalId !== 'string' || approvalId === '') return false
+  if (expectedOwnerId !== undefined && (typeof expectedOwnerId !== 'string' || !TELEGRAM_USER_ID.test(expectedOwnerId))) return false
+  const t = db.prepare(`
+    SELECT a.category, a.status, a.resolved_by, a.resolved_at, a.content_hash, a.action_payload,
+           r.owner_id, r.status AS r_status, r.content_hash AS r_content_hash, r.resolved_at AS r_resolved_at
+      FROM approvals a JOIN approval_owner_resolutions r ON r.approval_id = a.id
+     WHERE a.id = ?
+  `).get(approvalId) as {
+    category: string; status: string; resolved_by: string | null; resolved_at: number | null
+    content_hash: string | null; action_payload: string | null
+    owner_id: string; r_status: string; r_content_hash: string; r_resolved_at: number
+  } | undefined
+  if (!t) return false
+  if (t.status !== 'approved' || t.r_status !== 'approved') return false
+  if (!TELEGRAM_USER_ID.test(t.owner_id)) return false
+  if (expectedOwnerId !== undefined && t.owner_id !== expectedOwnerId) return false
+  if (t.resolved_by !== `owner:telegram:${t.owner_id}`) return false
+  if (t.resolved_at == null || t.resolved_at !== t.r_resolved_at) return false
+  if (t.content_hash == null || t.content_hash !== t.r_content_hash) return false
+  if (isCreditGateCategory(t.category) && !creditGateBinding(t).bound) return false
+  return true
+}
+
+// fec6335f N2c (BE-3c LOW-2): the approved, unconsumed credit-gate requests of
+// `categories` that `ownerId` decided with the button (their trace), oldest
+// decision first. Filtered in SQL BEFORE the LIMIT, so no number of
+// legacy-approved rows can push the owner's own out of the window. The caller
+// still checks each row with isOwnerVerified (the trace is matched here by
+// owner and status only). Credit-gate categories only.
+export function listOwnerApprovedUnconsumed(categories: readonly string[], ownerId: string, limit = 100): Approval[] {
+  if (typeof ownerId !== 'string' || !TELEGRAM_USER_ID.test(ownerId)) return []
+  const cats = [...new Set(categories)].filter((c) => isCreditGateCategory(c))
+  if (cats.length === 0) return []
+  const cols = APPROVAL_PUBLIC_COLUMNS.split(', ').map((c) => `a.${c}`).join(', ')
+  const n = Math.min(Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 100)), 500)
+  return db.prepare(`
+    SELECT ${cols} FROM approvals a JOIN approval_owner_resolutions r ON r.approval_id = a.id
+     WHERE a.category IN (${cats.map(() => '?').join(', ')}) AND a.status = 'approved' AND a.consumed_at IS NULL
+       AND r.owner_id = ? AND r.status = 'approved'
+     ORDER BY a.resolved_at ASC, a.requested_at ASC, a.id ASC LIMIT ?
+  `).all(...cats, ownerId, n) as Approval[]
+}
+
+// Whether the nonce of one button is bound, without ever reading the hash out
+// of SQL. `column` is one of the two CALLBACK_NONCE_COLUMN names.
+function approvalHasCallbackNonce(id: string, column: (typeof CALLBACK_NONCE_COLUMN)[keyof typeof CALLBACK_NONCE_COLUMN]): boolean {
+  const r = db.prepare(`SELECT ${column} IS NOT NULL AS bound FROM approvals WHERE id = ?`).get(id) as { bound: number } | undefined
+  return r?.bound === 1
 }
 
 export function listApprovals(opts: {
@@ -5629,7 +6780,7 @@ export function listApprovals(opts: {
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
   const limit = Math.min(opts.limit ?? 100, 500)
   params.push(limit)
-  return db.prepare(`SELECT * FROM approvals ${where} ORDER BY requested_at DESC LIMIT ?`).all(...params) as Approval[]
+  return db.prepare(`SELECT ${APPROVAL_PUBLIC_COLUMNS} FROM approvals ${where} ORDER BY requested_at DESC LIMIT ?`).all(...params) as Approval[]
 }
 
 // Stamp trace context onto an agent_messages row that was created without one.
@@ -5651,9 +6802,31 @@ export function stampMessageTrace(
 export function expireTimedOutApprovals(): number {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare(`
-    UPDATE approvals SET status = 'timeout', resolved_at = ?
+    UPDATE approvals SET status = 'timeout', resolved_at = ?,
+           action_payload = ${CLEAR_PAYLOAD_ON_CLOSE}
     WHERE status = 'pending' AND timeout_at IS NOT NULL AND timeout_at <= ?
-  `).run(now, now).changes
+  `).run(now, 'timeout', CLEARED_EMAIL_PAYLOAD, now).changes
+}
+
+// 345f34e2 (BE-3 low): the rows the transitions above cannot clear, because
+// they close without passing through this file: a letter the PYTHON send gate
+// consumed (it writes consumed_at directly, and it is not changed here), and an
+// approved letter nobody sent inside the window. Also a spent envelope row
+// decided by code older than the marker. Only an `envelope_v: 1` payload (the
+// requester helper's envelope) is ever touched: an email_send row with any
+// other payload (older requesters) is left exactly as it is. Idempotent: a
+// cleared row is never matched again. Returns the number of rows cleared. Run
+// by the timeout sweeper.
+export function clearSpentEmailPayloads(windowSeconds: number, nowS?: number): number {
+  const now = nowS ?? Math.floor(Date.now() / 1000)
+  return db.prepare(`
+    UPDATE approvals SET action_payload = ?
+     WHERE category = 'email_send' AND action_payload IS NOT NULL AND action_payload <> ?
+       AND ${IS_ENVELOPE_V1}
+       AND (consumed_at IS NOT NULL
+         OR status IN ('rejected', 'timeout')
+         OR (status = 'approved' AND resolved_at IS NOT NULL AND resolved_at < ?))
+  `).run(CLEARED_EMAIL_PAYLOAD, CLEARED_EMAIL_PAYLOAD, now - windowSeconds).changes
 }
 
 // f2c5edb0: why a consume was refused. Classified AFTER the write failed, so
@@ -5686,10 +6859,11 @@ export function consumeApproval(params: {
   const ref = params.messageId ?? null
   return db.transaction((): ApprovalConsumeResult => {
     const changes = db.prepare(`
-      UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?
+      UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?,
+             action_payload = CASE WHEN ${IS_ENVELOPE_V1} THEN ? ELSE action_payload END
        WHERE id = ? AND category = 'email_send' AND status = 'approved' AND consumed_at IS NULL
          AND content_hash = ? AND resolved_at IS NOT NULL AND resolved_at >= ?
-    `).run(now, params.consumer, ref, params.id, params.contentHash, now - params.windowSeconds).changes
+    `).run(now, params.consumer, ref, CLEARED_EMAIL_PAYLOAD, params.id, params.contentHash, now - params.windowSeconds).changes
     const event = db.prepare(`
       INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)
     `)
@@ -5708,6 +6882,60 @@ export function consumeApproval(params: {
     if (row) event.run(params.id, 'consume_refused', reason, params.consumer, ref, now)
     return { ok: false, reason, approval: row }
   })()
+}
+
+// fec6335f N2c: why a credit-gate consume was refused (classified like the
+// email refusals above, after the write failed or was not attempted).
+export type CreditGateConsumeRefusal =
+  | 'bad_request' | 'not_found' | 'wrong_category' | 'not_owner_verified' | 'unbound' | 'already_consumed'
+
+// fec6335f N2c: one-shot consumption of an owner-approved credit_gate_*
+// approval by the credit gate (the calibration, the incident-clear, the
+// canary). consumeApproval above stays email_send only. Everything is checked
+// inside ONE transaction (a savepoint when the caller already has one): the
+// exact category the caller expects, the owner's button trace for exactly
+// `ownerId` (isOwnerVerified -- never without the owner), the payload still
+// the one its content_hash approves, and the single conditional UPDATE that
+// flips consumed_at from NULL also requires that very payload and hash. The
+// payload is kept (it is the record of what was approved). Every attempted
+// write leaves an approval_events row.
+export function consumeCreditGateApproval(params: {
+  id: string
+  category: string
+  ownerId: string
+  consumer: string
+  ref?: string | null
+  nowS?: number
+}): { ok: boolean; reason?: CreditGateConsumeRefusal; approval?: Approval } {
+  const { id, category, ownerId, consumer } = params
+  if (typeof id !== 'string' || id === '' || !isCreditGateCategory(category)
+    || typeof ownerId !== 'string' || !TELEGRAM_USER_ID.test(ownerId)
+    || typeof consumer !== 'string' || consumer === '') {
+    return { ok: false, reason: 'bad_request' }
+  }
+  const now = params.nowS ?? Math.floor(Date.now() / 1000)
+  const ref = params.ref ?? null
+  return db.transaction((): { ok: boolean; reason?: CreditGateConsumeRefusal; approval?: Approval } => {
+    const pre = getApproval(id)
+    if (!pre) return { ok: false, reason: 'not_found' }
+    if (pre.category !== category) return { ok: false, reason: 'wrong_category', approval: pre }
+    if (!isOwnerVerified(id, ownerId)) return { ok: false, reason: 'not_owner_verified', approval: pre }
+    if (!creditGateBinding(pre).bound) return { ok: false, reason: 'unbound', approval: pre }
+    const changes = db.prepare(`
+      UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?
+       WHERE id = ? AND category = ? AND status = 'approved' AND consumed_at IS NULL
+         AND content_hash = ? AND action_payload = ?
+    `).run(now, consumer, ref, id, category, pre.content_hash, pre.action_payload).changes
+    const event = db.prepare(`
+      INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)
+    `)
+    if (changes === 1) {
+      event.run(id, 'consumed', null, consumer, ref, now)
+      return { ok: true, approval: getApproval(id) }
+    }
+    event.run(id, 'consume_refused', 'already_consumed', consumer, ref, now)
+    return { ok: false, reason: 'already_consumed', approval: getApproval(id) }
+  }).immediate()
 }
 
 export interface ApprovalEvent {

@@ -8,7 +8,7 @@
 // Static tests lock the wiring (both settings surfaces, 3 s timeout) and the
 // fail-open shape (no network, no DB, errors exit 0 silently).
 import { describe, it, expect } from 'vitest'
-import { readFileSync, mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync } from 'node:fs'
+import { readFileSync, mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync, symlinkSync, realpathSync } from 'node:fs'
 import { spawnSync, spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -90,7 +90,8 @@ describe('memory-lookup-nudge: speaks on a human message', () => {
           `curl -s -G -D /tmp/mem-fejlec-samu.txt -H "Authorization: Bearer $(cat ${token})" ` +
           `--data-urlencode "agent=samu" --data-urlencode "q=KULCSSZO" "http://localhost:${port}/api/memories"\n` +
           "grep -i '^x-memory-search' /tmp/mem-fejlec-samu.txt  " +
-          '(relaxed=true = kozelites, nem bizonyitek; hiany-allitashoz: --data-urlencode "strict=1")\n',
+          '(relaxed=true = kozelites, nem bizonyitek; hiany-allitashoz: --data-urlencode "strict=1"; ' +
+          'idoszak: date=tegnap | since= until=)\n',
       )
     } finally {
       server.close()
@@ -184,5 +185,155 @@ describe('memory-lookup-nudge: wiring', () => {
     const mine = hooks.filter((h: any) => String(h.command).includes('scripts/hooks/memory-lookup-nudge.py'))
     expect(mine).toHaveLength(1)
     expect(mine[0].timeout).toBe(3)
+  })
+})
+
+// Recall mod (card 94f8d99f): in the Brainy main session, with the "elohivas" mod really
+// loaded and on, the "look now" imperative goes and only the recipe stays. Everything else
+// (other agents, Brainy with the mod off or not loaded) keeps the old text byte for byte.
+describe('memory-lookup-nudge: recall-mod aware short form (Brainy main session only)', () => {
+  const OLD_LEAD =
+    '[memoria-szetnezes] Emberi uzenet: mielott valaszolsz, nezd meg, van-e rola emleked. ' +
+    'A kulcsszot te valaszd (nev, tema), ne a mondat toltelekszavait.\n'
+  const SHA = 'abcdef012345'
+
+  // A temp install root with a copy of the hook, a token, an isolated main config dir and a
+  // frozen mod copy (hooks/elohivas.py present) under store/mods/elohivas/<sha12>.
+  function makeRoot() {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'nudge-recall-')))
+    mkdirSync(join(root, 'scripts', 'hooks'), { recursive: true })
+    mkdirSync(join(root, 'store', 'elohivas'), { recursive: true })
+    mkdirSync(join(root, '.channels-config'), { recursive: true })
+    mkdirSync(join(root, 'agents', 'samu', '.claude-config'), { recursive: true })
+    const frozen = join(root, 'store', 'mods', 'elohivas', SHA)
+    mkdirSync(join(frozen, 'hooks'), { recursive: true })
+    writeFileSync(join(frozen, 'hooks', 'elohivas.py'), '# stub\n')
+    copyFileSync(HOOK, join(root, 'scripts', 'hooks', 'memory-lookup-nudge.py'))
+    writeFileSync(join(root, '.env'), 'WEB_PORT=3420\nMAIN_AGENT_ID=brainy\n')
+    return { root, frozen, hookCopy: join(root, 'scripts', 'hooks', 'memory-lookup-nudge.py') }
+  }
+  function runIn(r: ReturnType<typeof makeRoot>, env: Record<string, string>, cwd = r.root, prompt = channel()) {
+    // CLAUDE_* from the surrounding session must not leak in: set both explicitly.
+    const base = { ...process.env, CLAUDE_CONFIG_DIR: '', CLAUDE_CODE_PLUGIN_DIRS: '', MAIN_AGENT_ID: '' }
+    const p = spawnSync('python3', [r.hookCopy], {
+      input: JSON.stringify({ prompt, cwd }), encoding: 'utf-8', env: { ...base, ...env }, timeout: 10_000,
+    })
+    return { out: p.stdout ?? '', code: p.status }
+  }
+  const mainEnv = (r: ReturnType<typeof makeRoot>, dirs?: string) => ({
+    CLAUDE_CONFIG_DIR: join(r.root, '.channels-config'),
+    CLAUDE_CODE_PLUGIN_DIRS: dirs ?? r.frozen,
+  })
+
+  it('brainy + mod active: short form, header named, recipe kept, no "look now" imperative', () => {
+    const r = makeRoot()
+    try {
+      const { out, code } = runIn(r, mainEnv(r))
+      const token = join(r.root, 'store', '.dashboard-token')
+      expect(code).toBe(0)
+      expect(out).toBe(
+        '[memoria-szetnezes] Emberi uzenet. A felidezett jelolteket a rendszer a ' +
+          '[memoria-elohivas] blokkban mar elohozta (nem bizonyitek). Ha az nem jott, vagy ' +
+          'pontosabb emlek vagy hiany-allitas kell, a keresesi recept:\n' +
+          `curl -s -G -D /tmp/mem-fejlec-brainy.txt -H "Authorization: Bearer $(cat ${token})" ` +
+          '--data-urlencode "agent=brainy" --data-urlencode "q=KULCSSZO" "http://localhost:3420/api/memories"\n' +
+          "grep -i '^x-memory-search' /tmp/mem-fejlec-brainy.txt  " +
+          '(relaxed=true = kozelites, nem bizonyitek; hiany-allitashoz: --data-urlencode "strict=1"; ' +
+          'idoszak: date=tegnap | since= until=)\n',
+      )
+      expect(out).not.toContain('nezd meg, van-e rola emleked')
+      expect(out.trim().split('\n').length).toBe(3)
+    } finally { rmSync(r.root, { recursive: true, force: true }) }
+  })
+
+  it('brainy + mod active, but DISABLE exists: the full old nudge is back (fail-safe)', () => {
+    const r = makeRoot()
+    try {
+      writeFileSync(join(r.root, 'store', 'elohivas', 'DISABLE'), '')
+      const { out } = runIn(r, mainEnv(r))
+      expect(out.startsWith(OLD_LEAD)).toBe(true)
+      expect(out).toContain('curl -s -G -D')
+      // ...and it is the very same bytes as the plain no-env run.
+      expect(out).toBe(runIn(r, {}).out)
+    } finally { rmSync(r.root, { recursive: true, force: true }) }
+  })
+
+  it('a DISABLE that is a dangling symlink also counts (lexists)', () => {
+    const r = makeRoot()
+    try {
+      symlinkSync(join(r.root, 'nincs-ilyen'), join(r.root, 'store', 'elohivas', 'DISABLE'))
+      expect(runIn(r, mainEnv(r)).out.startsWith(OLD_LEAD)).toBe(true)
+    } finally { rmSync(r.root, { recursive: true, force: true }) }
+  })
+
+  it('brainy config dir but the mod is not in CLAUDE_CODE_PLUGIN_DIRS: old nudge', () => {
+    const r = makeRoot()
+    try {
+      for (const dirs of ['', '/tmp/valami-mas-plugin', join(r.root, 'store', 'mods', 'elohivas', 'nincs-ilyen-sha'), join(r.root, 'store', 'mods', 'elohivas', 'ABCDEF012345')]) {
+        expect(runIn(r, { CLAUDE_CONFIG_DIR: join(r.root, '.channels-config'), CLAUDE_CODE_PLUGIN_DIRS: dirs }).out.startsWith(OLD_LEAD)).toBe(true)
+      }
+    } finally { rmSync(r.root, { recursive: true, force: true }) }
+  })
+
+  it('a frozen dir without hooks/elohivas.py does not count (plugin folder missing at start): old nudge', () => {
+    const r = makeRoot()
+    try {
+      const bare = join(r.root, 'store', 'mods', 'elohivas', '0123456789ab')
+      mkdirSync(bare, { recursive: true })
+      expect(runIn(r, mainEnv(r, bare)).out.startsWith(OLD_LEAD)).toBe(true)
+    } finally { rmSync(r.root, { recursive: true, force: true }) }
+  })
+
+  it('the live <root>/plugins/elohivas path counts too, and a ":"-list with other plugins first works', () => {
+    const r = makeRoot()
+    try {
+      const live = join(r.root, 'plugins', 'elohivas')
+      mkdirSync(join(live, 'hooks'), { recursive: true })
+      writeFileSync(join(live, 'hooks', 'elohivas.py'), '# stub\n')
+      expect(runIn(r, mainEnv(r, live)).out).toContain('[memoria-elohivas]')
+      expect(runIn(r, mainEnv(r, `/tmp/mas:${r.frozen}`)).out).toContain('[memoria-elohivas]')
+    } finally { rmSync(r.root, { recursive: true, force: true }) }
+  })
+
+  it('the config dir is compared by realpath (a symlinked path to .channels-config counts)', () => {
+    const r = makeRoot()
+    try {
+      const link = join(r.root, 'cfg-link')
+      symlinkSync(join(r.root, '.channels-config'), link)
+      expect(runIn(r, { CLAUDE_CONFIG_DIR: link, CLAUDE_CODE_PLUGIN_DIRS: r.frozen }).out).toContain('[memoria-elohivas]')
+    } finally { rmSync(r.root, { recursive: true, force: true }) }
+  })
+
+  it('every other agent: the old text byte for byte, even with the mod env and a frozen copy around', () => {
+    const r = makeRoot()
+    try {
+      const samuCwd = join(r.root, 'agents', 'samu')
+      const token = join(r.root, 'store', '.dashboard-token')
+      const expected =
+        OLD_LEAD +
+        `curl -s -G -D /tmp/mem-fejlec-samu.txt -H "Authorization: Bearer $(cat ${token})" ` +
+        '--data-urlencode "agent=samu" --data-urlencode "q=KULCSSZO" "http://localhost:3420/api/memories"\n' +
+        "grep -i '^x-memory-search' /tmp/mem-fejlec-samu.txt  " +
+        '(relaxed=true = kozelites, nem bizonyitek; hiany-allitashoz: --data-urlencode "strict=1"; ' +
+        'idoszak: date=tegnap | since= until=)\n'
+      // the agent's own isolated config dir, plus the plugin dir env (e.g. leaked/inherited)
+      const env = { CLAUDE_CONFIG_DIR: join(samuCwd, '.claude-config'), CLAUDE_CODE_PLUGIN_DIRS: r.frozen }
+      expect(runIn(r, env, samuCwd).out).toBe(expected)
+      // no config dir at all (custom-provider agents run without one)
+      expect(runIn(r, { CLAUDE_CODE_PLUGIN_DIRS: r.frozen }, samuCwd).out).toBe(expected)
+      // shared ~/.claude-style dir
+      expect(runIn(r, { CLAUDE_CONFIG_DIR: tmpdir(), CLAUDE_CODE_PLUGIN_DIRS: r.frozen }, samuCwd).out).toBe(expected)
+    } finally { rmSync(r.root, { recursive: true, force: true }) }
+  })
+
+  it('machine messages stay silent in the short-form session too (MACHINE_MARKERS unchanged)', () => {
+    const r = makeRoot()
+    try {
+      for (const p of ['<trusted-peer source="agent:x">MEGY</trusted-peer>', '[SYSTEM-DIREKTIVA msg_id:5] x', '<scheduled-task source="s">futtasd</scheduled-task>', '/rename Geri']) {
+        const { out, code } = runIn(r, mainEnv(r), r.root, p)
+        expect(code).toBe(0)
+        expect(out.trim()).toBe('')
+      }
+    } finally { rmSync(r.root, { recursive: true, force: true }) }
   })
 })

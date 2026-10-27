@@ -63,8 +63,13 @@ const SEND_PATTERNS = [
   // patterns catch (no "sendmail"/"mail.send" substring). Also gate any direct
   // call to the exported sendMail() (e.g. a one-off `node -e`/`tsx -e` that
   // imports the module without going through the CLI).
-  /\bgraph-mail\b[^\n]*\bsend\b/i,
+  // graph-forward (Brainy 2958): the CLI gained `forward`, and on an unparseable
+  // command the subcommand cannot be located, so ANY mention of graph-mail counts
+  // (it used to need the word `send` after it). Same literal as the python twin's
+  // _FALLBACK_LITERALS, which had no graph-mail at all (T3).
+  /\bgraph-mail\b/i,
   /\bsendMail\s*\(/i,
+  /\bforwardMail\s*\(/i,
 ]
 
 // --- command-position analysis (SUBGATEPOZ822) ------------------------------
@@ -94,6 +99,13 @@ const SENDPY = /^send\.py$/i
 const PYTHON = /^python3?$/i
 const NODEISH = /^(node|tsx|ts-node|deno|bun|npx)$/i
 const GRAPHMAIL = /^graph-mail(\.ts|\.js)?$/i
+// graph-forward (Brainy 2958): the CLI dispatches on the one word after its file
+// name; verify/list/show are the reads, every other word (forward, send, FORWARD,
+// `--`, a flag, a $VAR, nothing) is a send. Applies where the CLI RUNS: the file in
+// program position, or behind a node-like or package runner. See _GRAPHMAIL_READS
+// in hooks/outgoing-copy-gate.py (the python twin) for the full rationale.
+const GRAPHMAIL_READS = new Set(['verify', 'list', 'show'])
+const GRAPHMAIL_RUNNER = /^(node|nodejs|tsx|ts-node|deno|bun|bunx|npx|pnpx|npm|pnpm|yarn)$/i
 const WRAPPER_SHELL = /^(sh|bash|zsh|dash)$/i
 const CURLISH = /^(curl|wget|http)$/i
 const RESEND_TARGET = /^(https?:\/\/)?([^/@\s]*\.)?api\.resend\.com(\/|$)/i
@@ -172,7 +184,8 @@ function curlResendVerdict(prog, rest) {
   if (hasBody && !getForced) return 'send'
   return 'read'
 }
-const CODE_SEND = /\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bsendEmail\b|\bmail\.send\b/i
+// forwardMail: the Graph sender's second outbound export (graph-forward, Brainy 2958).
+const CODE_SEND = /\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bforwardMail\s*\(|\bsendEmail\b|\bmail\.send\b/i
 // Naive-shape exec heuristic (msg 14298): process-spawn AND a known mailer
 // name together in one interpreter code string. Covers the accidental shapes;
 // see the STATED LIMIT in the header for what it deliberately does not claim.
@@ -189,14 +202,35 @@ const CODE_SEND_MODULE = new RegExp(
   String.raw`|\b(?:__import__|import_module)\s*\(\s*['"]send['"]` +
   String.raw`|\bspec_from_file_location\b[^\n]*\bsend\.py\b` +
   // The same class on the Graph sender (export sendMail): renamed on import, or a string key.
-  String.raw`|\bsendMail\s+as\b|\[\s*['"]sendMail['"]\s*\]`,
+  String.raw`|\bsendMail\s+as\b|\[\s*['"]sendMail['"]\s*\]` +
+  // ... and on its forward export (graph-forward, Brainy 2958).
+  String.raw`|\bforwardMail\s+as\b|\[\s*['"]forwardMail['"]\s*\]`,
 )
 const codeStringSends = (code) =>
   CODE_SEND.test(code) || CODE_SEND_MODULE.test(code) || (CODE_EXECISH.test(code) && CODE_SENDER_LIT.test(code))
 
+// Index of the quote that closes the ANSI-C string opened by `$'` at i, or -1.
+function ansiCEnd(cmd, i) {
+  for (let j = i + 2; j < cmd.length; j++) {
+    if (cmd[j] === '\\' && j + 1 < cmd.length) { j++; continue }
+    if (cmd[j] === "'") return j
+  }
+  return -1
+}
+
+// A word starts after one of these (or at the start): where `#` opens a comment.
+const WORD_BREAK = ' \t\n;&|()<>`'
+
 // Unquoted newline / backtick / `$(` become segment separators; quoted text is
 // untouched (it is content). Tracks quote state by hand -- no shell involved.
-export function maskSubshellMarkers(cmd) {
+// QUOTEPARITY1018 (graph-forward, Brainy 2958): `$'...'` (ANSI-C, where `\'` is an
+// escaped quote, not the end) is rewritten into a plain single-quoted string with
+// the shell's boundaries (`$$` consumed first), the `$` of `$"..."` is dropped, an
+// unquoted backslash-newline (line continuation) is removed, and with comments=true
+// a `#` at the start of a word skips to the end of its line, raw, as the shell
+// does; comments=false reads every word. The same fixes, with the measured cases,
+// as _mask_subshell_markers in hooks/outgoing-copy-gate.py (the python twin).
+export function maskSubshellMarkers(cmd, comments = true) {
   let out = ''
   let q = null
   for (let i = 0; i < cmd.length; i++) {
@@ -207,10 +241,27 @@ export function maskSubshellMarkers(cmd) {
       out += ch
       continue
     }
+    if (comments && ch === '#' && (i === 0 || WORD_BREAK.includes(cmd[i - 1]))) {
+      const j = cmd.indexOf('\n', i)
+      if (j === -1) break
+      i = j - 1 // the newline itself stays: it ends the command
+      continue
+    }
     if (ch === "'" || ch === '"') { q = ch; out += ch; continue }
+    if (ch === '\\' && cmd[i + 1] === '\n') { i++; continue }
     if (ch === '\\' && i + 1 < cmd.length) { out += cmd[i] + cmd[i + 1]; i++; continue }
     if (ch === '\n' || ch === '`') { out += ';'; continue }
     if (ch === '$' && cmd[i + 1] === '(') { out += ';'; i++; continue }
+    if (ch === '$' && cmd[i + 1] === '$') { out += '$$'; i++; continue }
+    if (ch === '$' && cmd[i + 1] === '"') continue
+    if (ch === '$' && cmd[i + 1] === "'") {
+      const j = ansiCEnd(cmd, i)
+      if (j !== -1) {
+        out += "'" + cmd.slice(i + 2, j).split("\\'").join(`'"'"'`) + "'"
+        i = j
+        continue
+      }
+    }
     out += ch
   }
   return out
@@ -218,8 +269,8 @@ export function maskSubshellMarkers(cmd) {
 
 // Quote-aware tokenizer -> [[token, ...], ...] per segment. Throws on an
 // unbalanced quote (the caller falls back to the legacy content patterns).
-export function segmentsTokens(cmd) {
-  const s = maskSubshellMarkers(cmd.replace(HEREDOC_RE, '$1'))
+export function segmentsTokens(cmd, comments = true) {
+  const s = maskSubshellMarkers(cmd.replace(HEREDOC_RE, '$1'), comments)
   const segments = []
   let cur = []
   let tok = ''
@@ -248,6 +299,16 @@ export function segmentsTokens(cmd) {
 }
 
 const basename = (t) => t.split('/').pop()
+
+// The segments of the comment reading AND the no-comment reading together
+// (QUOTEPARITY1018); a reading that does not parse contributes nothing.
+function bothReadings(cmd) {
+  const segs = []
+  for (const comments of [true, false]) {
+    try { segs.push(...segmentsTokens(cmd, comments)) } catch { /* unparseable reading */ }
+  }
+  return segs
+}
 
 // SENDWRAP924: a wrapper in front of the sender is stepped over WITH its own
 // flags -- see the full rationale at _WRAPPERS in outgoing-copy-gate.py (the
@@ -337,6 +398,13 @@ function headIsSend(toks, depth) {
   if (candidates.some((c) => SENDPY.test(c)) &&
       rest.some((t) => t === '--to' || t.startsWith('--to='))) return true
   if (toks.some((t) => GRAPHMAIL.test(basename(t))) && rest.includes('send')) return true
+  // graph-forward: the CLI run as a program -- every subcommand but the three reads
+  // is a send, a missing one too (see GRAPHMAIL_READS).
+  if (GRAPHMAIL.test(prog) || GRAPHMAIL_RUNNER.test(prog)) {
+    for (let k = 0; k < toks.length; k++) {
+      if (GRAPHMAIL.test(basename(toks[k])) && (k + 1 >= toks.length || !GRAPHMAIL_READS.has(toks[k + 1]))) return true
+    }
+  }
   // RESENDGETTWIN1010: only an actual send (POST/PUT/..., or a body) fires; a
   // read-only GET/HEAD passes; an undecidable method stays fail-closed.
   if (CURLISH.test(prog) && rest.some((t) => RESEND_TARGET.test(t))) {
@@ -348,14 +416,8 @@ function headIsSend(toks, depth) {
 // True when some segment is still a wrapper at the depth bound (HEADDEPTH924),
 // so the deny says WHY -- see wrapper_depth_hit in outgoing-copy-gate.py.
 export function wrapperDepthHit(cmd) {
-  let segments
-  try {
-    segments = segmentsTokens(cmd)
-  } catch {
-    return false
-  }
   // Only when the bound is the WHOLE reason: a visible send in another segment wins.
-  const heads = segments.flatMap((toks) => commandHeads(toks))
+  const heads = bothReadings(cmd).flatMap((toks) => commandHeads(toks))
   return heads.some((h) => h === null) && !heads.some((h) => h !== null && headIsSend(h, 0))
 }
 
@@ -396,9 +458,7 @@ const HEREDOC_PIPE = /\|\s*(?:\S*\/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|b
 const HEREDOC_REDIRECT = /(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a)?)\s*(['"]?)([^\s'"<>;&|]+)\1/
 function writtenThenRun(cmd, written, depth) {
   if (!written.size) return false
-  let segments
-  try { segments = segmentsTokens(cmd) } catch { return false }
-  for (const toks of segments) {
+  for (const toks of bothReadings(cmd)) {
     for (const head of commandHeads(toks)) {
       if (!head || !head.length) continue
       const prog = basename(head[0])
@@ -440,15 +500,21 @@ function heredocProgramSends(cmd, depth = 0) {
 
 export function isSendInvocation(cmd, depth = 0) {
   if (heredocProgramSends(cmd, depth)) return true
-  let segments
-  try {
-    segments = segmentsTokens(cmd)
-  } catch {
-    // Unparseable command: fall back to the LEGACY content patterns, so on
-    // this path the gate is exactly as strict as before -- never weaker.
-    return SEND_PATTERNS.some((re) => re.test(cmd))
+  // QUOTEPARITY1018: read with and without shell comments; a send in EITHER
+  // reading counts (see is_send_invocation in hooks/outgoing-copy-gate.py).
+  for (const comments of [true, false]) {
+    let segments
+    try {
+      segments = segmentsTokens(cmd, comments)
+    } catch {
+      // Unparseable command: fall back to the LEGACY content patterns, so on
+      // this path the gate is exactly as strict as before -- never weaker.
+      if (SEND_PATTERNS.some((re) => re.test(cmd))) return true
+      continue
+    }
+    if (segments.some((toks) => segmentIsSend(toks, depth))) return true
   }
-  return segments.some((toks) => segmentIsSend(toks, depth))
+  return false
 }
 
 // Outbound-shaped operations of the multiplexed manage_email tool. Each of
@@ -460,6 +526,75 @@ const MANAGE_EMAIL_SEND_OPS = new Set(['send', 'reply', 'replyall', 'forward'])
 // the owner presses send on what we typed, so an invented address reaches the
 // outside world through a draft just as surely as through a send.
 const DRAFT_TOOL_RE = /(^|__)(create_draft|draft_email|update_draft)$/i
+
+// graph-forward N1b (spec G1-G5): the ACTION of a mail tool, whatever its
+// server name or version prefix. The name patterns in gateDecision recognised a
+// fixed list of names, so a sub-agent could send through
+// mcp__gmail-v2__v2_send_draft or __v2_reply_all with no gate at all, and
+// v2_draft_email skipped the ledger check. Same rules, word for word, as
+// mail_tool_action in scripts/hooks/email_extract.py (the main agent's gates);
+// the shared vectors (scripts/hooks/mail-tool-action-cases.json) and the
+// conformance test bind the two:
+//   - only MCP tools (mcp__<server>__<tool>); every "__" segment after the
+//     server on its own, the most severe one wins;
+//   - words: camelCase and acronyms apart, any non-alphanumeric a separator,
+//     lowercase, leading v<n> dropped; a verb alone or glued to a mail noun;
+//   - send: a send/resend verb anywhere, or the first verb reply/forward/fwd;
+//     draft: the first verb draft/create/update/save/compose/edit;
+//   - channel plugins (Telegram/Discord/Slack) are never mail.
+// It only ADDS: gateDecision asks its name patterns first, unchanged.
+const MAIL_SEND_VERBS = new Set(['send', 'resend', 'reply', 'replyall', 'forward', 'fwd'])
+const MAIL_SEND_ANYWHERE = new Set(['send', 'resend'])
+const MAIL_DRAFT_VERBS = new Set(['draft', 'create', 'update', 'save', 'compose', 'edit'])
+const MAIL_OTHER_VERBS = new Set([
+  'search', 'find', 'query', 'lookup', 'read', 'get', 'fetch', 'list', 'show', 'view',
+  'open', 'download', 'export', 'count', 'check', 'describe', 'inspect', 'summarize',
+  'delete', 'remove', 'trash', 'untrash', 'archive', 'unarchive', 'move', 'copy',
+  'mark', 'label', 'unlabel', 'tag', 'untag', 'star', 'unstar', 'flag', 'unflag',
+  'modify', 'set', 'unset', 'add', 'watch', 'unwatch', 'stop', 'subscribe',
+  'unsubscribe', 'block', 'unblock', 'mute', 'unmute', 'snooze', 'sync', 'refresh',
+  'import', 'upload', 'attach', 'detach', 'parse', 'extract', 'verify', 'validate',
+  'ping', 'auth', 'authenticate', 'login', 'logout', 'revoke', 'whoami', 'poll',
+  'clear', 'purge', 'restore', 'preview', 'print', 'filter', 'sort', 'scan',
+  'report', 'track', 'translate', 'convert', 'render',
+])
+const MAIL_VERBS = new Set([...MAIL_SEND_VERBS, ...MAIL_DRAFT_VERBS, ...MAIL_OTHER_VERBS])
+const MAIL_GLUE_NOUNS = ['mail', 'email', 'emails', 'message', 'messages', 'msg',
+  'draft', 'drafts', 'all', 'now', 'reply']
+const CHANNEL_PLUGIN_RE = /^mcp__plugin_(?:telegram|discord|slack)[-_]/
+
+function mailVerb(word) {
+  if (MAIL_VERBS.has(word)) return word
+  for (const noun of MAIL_GLUE_NOUNS) {
+    if (word.endsWith(noun) && MAIL_VERBS.has(word.slice(0, -noun.length))) return word.slice(0, -noun.length)
+  }
+  return null
+}
+
+function segmentAction(segment) {
+  const s = segment
+    .replace(/[^\x00-\x7f]/g, '_')
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+  const words = s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+  while (words.length && /^v[0-9]+$/.test(words[0])) words.shift()
+  const verbs = words.map(mailVerb).filter(Boolean)
+  if (verbs.some((v) => MAIL_SEND_ANYWHERE.has(v))) return 'send'
+  if (verbs.length && MAIL_SEND_VERBS.has(verbs[0])) return 'send'
+  if (verbs.length && MAIL_DRAFT_VERBS.has(verbs[0])) return 'draft'
+  return null
+}
+
+// 'send', 'draft' or null. Pure, never throws.
+export function mailToolAction(toolName) {
+  const name = typeof toolName === 'string' ? toolName : ''
+  const parts = name.split('__')
+  if (parts.length < 3 || parts[0].toLowerCase() !== 'mcp' || CHANNEL_PLUGIN_RE.test(name)) return null
+  const found = new Set(parts.slice(2).map(segmentAction))
+  if (found.has('send')) return 'send'
+  if (found.has('draft')) return 'draft'
+  return null
+}
 
 // RECOVERYPATH920: the recovery command in the deny message used to be the
 // relative `node scripts/recipient-ledger.mjs`. Sub-agents run with cwd
@@ -562,6 +697,16 @@ export function gateDecision(toolName, toolInput, isVerified = null) {
   if (name === 'Bash') {
     const cmd = String(toolInput?.command ?? '')
     if (isSendInvocation(cmd)) return wrapperDepthHit(cmd) ? { deny: true, kind: 'wrapper-depth' } : { deny: true }
+  }
+  // graph-forward N1b: a mail tool none of the names above lists, by its
+  // action. A send is the governance block, unconditionally (never the
+  // thread-reply narrowing, which reads send_email-shaped fields); a draft is
+  // allowed to a sourced address only, exactly like DRAFT_TOOL_RE above.
+  const action = mailToolAction(name)
+  if (action === 'send') return { deny: true, kind: 'mail-tool-send' }
+  if (action === 'draft') {
+    const bad = unverifiedRecipients(toolInput, verify)
+    if (bad.length) return { deny: true, kind: 'unverified-recipient', addresses: bad }
   }
   return { deny: false }
 }

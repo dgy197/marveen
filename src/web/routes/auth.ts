@@ -5,10 +5,15 @@
 // (setup_required:true). Login enforcement becomes available -- never required,
 // the bearer token always works -- once the operator creates a user.
 //
-// The bearer token stays the break-glass credential: creating the FIRST user
-// and resetting a password are reachable with a valid bearer, so there is never
-// an unauthenticated first-run setup page (which would be a claim-the-admin race
-// on loopback).
+// Card 053f4e66 B: the shared bearer token no longer issues credentials by
+// default. Creating a user, minting a device key and the token password reset
+// (break-glass) answer a token caller 403 -- before the body is read -- unless
+// the install's .env opens the bearer-credential-admin switch
+// (credential-admin.ts). There is still no unauthenticated first-run setup page
+// (that would be a claim-the-admin race on loopback): the first user is created
+// on the machine (scripts/dashboard-user.ts), and the machine-side password
+// reset there stays the real break-glass path (docs/dashboard-auth-recovery.md).
+// A logged-in session keeps every one of these paths as before.
 //
 // Principal discipline: every handler that grants or removes access checks the
 // caller's auth kind against an EXPLICIT allowlist. Only 'token' and 'session'
@@ -46,6 +51,8 @@ import {
   revokeDeviceKey,
   getDeviceKey,
   DEVICE_KEY_SCOPES,
+  FULL_KEY_DEFAULT_EXPIRY_DAYS,
+  FULL_KEY_MAX_EXPIRY_DAYS,
   OPERATOR_KEY_DEFAULT_EXPIRY_DAYS,
   OPERATOR_KEY_MAX_EXPIRY_DAYS,
   type DeviceKeyScope,
@@ -61,6 +68,7 @@ import {
   logConfigChange,
 } from '../../db.js'
 import { notifySecurityEvent } from '../../notify.js'
+import { admitBearerCredentialAdmin, recordBearerCredentialMint } from '../credential-admin.js'
 import type { RouteContext } from './types.js'
 
 const LOGIN_BODY_MAX_BYTES = 8 * 1024
@@ -121,7 +129,6 @@ const USER_ADMIN_KINDS = ['token', 'session'] as const
 const DEVICE_KEY_ADMIN_KINDS = ['token', 'session'] as const
 
 const DEVICE_KEY_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
-const DEVICE_KEY_MAX_EXPIRY_DAYS = 3650
 
 // { authenticated, method, user, device, login_available, setup_required }.
 // authenticated keeps its exact old meaning for token callers (existing probes
@@ -236,6 +243,16 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/auth/password' && method === 'POST') {
+    // The caller kind is decided BEFORE the body is parsed (053f4e66 B): a
+    // device key, a federation token or no principal is a 403 without reading
+    // anything, and a token caller passes the bearer-credential-admin gate
+    // first.
+    const isSession = auth?.kind === 'session' && !!auth.user
+    if (!isSession && auth?.kind !== 'token') {
+      json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    if (!isSession && !admitBearerCredentialAdmin(ctx, 'auth.password.break_glass')) return true
     let body: Record<string, unknown>
     try {
       body = await parseJsonBody(req)
@@ -246,7 +263,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     const newPassword = str(body.new_password)
 
     let user = undefined as ReturnType<typeof getDashboardUser>
-    if (auth?.kind === 'session' && auth.user) {
+    if (isSession && auth?.kind === 'session' && auth.user) {
       user = getDashboardUser(auth.user)
       if (!user) {
         json(res, { error: 'User not found' }, 404)
@@ -312,6 +329,9 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
+    // 053f4e66 B: a token caller only through the switch, before the body.
+    const admission = auth!.kind === 'token' ? admitBearerCredentialAdmin(ctx, 'auth.users.create') : undefined
+    if (admission === null) return true
     let body: Record<string, unknown>
     try {
       body = await parseJsonBody(req)
@@ -338,6 +358,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     const hash = await hashPassword(password)
     const created = createDashboardUser(username, hash)
     logger.info({ username: created.username }, 'dashboard user created')
+    if (admission) recordBearerCredentialMint('auth.users.create', admission, `user="${created.username}" id=${created.id}`)
     json(res, { ok: true, user: { id: created.id, username: created.username } }, 201)
     return true
   }
@@ -356,6 +377,9 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
+    // 053f4e66 B: a token caller only through the switch, before the body.
+    const admission = auth!.kind === 'token' ? admitBearerCredentialAdmin(ctx, 'auth.device_keys.create') : undefined
+    if (admission === null) return true
     let body: Record<string, unknown>
     try {
       body = await parseJsonBody(req)
@@ -375,24 +399,38 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `Invalid scope (${DEVICE_KEY_SCOPES.join(' | ')})` }, 400)
       return true
     }
-    if (scope === 'operator' && (body.expires_in_days === 0 || body.expires_in_days === null)) {
-      json(res, { error: 'An operator key must expire' }, 400)
+    // Card 053f4e66 B (E1-E5): a full key must expire too -- 90 days unless set,
+    // at most 365. null/0 used to mean "lives until revoked"; that meaning is
+    // refused outright, for both scopes, rather than read as "use the default".
+    // Keys stored before this rule are untouched (no retroactive change).
+    if (body.expires_in_days === 0 || body.expires_in_days === null) {
+      json(res, { error: scope === 'operator' ? 'An operator key must expire' : 'A full key must expire' }, 400)
       return true
     }
-    // Expiry is opt-in for a full key: absent/0 means it lives until revoked.
-    let expiresInDays: number | undefined = scope === 'operator' ? OPERATOR_KEY_DEFAULT_EXPIRY_DAYS : undefined
-    if (body.expires_in_days !== undefined && body.expires_in_days !== null && body.expires_in_days !== 0) {
+    const maxDays = scope === 'operator' ? OPERATOR_KEY_MAX_EXPIRY_DAYS : FULL_KEY_MAX_EXPIRY_DAYS
+    let expiresInDays = scope === 'operator' ? OPERATOR_KEY_DEFAULT_EXPIRY_DAYS : FULL_KEY_DEFAULT_EXPIRY_DAYS
+    if (body.expires_in_days !== undefined) {
       const n = Number(body.expires_in_days)
-      // An operator key has its own, shorter ceiling (a year); a full key keeps 3650.
-      const maxDays = scope === 'operator' ? OPERATOR_KEY_MAX_EXPIRY_DAYS : DEVICE_KEY_MAX_EXPIRY_DAYS
-      if (!Number.isFinite(n) || n <= 0 || n > maxDays) {
+      // Below one day (0.5, 1e-9) is out of range too, not a key that expires at once.
+      if (!Number.isFinite(n) || n < 1 || n > maxDays) {
         json(res, { error: `Invalid expires_in_days (1-${maxDays})` }, 400)
         return true
       }
       expiresInDays = n
     }
+    // Unreachable by construction (the property test feeds every input shape);
+    // kept so a future edit above cannot mint a key without an end date.
+    if (!(expiresInDays > 0)) {
+      logger.error({ scope }, 'device key mint refused: no positive expiry (route bug)')
+      json(res, { error: 'Internal error' }, 500)
+      return true
+    }
     const minted = createDeviceKey(name, { expiresInDays, scope: scope as DeviceKeyScope })
     logger.info({ id: minted.id, name: minted.name, expiresAt: minted.expiresAt, scope: minted.scope }, 'device key minted')
+    if (admission) {
+      const expires = minted.expiresAt === null ? 'never' : new Date(minted.expiresAt * 1000).toISOString()
+      recordBearerCredentialMint('auth.device_keys.create', admission, `key="${minted.name}" id=${minted.id} scope=${minted.scope} expires_at=${expires}`)
+    }
     // `key` is the one and only disclosure of the raw credential.
     json(res, { ok: true, id: minted.id, name: minted.name, key: minted.key, created_at: minted.createdAt, expires_at: minted.expiresAt, scope: minted.scope }, 201)
     return true

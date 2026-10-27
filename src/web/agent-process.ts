@@ -115,6 +115,18 @@ import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { exactTmuxTarget, sessionOfTmuxTarget } from '../tmux-target.js'
 import { expandAndValidateConfigDir } from '../config-dir-path.js'
+import {
+  interactiveKeyPolicy,
+  isAnthropicFirstParty,
+  decideInteractiveLaunch,
+  scanSettingsForInteractiveKeys,
+  refusalNames,
+  assertLaunchCmdClean,
+  recordGuardEvent,
+  InteractiveKeyGuardError,
+  INTERACTIVE_KEY_ENV_NAMES,
+  API_KEY_HELPER,
+} from './interactive-key-guard.js'
 export { CHANNEL_PLUGIN_IDS }
 
 // Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
@@ -948,6 +960,106 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
+// Env names that decide WHICH account or endpoint Claude Code talks to. The
+// isolated provisioning copies the shared ~/.claude/settings.json `env` into
+// every isolated settings.json, and that copy stays on purpose: some installs
+// route the fleet through it deliberately (an API key or a compatible
+// endpoint). What must not happen is that it does so SILENTLY: one of these
+// names in the shared file moves every isolated agent off its own setup-token
+// onto that key or endpoint (billing, quota), and nothing on the agent says so.
+export const SHARED_ENV_AUTH_KEYS: readonly string[] = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+]
+
+/** The auth-path names an `env` block carries, in SHARED_ENV_AUTH_KEYS order.
+ *  Names only: the values are never read into the result. Own properties only,
+ *  so a prototype name can never count as present. */
+export function authKeysInEnv(env: unknown): string[] {
+  if (!isPlainObject(env)) return []
+  return SHARED_ENV_AUTH_KEYS.filter((k) => Object.prototype.hasOwnProperty.call(env, k))
+}
+
+function readSharedSettingsEnv(): unknown {
+  try {
+    return (JSON.parse(readFileSync(join(homedir(), '.claude', 'settings.json'), 'utf-8')) as { env?: unknown }).env
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Dashboard side of the start-time warning: the auth-path names the shared env
+ * copies into this agent's isolated config dir, or [] when the agent does not
+ * run on one. Read from the files, not from a start-time record, so the
+ * warning survives a dashboard restart and clears itself once the shared file
+ * no longer carries the name. An agent on a configured config dir or plan is
+ * not provisioned from the shared file, so it never gets the warning.
+ */
+export function sharedEnvAuthKeysCopiedTo(name: string): string[] {
+  let cfg: string | null
+  if (name === MAIN_AGENT_ID) {
+    if (resolveMainAgentConfigDir()) return []
+    cfg = mainAgentConfigDirIfSeparate()
+  } else {
+    if (resolveAgentConfigDir(name).configDir) return []
+    cfg = join(agentDir(name), '.claude-config')
+  }
+  if (!cfg) return []
+  const shared = authKeysInEnv(readSharedSettingsEnv())
+  if (!shared.length) return []
+  let own: unknown
+  try {
+    own = (JSON.parse(readFileSync(join(cfg, 'settings.json'), 'utf-8')) as { env?: unknown }).env
+  } catch {
+    return []
+  }
+  const present = new Set(authKeysInEnv(own))
+  return shared.filter((k) => present.has(k))
+}
+
+/**
+ * fec6335f: is this sub-agent first-party for the interactive-key guard? The
+ * launcher's own inputs (customProvider wins; else the resolved model), read
+ * from the agent's config. A configured but missing provider counts as
+ * first-party, like in the guard itself. Exported for the runtime guard
+ * (interactive-key-guard-runner.ts), which must judge agents the same way.
+ */
+export function subAgentIsFirstPartyForKeyGuard(name: string): boolean {
+  const customProviderId = readAgentCustomProvider(name)
+  const isCustom = customProviderId !== null
+  const model = isCustom ? readAgentModel(name) : resolveOpenRouterModel(readAgentModel(name))
+  return isAnthropicFirstParty({ isCustom, customProviderDef: customProviderId ? loadCustomProvider(customProviderId) : null, model })
+}
+
+/**
+ * Under forbid, remove the API-key route (env ANTHROPIC_API_KEY /
+ * ANTHROPIC_AUTH_TOKEN, top-level apiKeyHelper) from a first-party sub-agent's
+ * isolated settings object, in place. Returns the names removed; [] (and no
+ * change at all) under allow or for an agent that is not first-party.
+ */
+export function stripInteractiveKeysForForbid(name: string, settings: Record<string, unknown>): string[] {
+  if (interactiveKeyPolicy() !== 'forbid') return []
+  if (!subAgentIsFirstPartyForKeyGuard(name)) return []
+  const removed: string[] = []
+  const env = settings.env
+  if (isPlainObject(env)) {
+    for (const k of INTERACTIVE_KEY_ENV_NAMES) {
+      if (Object.prototype.hasOwnProperty.call(env, k)) {
+        delete env[k]
+        removed.push(k)
+      }
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(settings, API_KEY_HELPER)) {
+    delete settings[API_KEY_HELPER]
+    removed.push(API_KEY_HELPER)
+  }
+  return removed
+}
+
 function provisionIsolatedConfigDir(
   cfg: string,
   cwd: string,
@@ -1011,6 +1123,15 @@ function provisionIsolatedConfigDir(
     // PROVENANCE-KAPU blocks per prompt) and made the global file look load-
     // bearing when it was not.
     delete settings.hooks
+    // The shared env reaches this agent as is (the shared file wins for every
+    // name it defines), so an auth-path name in it changes which account or
+    // endpoint this agent runs on. Said out loud on every start, names only:
+    // a settings.json may hold secrets, so values never land in the log.
+    const copiedAuthKeys = authKeysInEnv(settings.env)
+    if (copiedAuthKeys.length) {
+      logger.warn({ name, path: sharedSettings, keys: copiedAuthKeys },
+        'isolated-config: the shared settings env carries auth keys into this agent; it may run on that key or endpoint instead of its own token')
+    }
     const scopedPlugins = scopeChannelPlugins(
       providerType,
       settings.enabledPlugins as Record<string, boolean> | undefined,
@@ -1084,6 +1205,18 @@ function provisionIsolatedConfigDir(
       try { permissionMode = loadProfileTemplate(resolveAgentSecurityProfile(name))?.permissionMode } catch { permissionMode = undefined }
       if (enforceStrictPermissionMode(settings, permissionMode)) {
         logger.info({ name }, 'isolated-config: strict profile, permissions.defaultMode pinned to dontAsk (#1837)')
+      }
+    }
+    // fec6335f (I-01): under INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid a first-party
+    // sub-agent's isolated settings never carry an API-key route, from the shared
+    // copy or from its own older file. After the merge above, so nothing brings
+    // one back. The main agent is out of scope here (its paths decide on their
+    // own, alert-only).
+    if (name !== MAIN_AGENT_ID) {
+      const stripped = stripInteractiveKeysForForbid(name, settings)
+      if (stripped.length) {
+        recordGuardEvent({ source: 'isolated-provisioning', where: ownSettingsPath, names: stripped, agent: name })
+        logger.warn({ name, path: ownSettingsPath, keys: stripped }, 'isolated-config: forbid policy, auth keys NOT copied into this first-party agent')
       }
     }
     // Atomic: the file's CONTENT now depends on reading its own previous
@@ -1826,9 +1959,37 @@ function startRemoteAgentProcess(
   }
 
   const model = readAgentModel(name)
-  const cmd = buildRemoteLaunchCommand({ workdir, model, continue: hasPriorSession })
+  // fec6335f: the remote launch never exports a key itself, but the remote
+  // host's tmux env can carry one; same decision as the local launcher, minus
+  // the settings scan (the remote settings are not readable from here).
+  // Deliberately NO unset for a customProvider that is not Anthropic: such an
+  // agent is not first-party (isAnthropicFirstParty), so the decision is
+  // allow with an empty prefix. Its provider route on the remote host comes
+  // from that host's own env (this command exports none), and a custom provider
+  // authenticates with exactly these names (ANTHROPIC_AUTH_TOKEN, or
+  // ANTHROPIC_API_KEY for an x-api-key one) -- an unset here would cut it.
+  // The cost: if the remote host's env carries no provider URL, a key there
+  // reaches Anthropic unguarded; the runtime guard does not see a remote host
+  // either. Documented in docs/config-reference.md (INTERACTIVE_ANTHROPIC_KEY_POLICY).
+  const remoteCustomId = readAgentCustomProvider(name)
+  const keyGuardInput = {
+    policy: interactiveKeyPolicy(),
+    isCustom: remoteCustomId !== null,
+    customProviderDef: remoteCustomId ? loadCustomProvider(remoteCustomId) : null,
+    model,
+    // BE-1: no provider URL is exported on this path, so an alias model reaches Anthropic too.
+    directAnthropic: true,
+    authMode: readAgentAuthMode(name),
+  }
+  const keyGuard = decideInteractiveLaunch(keyGuardInput)
+  if (!keyGuard.ok) {
+    recordGuardEvent({ source: 'launch-guard', where: `startRemoteAgentProcess:${keyGuard.reason}`, names: refusalNames(keyGuard.reason), agent: name })
+    return { ok: false, error: `interactive-key-guard: ${keyGuard.reason}` }
+  }
+  const cmd = keyGuard.unsetPrefix + buildRemoteLaunchCommand({ workdir, model, continue: hasPriorSession })
 
   try {
+    assertLaunchCmdClean(cmd, { policy: keyGuardInput.policy, firstParty: isAnthropicFirstParty(keyGuardInput) })
     runTmux(host, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
     logger.info({ name, session, host, workdir }, 'Remote agent tmux session started')
     // Fire-and-forget: scheduleIdentitySetup only schedules delayed timers and
@@ -1836,6 +1997,10 @@ function startRemoteAgentProcess(
     void scheduleIdentitySetup(session, readAgentDisplayName(name), host)
     return { ok: true }
   } catch (err) {
+    if (err instanceof InteractiveKeyGuardError) {
+      recordGuardEvent({ source: 'launch-guard', where: 'startRemoteAgentProcess:launch-cmd', names: err.names, agent: name })
+      return { ok: false, error: 'interactive-key-guard: launch command not clean' }
+    }
     logger.error({ err, name, host }, 'Failed to start remote agent tmux session')
     return { ok: false, error: 'Failed to start remote tmux session' }
   }
@@ -2033,6 +2198,21 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         'oauthTokenFile: agent is not a Claude OAuth agent -- NOT started (a setup-token cannot take effect here)',
       )
       return { ok: false, error: 'oauthTokenFile: not a Claude OAuth agent' }
+    }
+    // fec6335f (I-03): under INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid a
+    // first-party agent never starts on an API key. Decided on the launcher's
+    // own isCustom/model/authMode, BEFORE any secret is read or parked in a
+    // launch-secret file and before the session exists. Every caller -- start
+    // button, restart, context guard, auto-restart, reconcile, EPERM fallback --
+    // comes through here. The settings half of the check needs the final config
+    // dir and runs further down.
+    const keyPolicy = interactiveKeyPolicy()
+    const keyGuardInput = { policy: keyPolicy, isCustom, customProviderDef, model, authMode }
+    const keyGuardFirstParty = isAnthropicFirstParty(keyGuardInput)
+    const keyGuardEarly = decideInteractiveLaunch(keyGuardInput)
+    if (!keyGuardEarly.ok) {
+      recordGuardEvent({ source: 'launch-guard', where: `startAgentProcess:${keyGuardEarly.reason}`, names: refusalNames(keyGuardEarly.reason), agent: name })
+      return { ok: false, error: `interactive-key-guard: ${keyGuardEarly.reason}` }
     }
     // When authHeader=x-api-key, the CLI's ANTHROPIC_API_KEY approval prompt
     // cannot be answered in --channels mode. Pre-seed the approval into
@@ -2467,6 +2647,27 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         'oauthTokenFile: own setup-token exported instead of the fleet token',
       )
     }
+    // fec6335f, the settings half: an `env` key or an apiKeyHelper in the
+    // settings this session will load (its user config dir -- isolated,
+    // explicit, plan, or the shared ~/.claude -- and its project scope) wins
+    // over any shell `unset`, so a first-party agent under forbid refuses.
+    // Names only; the isolated provisioning above already stripped its copy.
+    let keyUnsetPrefix = ''
+    if (keyPolicy === 'forbid' && keyGuardFirstParty) {
+      const settingsFindings = scanSettingsForInteractiveKeys([
+        join(claudeConfigDir ?? join(homedir(), '.claude'), 'settings.json'),
+        join(dir, '.claude', 'settings.json'),
+        join(dir, '.claude', 'settings.local.json'),
+      ])
+      const keyGuardLate = decideInteractiveLaunch({ ...keyGuardInput, settingsFindings })
+      if (!keyGuardLate.ok) {
+        for (const f of settingsFindings) {
+          recordGuardEvent({ source: 'launch-guard', where: f.path, names: f.names, agent: name })
+        }
+        return { ok: false, error: `interactive-key-guard: ${keyGuardLate.reason}` }
+      }
+      keyUnsetPrefix = keyGuardLate.unsetPrefix
+    }
     // Per-project trust pre-seed in the config root this session will ACTUALLY
     // use (isolated CLAUDE_CONFIG_DIR when set, shared ~/.claude.json
     // otherwise). Without it a fresh install's first launch of each agent
@@ -2645,7 +2846,16 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // FLEETVENV923: the fleet venv's bin/ goes FIRST so its python3 beats the
     // Homebrew one that carries no packages.
     const venvPathPrefix = fleetVenvPathPrefix()
-    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
+    //
+    // fec6335f: `keyUnsetPrefix` is '' under allow and for every agent that is
+    // not first-party (the command is then byte-identical to before); under
+    // forbid a first-party launch starts with INTERACTIVE_UNSET. The assert is
+    // the last check before BOTH sinks below (normal and EPERM fallback).
+    const buildLaunchCmd = (launchCwd: string) => {
+      const cmd = `${keyUnsetPrefix}${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
+      assertLaunchCmdClean(cmd, { policy: keyPolicy, firstParty: keyGuardFirstParty })
+      return cmd
+    }
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
@@ -2730,6 +2940,9 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
             runTmux(null, ['new-session', '-d', '-s', session, buildLaunchCmd(fallbackCwd)], { timeout: 10000 })
             logger.warn({ name, session, fallbackCwd }, 'Agent --channels EPERM in trusted dir; relaunched from /tmp fallback')
           } catch (err) {
+            if (err instanceof InteractiveKeyGuardError) {
+              recordGuardEvent({ source: 'launch-guard', where: 'startAgentProcess:eperm-fallback:launch-cmd', names: err.names, agent: name })
+            }
             logger.error({ err, name, session }, 'EPERM /tmp fallback relaunch failed')
           }
           setTimeout(checkEperm, 1000)
@@ -2804,6 +3017,10 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
 
     return { ok: true }
   } catch (err) {
+    if (err instanceof InteractiveKeyGuardError) {
+      recordGuardEvent({ source: 'launch-guard', where: 'startAgentProcess:launch-cmd', names: err.names, agent: name })
+      return { ok: false, error: 'interactive-key-guard: launch command not clean' }
+    }
     logger.error({ err, name }, 'Failed to start agent tmux session')
     return { ok: false, error: 'Failed to start tmux session' }
   }

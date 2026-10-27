@@ -1,0 +1,556 @@
+{
+  "_comment": "Shared vectors for the mail-tool ACTION classifier (graph-forward card, spec G1-G7, Brainy 2958). Each case is a tool name plus a representative tool_input and the class every gate must give it, whatever the server name or version prefix: expected=send -> the main-agent approval gate is in scope (level logic runs), the copy gate audits the text, the sub-agent JS gate denies unconditionally; expected=draft -> the approval gate is NOT in scope, the copy gate audits, the JS gate ledger-checks the recipients; expected=nonsend -> all three pass the call untouched. today_spec=true marks the rows the spec says today's name patterns already recognise (the observed base verdicts are in golden-base.json, section g7_observed_base). extra=true rows are additions that are unambiguous under G1/G4 but are not in the spec list. get_send_as is an accepted false positive (any send token is fail-closed). Written by build_vectors.py; ASCII only. classifier_edges (added in N1b): name-only edge cases of the classifier, expected 'send', 'draft' or null, checked against both implementations (python mail_tool_action, JS mailToolAction).",
+  "cases": [
+    {
+      "name": "gmail-v2 v2_send_draft",
+      "tool": "mcp__gmail-v2__v2_send_draft",
+      "input": {
+        "draftId": "draft-7"
+      },
+      "expected": "send",
+      "today_spec": false,
+      "extra": false,
+      "note": "draftId only: no content in the input (G5)"
+    },
+    {
+      "name": "gmail-v2 v2_reply_all",
+      "tool": "mcp__gmail-v2__v2_reply_all",
+      "input": {
+        "messageId": "msg-42",
+        "body": "Kedves \u00dcgyfel\u00fcnk! V\u00e1lasz."
+      },
+      "expected": "send",
+      "today_spec": false,
+      "extra": false,
+      "note": "messageId anchor (G5)"
+    },
+    {
+      "name": "gmail-v2 v2_forward",
+      "tool": "mcp__gmail-v2__v2_forward",
+      "input": {
+        "messageId": "msg-42",
+        "to": [
+          "a@b.hu"
+        ],
+        "body": "Kedves \u00dcgyfel\u00fcnk! Tov\u00e1bb\u00edt\u00e1s."
+      },
+      "expected": "send",
+      "today_spec": false,
+      "extra": false,
+      "note": ""
+    },
+    {
+      "name": "x_gmail sendDraft",
+      "tool": "mcp__x_gmail__sendDraft",
+      "input": {
+        "draftId": "draft-7"
+      },
+      "expected": "send",
+      "today_spec": false,
+      "extra": false,
+      "note": "camelCase"
+    },
+    {
+      "name": "gmail replyAll",
+      "tool": "mcp__gmail__replyAll",
+      "input": {
+        "messageId": "msg-42",
+        "body": "Kedves \u00dcgyfel\u00fcnk! V\u00e1lasz."
+      },
+      "expected": "send",
+      "today_spec": false,
+      "extra": false,
+      "note": "camelCase"
+    },
+    {
+      "name": "gmail v3_send",
+      "tool": "mcp__gmail__v3_send",
+      "input": {
+        "to": [
+          "a@b.hu"
+        ],
+        "subject": "Teszt t\u00e1rgy",
+        "body": "Kedves \u00dcgyfel\u00fcnk! T\u00f6rzs."
+      },
+      "expected": "send",
+      "today_spec": false,
+      "extra": false,
+      "note": "version prefix, first verb send"
+    },
+    {
+      "name": "gmail message_reply",
+      "tool": "mcp__gmail__message_reply",
+      "input": {
+        "messageId": "msg-42",
+        "body": "Kedves \u00dcgyfel\u00fcnk! V\u00e1lasz."
+      },
+      "expected": "send",
+      "today_spec": false,
+      "extra": false,
+      "note": "reply is not the first token"
+    },
+    {
+      "name": "gmail fwd_message",
+      "tool": "mcp__gmail__fwd_message",
+      "input": {
+        "messageId": "msg-42",
+        "to": [
+          "a@b.hu"
+        ],
+        "body": "Kedves \u00dcgyfel\u00fcnk! Tov\u00e1bb\u00edt\u00e1s."
+      },
+      "expected": "send",
+      "today_spec": false,
+      "extra": false,
+      "note": "fwd abbreviation"
+    },
+    {
+      "name": "claude_ai_Gmail send_message",
+      "tool": "mcp__claude_ai_Gmail__send_message",
+      "input": {
+        "to": [
+          "a@b.hu"
+        ],
+        "subject": "Teszt t\u00e1rgy",
+        "body": "Kedves \u00dcgyfel\u00fcnk! T\u00f6rzs."
+      },
+      "expected": "send",
+      "today_spec": true,
+      "extra": false,
+      "note": "recognised today"
+    },
+    {
+      "name": "gmail send_email",
+      "tool": "mcp__gmail__send_email",
+      "input": {
+        "to": [
+          "a@b.hu"
+        ],
+        "subject": "Teszt t\u00e1rgy",
+        "body": "Kedves \u00dcgyfel\u00fcnk! T\u00f6rzs."
+      },
+      "expected": "send",
+      "today_spec": true,
+      "extra": false,
+      "note": "recognised today"
+    },
+    {
+      "name": "gmail get_send_as",
+      "tool": "mcp__gmail__get_send_as",
+      "input": {
+        "query": "x"
+      },
+      "expected": "send",
+      "today_spec": false,
+      "extra": false,
+      "note": "accepted false positive: any send token is fail-closed (G1)"
+    },
+    {
+      "name": "gmail-v2 v2_draft_email",
+      "tool": "mcp__gmail-v2__v2_draft_email",
+      "input": {
+        "to": [
+          "a@b.hu"
+        ],
+        "subject": "Teszt t\u00e1rgy",
+        "body": "Kedves \u00dcgyfel\u00fcnk! T\u00f6rzs."
+      },
+      "expected": "draft",
+      "today_spec": false,
+      "extra": false,
+      "note": "the JS gate's ledger check is bypassed today"
+    },
+    {
+      "name": "autoauth draft_email",
+      "tool": "mcp__server-gmail-autoauth-mcp__draft_email",
+      "input": {
+        "to": [
+          "a@b.hu"
+        ],
+        "subject": "Teszt t\u00e1rgy",
+        "body": "Kedves \u00dcgyfel\u00fcnk! T\u00f6rzs."
+      },
+      "expected": "draft",
+      "today_spec": true,
+      "extra": false,
+      "note": "recognised today"
+    },
+    {
+      "name": "gmail create_draft_reply",
+      "tool": "mcp__gmail__create_draft_reply",
+      "input": {
+        "messageId": "msg-42",
+        "body": "Kedves \u00dcgyfel\u00fcnk! V\u00e1lasz."
+      },
+      "expected": "draft",
+      "today_spec": false,
+      "extra": false,
+      "note": ""
+    },
+    {
+      "name": "gmail update_draft",
+      "tool": "mcp__gmail__update_draft",
+      "input": {
+        "draftId": "draft-7",
+        "body": "Kedves \u00dcgyfel\u00fcnk! M\u00f3dos\u00edt\u00e1s."
+      },
+      "expected": "draft",
+      "today_spec": false,
+      "extra": false,
+      "note": "spec G7 lists it without the 'today' mark"
+    },
+    {
+      "name": "gmail search_emails",
+      "tool": "mcp__gmail__search_emails",
+      "input": {
+        "query": "x"
+      },
+      "expected": "nonsend",
+      "today_spec": false,
+      "extra": false,
+      "note": ""
+    },
+    {
+      "name": "gmail read_email",
+      "tool": "mcp__gmail__read_email",
+      "input": {
+        "messageId": "msg-42"
+      },
+      "expected": "nonsend",
+      "today_spec": false,
+      "extra": false,
+      "note": ""
+    },
+    {
+      "name": "gmail list_drafts",
+      "tool": "mcp__gmail__list_drafts",
+      "input": {},
+      "expected": "nonsend",
+      "today_spec": false,
+      "extra": false,
+      "note": ""
+    },
+    {
+      "name": "gmail delete_draft",
+      "tool": "mcp__gmail__delete_draft",
+      "input": {
+        "draftId": "draft-7"
+      },
+      "expected": "nonsend",
+      "today_spec": false,
+      "extra": false,
+      "note": ""
+    },
+    {
+      "name": "gmail get_thread",
+      "tool": "mcp__gmail__get_thread",
+      "input": {
+        "threadId": "thr-1"
+      },
+      "expected": "nonsend",
+      "today_spec": false,
+      "extra": false,
+      "note": ""
+    },
+    {
+      "name": "telegram reply",
+      "tool": "mcp__plugin_telegram_telegram__reply",
+      "input": {
+        "chat_id": "1",
+        "text": "Szia"
+      },
+      "expected": "nonsend",
+      "today_spec": false,
+      "extra": false,
+      "note": "channel plugin (G4)"
+    },
+    {
+      "name": "discord reply",
+      "tool": "mcp__plugin_discord_discord__reply",
+      "input": {
+        "chat_id": "1",
+        "text": "Szia"
+      },
+      "expected": "nonsend",
+      "today_spec": false,
+      "extra": false,
+      "note": "channel plugin (G4)"
+    },
+    {
+      "name": "gmail sendMessage camelCase",
+      "tool": "mcp__gmail__sendMessage",
+      "input": {
+        "to": [
+          "a@b.hu"
+        ],
+        "subject": "Teszt t\u00e1rgy",
+        "body": "Kedves \u00dcgyfel\u00fcnk! T\u00f6rzs."
+      },
+      "expected": "send",
+      "today_spec": false,
+      "extra": true,
+      "note": "camelCase split, first verb send"
+    },
+    {
+      "name": "gmail v2_reply",
+      "tool": "mcp__gmail__v2_reply",
+      "input": {
+        "messageId": "msg-42",
+        "body": "Kedves \u00dcgyfel\u00fcnk! V\u00e1lasz."
+      },
+      "expected": "send",
+      "today_spec": false,
+      "extra": true,
+      "note": "version prefix, first verb reply"
+    },
+    {
+      "name": "gmail message_send",
+      "tool": "mcp__gmail__message_send",
+      "input": {
+        "to": [
+          "a@b.hu"
+        ],
+        "subject": "Teszt t\u00e1rgy",
+        "body": "Kedves \u00dcgyfel\u00fcnk! T\u00f6rzs."
+      },
+      "expected": "send",
+      "today_spec": false,
+      "extra": true,
+      "note": "send token anywhere (G1)"
+    },
+    {
+      "name": "gmail forwardMessage camelCase",
+      "tool": "mcp__gmail__forwardMessage",
+      "input": {
+        "messageId": "msg-42",
+        "to": [
+          "a@b.hu"
+        ],
+        "body": "Kedves \u00dcgyfel\u00fcnk! Tov\u00e1bb\u00edt\u00e1s."
+      },
+      "expected": "send",
+      "today_spec": false,
+      "extra": true,
+      "note": "camelCase split, first verb forward"
+    },
+    {
+      "name": "telegram send_message",
+      "tool": "mcp__plugin_telegram_telegram__send_message",
+      "input": {
+        "chat_id": "1",
+        "text": "Szia"
+      },
+      "expected": "nonsend",
+      "today_spec": false,
+      "extra": true,
+      "note": "channel plugin is never mail, even with a send token (G4)"
+    }
+  ],
+  "classifier_edges": [
+    {
+      "tool": "mcp__gmail__send_message__v2",
+      "expected": "send",
+      "note": "a suffix segment does not hide the send (most severe segment wins)"
+    },
+    {
+      "tool": "mcp__gmail__v2",
+      "expected": null,
+      "note": "a version word alone is no action"
+    },
+    {
+      "tool": "mcp__gmail__sendmessage",
+      "expected": "send",
+      "note": "verb glued to a mail noun"
+    },
+    {
+      "tool": "mcp__gmail__SENDMAIL",
+      "expected": "send",
+      "note": "upper case, glued"
+    },
+    {
+      "tool": "mcp__gmail__sendHTMLMail",
+      "expected": "send",
+      "note": "acronym split"
+    },
+    {
+      "tool": "mcp__gmail__V2SendDraft",
+      "expected": "send",
+      "note": "version word in camelCase"
+    },
+    {
+      "tool": "mcp__gmail__messages.send",
+      "expected": "send",
+      "note": "dot is a separator"
+    },
+    {
+      "tool": "mcp__gmail__quick_reply",
+      "expected": "send",
+      "note": "a modifier before the verb is skipped"
+    },
+    {
+      "tool": "mcp__gmail__reply-all",
+      "expected": "send",
+      "note": "dash is a separator"
+    },
+    {
+      "tool": "mcp__gmail__fwdmsg",
+      "expected": "send",
+      "note": "fwd glued to msg"
+    },
+    {
+      "tool": "mcp__gmail__resend",
+      "expected": "send",
+      "note": "resend counts as send"
+    },
+    {
+      "tool": "mcp__gmail__create_and_send_draft",
+      "expected": "send",
+      "note": "a send verb anywhere wins over the first verb"
+    },
+    {
+      "tool": "mcp__gmail__get_send_as",
+      "expected": "send",
+      "note": "accepted false positive (G1)"
+    },
+    {
+      "tool": "MCP__gmail__send",
+      "expected": "send",
+      "note": "the mcp prefix is case-insensitive"
+    },
+    {
+      "tool": "mcp__plugin_gmail_gmail__send_message",
+      "expected": "send",
+      "note": "a plugin that is not a channel plugin is classified"
+    },
+    {
+      "tool": "mcp__gmail____send",
+      "expected": "send",
+      "note": "empty segment"
+    },
+    {
+      "tool": "mcp__gmail__set_auto_reply",
+      "expected": null,
+      "note": "first verb set: a setting, not a send"
+    },
+    {
+      "tool": "mcp__gmail__get_reply_settings",
+      "expected": null,
+      "note": "first verb get"
+    },
+    {
+      "tool": "mcp__gmail__list_forwarding_addresses",
+      "expected": null,
+      "note": "forwarding is not the verb forward"
+    },
+    {
+      "tool": "mcp__gmail__batch_modify_emails",
+      "expected": null,
+      "note": "batch is a modifier, modify the first verb"
+    },
+    {
+      "tool": "mcp__gmail__list_senders",
+      "expected": null,
+      "note": "senders is not the send token"
+    },
+    {
+      "tool": "mcp__gmail__unsend",
+      "expected": null,
+      "note": "unsend is not a send"
+    },
+    {
+      "tool": "mcp__gmail__delete_draft",
+      "expected": null,
+      "note": "first verb delete"
+    },
+    {
+      "tool": "mcp__gmail__messages",
+      "expected": null,
+      "note": "no verb at all"
+    },
+    {
+      "tool": "mcp__gmail__s\u0435nd",
+      "expected": null,
+      "note": "a non-ASCII letter is a separator, never an ASCII look-alike"
+    },
+    {
+      "tool": "mcp__gmail__create_label",
+      "expected": "draft",
+      "note": "spec G2: first verb create (the copy gate passes it when it carries no text)"
+    },
+    {
+      "tool": "mcp__gmail__createDraft",
+      "expected": "draft",
+      "note": "camelCase draft"
+    },
+    {
+      "tool": "mcp__gmail__draft",
+      "expected": "draft",
+      "note": "draft alone"
+    },
+    {
+      "tool": "mcp__gmail__composeEmail",
+      "expected": "draft",
+      "note": "compose is a draft verb"
+    },
+    {
+      "tool": "mcp__gmail__update_and_forward",
+      "expected": "draft",
+      "note": "spec G1/G2 consequence: the first verb decides unless a send token is present"
+    },
+    {
+      "tool": "mcp__plugin_slack-channel_slack__reply",
+      "expected": null,
+      "note": "channel plugin with a dashed plugin name (G4)"
+    },
+    {
+      "tool": "mcp__plugin_telegram_telegram__send_message",
+      "expected": null,
+      "note": "channel plugin (G4)"
+    },
+    {
+      "tool": "mcp__plugin_discord_discord__fetch_messages",
+      "expected": null,
+      "note": "channel plugin (G4)"
+    },
+    {
+      "tool": "mcp__github__reply_to_review_comment",
+      "expected": "send",
+      "note": "name-agnostic by design: today's matchers keep non-mail servers out (2f835ee4)"
+    },
+    {
+      "tool": "mcp__google-workspace__manage_email",
+      "expected": null,
+      "note": "multiplexer: each gate decides it by operation (G3)"
+    },
+    {
+      "tool": "Bash",
+      "expected": null,
+      "note": "not an MCP tool"
+    },
+    {
+      "tool": "send_message",
+      "expected": null,
+      "note": "not an MCP tool"
+    },
+    {
+      "tool": "mcp__send",
+      "expected": null,
+      "note": "no tool part"
+    },
+    {
+      "tool": "",
+      "expected": null,
+      "note": "empty"
+    },
+    {
+      "tool": null,
+      "expected": null,
+      "note": "not a string"
+    },
+    {
+      "tool": 42,
+      "expected": null,
+      "note": "not a string"
+    }
+  ]
+}

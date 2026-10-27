@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import type http from 'node:http'
+import { writeFileSync } from 'node:fs'
 import { Readable } from 'node:stream'
-import { initDatabase, getDb, createDashboardUser } from '../db.js'
+import { initDatabase, getDb, createDashboardUser, getDashboardUser } from '../db.js'
 import { tryHandleAuth } from '../web/routes/auth.js'
 import { securityReset } from '../web/security-reset.js'
 import {
@@ -25,6 +26,29 @@ import type { RouteContext } from '../web/routes/types.js'
 //   - out-of-band revocation (a different process deleting rows, as the CLI
 //     does) is honored by a LIVE process's cache within the 60s debounce:
 //     the debounced write doubles as an existence check.
+
+// Card 053f4e66 B: the shared Bearer ('token') creates a user or resets a
+// password (break-glass) only while the install .env opens
+// BEARER_CREDENTIAL_ADMIN_ENABLED=1 (credential-admin.ts). The audit-trail
+// cases below record what a break-glass reset leaves behind, so they run with
+// the switch open (setSwitch(true) in beforeEach, against a throwaway install);
+// one case shows the closed switch leaves neither a reset nor an audit row.
+// credential-admin-gate.test.ts holds the full matrix. CLAUDECLAW_ENV_DIR must
+// be set before any app module loads.
+const ENV = await vi.hoisted(async () => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'auth-recovery-env-')))
+  process.env.CLAUDECLAW_ENV_DIR = dir
+  for (const k of ['BEARER_CREDENTIAL_ADMIN_ENABLED', 'BEARER_CREDENTIAL_ADMIN_UNTIL', 'BEARER_CREDENTIAL_ADMIN_NONCE']) delete process.env[k]
+  return { file: path.join(dir, '.env') }
+})
+
+// The switch is read from the .env per request, so it can flip between calls.
+function setSwitch(on: boolean): void {
+  writeFileSync(ENV.file, on ? 'BEARER_CREDENTIAL_ADMIN_ENABLED=1\n' : 'BEARER_CREDENTIAL_ADMIN_ENABLED=0\n')
+}
 
 function mkRes() {
   return {
@@ -79,6 +103,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  setSwitch(true)
   _clearDeviceKeyCacheForTest()
   _clearSessionCacheForTest()
   const db = getDb()
@@ -116,7 +141,7 @@ describe('securityReset', () => {
 })
 
 describe('HTTP break-glass password reset audit', () => {
-  it('writes an audit row with the target username on the token path', async () => {
+  it('writes an audit row with the target username on the token path (switch open)', async () => {
     const mk = await call('POST', '/api/auth/users', { auth: { kind: 'token' }, body: { username: 'alice', password: GOOD_PW } })
     expect(mk.statusCode).toBe(201)
     const r = await call('POST', '/api/auth/password', { auth: { kind: 'token' }, body: { username: 'alice', new_password: GOOD_PW + 'x' } })
@@ -127,6 +152,16 @@ describe('HTTP break-glass password reset audit', () => {
     // Never credential material in the trail.
     const all = JSON.stringify(getDb().prepare('SELECT * FROM config_change_log').all())
     expect(all).not.toContain(GOOD_PW)
+  })
+
+  it('with the switch off the token cannot reset: 403, the hash is unchanged, no break-glass audit row', async () => {
+    const seeded = createDashboardUser('carol', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
+    setSwitch(false)
+    const r = await call('POST', '/api/auth/password', { auth: { kind: 'token' }, body: { username: 'carol', new_password: GOOD_PW + 'z' } })
+    expect(r.statusCode).toBe(403)
+    expect(JSON.parse(r.body)).toMatchObject({ code: 'bearer_credential_admin_off' })
+    expect(getDashboardUser('carol')!.password_hash).toBe(seeded.password_hash)
+    expect(auditRows('security.break_glass_password_reset')).toHaveLength(0)
   })
 
   it('does NOT audit a normal session-path password change as break-glass', async () => {

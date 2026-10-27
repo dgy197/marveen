@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { execSync, execFileSync } from 'node:child_process'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 import {
   createBackgroundTaskAtomic, finishBackgroundTask, getBackgroundTasks,
   getBackgroundTask, getRunningBackgroundTasks, markOrphanedTasksFailed,
@@ -12,6 +14,17 @@ import { fleetVenvPathPrefix } from '../agent-process.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 import { exactTmuxTarget } from '../../tmux-target.js'
+import {
+  interactiveKeyPolicy,
+  decideInteractiveLaunch,
+  scanSettingsForInteractiveKeys,
+  assertLaunchCmdClean,
+  recordGuardEvent,
+  InteractiveKeyGuardError,
+  INTERACTIVE_UNSET,
+  INTERACTIVE_KEY_ENV_NAMES,
+  type InteractiveKeyPolicy,
+} from '../interactive-key-guard.js'
 
 const TMUX = resolveFromPath('tmux')
 const CLAUDE = resolveFromPath('claude')
@@ -47,30 +60,83 @@ function killSession(session: string): void {
   } catch { /* already dead */ }
 }
 
+/**
+ * The env handed to the tmux client that spawns a background task. Under
+ * forbid the key names are dropped (fec6335f); under allow it is exactly the
+ * parent env plus BG_PROMPT, as before.
+ */
+export function backgroundTaskEnv(parent: NodeJS.ProcessEnv, prompt: string, policy: InteractiveKeyPolicy): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...parent, BG_PROMPT: prompt }
+  if (policy === 'forbid') {
+    for (const k of INTERACTIVE_KEY_ENV_NAMES) delete env[k]
+  }
+  return env
+}
+
+/**
+ * The settings a background `claude -p` loads: the user config dir (the shared
+ * ~/.claude, and CLAUDE_CONFIG_DIR when the dashboard env sets one) and the
+ * project scope of the pane's cwd, which is the dashboard's own (new-session
+ * gets no -c). An `env` key or apiKeyHelper there wins over the unset below.
+ */
+export function backgroundTaskSettingsPaths(env: NodeJS.ProcessEnv = process.env, cwd: string = process.cwd(), home: string = homedir()): string[] {
+  const own = env.CLAUDE_CONFIG_DIR?.trim()
+  return [...new Set([
+    join(home, '.claude', 'settings.json'),
+    ...(own ? [join(own, 'settings.json')] : []),
+    join(cwd, '.claude', 'settings.json'),
+    join(cwd, '.claude', 'settings.local.json'),
+  ])]
+}
+
 export function spawnBackgroundTask(agentId: string, prompt: string): BackgroundTask | { error: string } {
   const id = randomBytes(4).toString('hex').toUpperCase()
   const session = bgSessionName(id)
+
+  // fec6335f: a background task is a claude on the CLI's default model, i.e.
+  // first-party. Under INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid an auth key name
+  // in the settings it would load refuses it -- the same decision as the
+  // worker's -- BEFORE a task row or a session exists. Under allow nothing is read.
+  const keyPolicy = interactiveKeyPolicy()
+  if (keyPolicy === 'forbid') {
+    const settingsFindings = scanSettingsForInteractiveKeys(backgroundTaskSettingsPaths())
+    const decision = decideInteractiveLaunch({
+      policy: keyPolicy, isCustom: false, customProviderDef: null, model: 'claude-(cli-default)', authMode: 'shared', settingsFindings,
+    })
+    if (!decision.ok) {
+      for (const f of settingsFindings) recordGuardEvent({ source: 'launch-guard', where: f.path, names: f.names, agent: agentId })
+      return { error: `interactive-key-guard: ${decision.reason} (INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid)` }
+    }
+  }
 
   const task = createBackgroundTaskAtomic(id, agentId, prompt, session, MAX_CONCURRENT)
   if (!task) {
     return { error: `Maximum ${MAX_CONCURRENT} egyidejű háttérfeladat ágensenként.` }
   }
 
-  const shellCmd = [
+  // fec6335f: under forbid it also starts with the key names unset (the pane
+  // inherits the tmux SERVER env) and without them in the env handed to the
+  // tmux client (which seeds a server this call starts). Under allow both are
+  // exactly as before.
+  const shellCmd = (keyPolicy === 'forbid' ? INTERACTIVE_UNSET : '') + [
     // FLEETVENV923: the fleet venv's bin/ first, as in every agent launch.
     `export PATH="${fleetVenvPathPrefix()}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH"`,
     `${CLAUDE} -p "$BG_PROMPT" --output-format text 2>&1`,
   ].join(' && ')
 
   try {
+    assertLaunchCmdClean(shellCmd, { policy: keyPolicy, firstParty: true })
     execFileSync(TMUX, [
       'new-session', '-d', '-s', session, '-x', '200', '-y', '50',
       `${shellCmd}; echo '___BG_DONE___'; sleep 5`,
     ], {
       timeout: 5000,
-      env: { ...process.env, BG_PROMPT: prompt },
+      env: backgroundTaskEnv(process.env, prompt, keyPolicy),
     })
   } catch (err) {
+    if (err instanceof InteractiveKeyGuardError) {
+      recordGuardEvent({ source: 'launch-guard', where: 'background-tasks:launch-cmd', names: err.names, agent: agentId })
+    }
     logger.error({ err, id, session }, 'Failed to spawn background task tmux session')
     finishBackgroundTask(id, 'failed', '(spawn failed)')
     return { error: 'Nem sikerült elindítani a háttérfeladatot' }

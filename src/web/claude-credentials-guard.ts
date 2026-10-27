@@ -7,6 +7,7 @@ import { PLATFORM, resolveFromPath } from '../platform.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 import { FLEET_OAUTH_TOKEN_PATH } from './agent-process.js'
+import { INTERACTIVE_KEY_ENV_NAMES, interactiveKeyPolicy, type InteractiveKeyPolicy } from './interactive-key-guard.js'
 
 // --- Linux shared-credentials race guard (opt-in) ----------------------------
 //
@@ -65,6 +66,23 @@ function readVerifiedHash(): string | null {
 }
 
 /**
+ * fec6335f: the env a credential probe hands its `claude -p` child. Under
+ * INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid ANTHROPIC_API_KEY and
+ * ANTHROPIC_AUTH_TOKEN never reach it -- not from the dashboard's own env, not
+ * as the credential under test: the CLI prefers an API key over the OAuth token
+ * it is meant to test, and a key spent here is outside the credit gate. Under
+ * allow the env is returned as it is (the same object), byte for byte today's.
+ * Returns the names it dropped, for a names-only log line.
+ */
+export function probeChildEnv<E extends Record<string, string | undefined>>(env: E, policy: InteractiveKeyPolicy): { env: E; dropped: string[] } {
+  if (policy !== 'forbid') return { env, dropped: [] }
+  const out = { ...env }
+  const dropped = INTERACTIVE_KEY_ENV_NAMES.filter((k) => Object.prototype.hasOwnProperty.call(out, k))
+  for (const k of dropped) delete out[k]
+  return { env: out, dropped }
+}
+
+/**
  * Live-test a token exactly like the runbook step 5: an isolated CLAUDE_CONFIG_DIR
  * plus CLAUDE_CODE_OAUTH_TOKEN, one `claude -p` that must answer "OK". Returns
  * true only on a clean OK. The token is passed via env, never on argv/logs.
@@ -79,7 +97,8 @@ export function liveTestToken(token: string, claudeBin: string): boolean {
       {
         encoding: 'utf-8',
         timeout: 60_000,
-        env: { ...process.env, CLAUDE_CONFIG_DIR: dir, CLAUDE_CODE_OAUTH_TOKEN: token },
+        // fec6335f: probeChildEnv drops the API-key names under forbid.
+        env: probeChildEnv({ ...process.env, CLAUDE_CONFIG_DIR: dir, CLAUDE_CODE_OAUTH_TOKEN: token }, interactiveKeyPolicy()).env,
       },
     )
     return /\bOK\b/.test(out.trim())
@@ -145,11 +164,18 @@ export async function liveProbeAuth(envOverride: Record<string, string>, claudeB
     delete env.CLAUDE_CODE_OAUTH_TOKEN
     delete env.ANTHROPIC_API_KEY
     Object.assign(env, envOverride)
+    // fec6335f: under forbid neither API-key name reaches the probe, inherited
+    // or passed in. A probe whose credential under test IS an API key is not run
+    // at all: without it the child would have no credential, and its answer
+    // must not be read as a verdict on the key.
+    const probe = probeChildEnv(env, interactiveKeyPolicy())
+    if (probe.dropped.length) logger.warn({ names: probe.dropped }, 'credentials-guard: INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid, API-key names kept out of the auth probe')
+    if (probe.dropped.some((k) => Object.prototype.hasOwnProperty.call(envOverride, k))) return 'inconclusive'
     const run = await new Promise<{ ran: boolean; exitedNonZero: boolean; output: string }>((resolve) => {
       execFile(
         bin,
         ['-p', 'Reply with exactly: OK', '--model', LIVE_TEST_MODEL],
-        { timeout: 60_000, encoding: 'utf-8', env: env as NodeJS.ProcessEnv },
+        { timeout: 60_000, encoding: 'utf-8', env: probe.env as NodeJS.ProcessEnv },
         (err, stdout, stderr) => {
           if (err && (err as { code?: unknown }).code === 'ENOENT') { resolve({ ran: false, exitedNonZero: true, output: '' }); return }
           resolve({ ran: true, exitedNonZero: Boolean(err), output: `${stdout ?? ''}\n${stderr ?? ''}` })

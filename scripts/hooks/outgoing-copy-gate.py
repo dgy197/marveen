@@ -52,7 +52,11 @@ import sys
 #   - sendmail / msmtp / swaks a program-pozicioban (ezek csak kuldeni tudnak);
 #   - send.py TENYLEGES futtatasa (python vagy kozvetlen ut) --to cimzettel a
 #     SAJAT szegmenseben (a --help/olvasas igy nem trigger);
-#   - graph-mail futtatasa `send` alparanccsal;
+#   - graph-mail futtatasa `send` alparanccsal; es (graph-forward, Brainy 2958)
+#     minden graph-mail futtatas, amelynek alparancsa NEM verify/list/show;
+#     (r3, Brainy 3092: ezt a kerdest a main()-ben a graph-mail FEHERLISTA dont el
+#     ELOSZOR -- email_extract.classify_graph_mail --, ez a lista csak az olyan
+#     parancsra fut, amely nem emliti a graph-mail-t);
 #   - curl/wget, amelynek IDEZETLEN URL-tokenje az api.resend.com-ra mutat
 #     (a -d payloadban idezett elofordulas nem szamit -- az tartalom).
 # MASODIK KOR (Marveen adverzarialis merese, msg 14282): az elso valtozat a
@@ -94,6 +98,24 @@ _PYTHON = re.compile(r"^python3?$", re.I)
 # teszt-hibakent jelenjen meg, ne incidenskent (Marveen, msg 14289).
 _NODEISH = re.compile(r"^(node|tsx|ts-node|deno|bun|npx)$", re.I)
 _GRAPHMAIL = re.compile(r"^graph-mail(\.ts|\.js)?$", re.I)
+# graph-forward (Brainy 2958): the Graph CLI learned a second outbound subcommand
+# (forward), and the old rule above knew only the word `send` -- a forward, an
+# unknown or a missing subcommand all read as "not a send", so both gates let
+# them through. The CLI dispatches on the ONE word after its own file name
+# (process.argv[2], exact match), so the classifier reads that same word and
+# ALLOWLISTS the reads: verify, list and show are not sends, every other word
+# is (forward, send, FORWARD, `--`, a flag, a $VAR, nothing at all). A new
+# outbound subcommand is therefore a send from day one, not a fail-open.
+# The rule applies only where the CLI actually RUNS: the file in program
+# position (shebang), or behind a node-like runner. Package runners count as
+# node-like here (npm exec / pnpm / yarn / bunx / pnpx run tsx just as npx
+# does), so `npm exec -- tsx graph-mail.ts forward` is not a way around it.
+# A program that only reads the file (cat, sed, grep, git) keeps today's
+# verdict. Accepted false positive, fail-closed: a non-runner npx tool on the
+# file (`npx tsc graph-mail.ts`) counts as a send. Mirrored in
+# email-send-gate.mjs (GRAPHMAIL_READS / GRAPHMAIL_RUNNER).
+_GRAPHMAIL_READS = frozenset(("verify", "list", "show"))
+_GRAPHMAIL_RUNNER = re.compile(r"^(node|nodejs|tsx|ts-node|deno|bun|bunx|npx|pnpx|npm|pnpm|yarn)$", re.I)
 _WRAPPER_SHELL = re.compile(r"^(sh|bash|zsh|dash)$", re.I)
 _CURLISH = re.compile(r"^(curl|wget|http)$", re.I)
 # Interpreter kod-string argumentum (python -c / node -e): az interpreternek
@@ -104,8 +126,9 @@ _CURLISH = re.compile(r"^(curl|wget|http)$", re.I)
 # elszant kikerulot. A lenti exec-heurisztika a NAIV alakokat fedi (a kod
 # process-inditast ES kuldo-programnevet egyutt tartalmaz); ennel tobbet nem
 # allit, es nem is allithat.
+# forwardMail: the Graph sender's second outbound export (graph-forward, Brainy 2958).
 _CODE_SEND = re.compile(
-    r"\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bsendEmail\b|\bmail\.send\b", re.I
+    r"\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bforwardMail\s*\(|\bsendEmail\b|\bmail\.send\b", re.I
 )
 # Issue #1853 (stylnet): the support-mail sender LOADED AS A MODULE, not run by its
 # file name -- `import send`, `from send import main`, runpy, __import__/import_module,
@@ -122,6 +145,8 @@ _CODE_SEND_MODULE = re.compile(
     # The same class on the Graph sender (src/graph-mail.ts, export sendMail): renamed on
     # import, or reached by a string key -- the call itself then never reads `sendMail(`.
     r"|\bsendMail\s+as\b|\[\s*['\"]sendMail['\"]\s*\]"
+    # ... and on its forward export (graph-forward, Brainy 2958).
+    r"|\bforwardMail\s+as\b|\[\s*['\"]forwardMail['\"]\s*\]"
 )
 _CODE_EXECISH = re.compile(
     r"\bsubprocess\b|os\.system|\bpopen\b|child_process|\bexec[A-Za-z]*\s*\(|\bspawn[A-Za-z]*\s*\(",
@@ -230,9 +255,18 @@ def _curl_resend_verdict(prog, rest):
     return "read"
 # A tovabbi kuldes-jellegu literalok, amikre a parse-hiba eseten (es CSAK
 # akkor) konzervativan visszaesunk -- lasd is_send_invocation vegen.
+# graph-forward T3 (Brainy 2958, measured 2026-10-18): graph-mail was NOT here, so
+# `echo $'it\'s'; npx tsx scripts/graph-mail.ts send ...` -- shlex cannot split the
+# ANSI-C quote, bash runs it -- read as "not a send", and the approval gate let a
+# Graph send out with no approval. On an unparseable command the subcommand cannot
+# be located, so ANY mention of graph-mail counts (fail-closed: a `list` hidden
+# behind an unbalanced quote is a false positive, never a silent send). The JS twin
+# falls back to the same literal (email-send-gate.mjs SEND_PATTERNS). That ANSI-C
+# quote now parses (QUOTEPARITY1018, _mask_subshell_markers); the fallback stays
+# for every other command shlex cannot split.
 _FALLBACK_LITERALS = re.compile(
     r"send\.py|api\.resend\.com|\bsendmail\b|\bmsmtp\b|\bswaks\b"
-    r"|\bsmtplib\b|\bsendMail\s*\(", re.I
+    r"|\bsmtplib\b|\bsendMail\s*\(|\bforwardMail\s*\(|\bgraph-mail\b", re.I
 )
 
 
@@ -240,9 +274,49 @@ def _basename(tok: str) -> str:
     return tok.rsplit("/", 1)[-1]
 
 
-def _mask_subshell_markers(cmd: str) -> str:
+def _ansi_c_end(cmd: str, i: int) -> int:
+    """Index of the quote that closes the ANSI-C string opened by `$'` at i, or -1."""
+    j, n = i + 2, len(cmd)
+    while j < n:
+        if cmd[j] == "\\" and j + 1 < n:
+            j += 2
+            continue
+        if cmd[j] == "'":
+            return j
+        j += 1
+    return -1
+
+
+# A word starts after one of these (or at the start of the command): the place
+# where the shell reads `#` as the start of a comment.
+_WORD_BREAK = " \t\n;&|()<>`"
+
+
+def _mask_subshell_markers(cmd: str, comments: bool = True) -> str:
     """Idezojelen KIVULI ujsor/`$(`/backtick -> `;` szeparator, hogy a shlex
-    szegmens-hatarkent lassa; idezojelen BELUL a szoveg erintetlen (tartalom)."""
+    szegmens-hatarkent lassa; idezojelen BELUL a szoveg erintetlen (tartalom).
+
+    QUOTEPARITY1018 (graph-forward, Brainy 2958): places where shlex and the shell
+    disagreed on WHERE a quote or a command ends, each of which hid a send from the
+    classifier. Measured on the base, 2026-10-18:
+      - `$'...'` (ANSI-C): the shell reads `\\'` inside it as an escaped quote,
+        shlex as the end of the string, so `echo $'a\\'b' ; sendmail x ; echo \\'`
+        is one quoted echo argument to shlex and a sendmail run to the shell. It is
+        rewritten here into a plain single-quoted string with the same boundaries.
+        `$$` is consumed first: in `$$'...'` the quote is an ordinary one.
+      - `$"..."`: the shell drops the `$`; shlex kept it in the token, so
+        `$"sendmail" x` did not name the program.
+      - backslash-newline outside quotes is a line continuation (removed by the
+        shell); kept, it glued the next line's first word into a token starting
+        with a newline.
+      - comments: shlex's own '#' rule fired in mid-word and, the newlines being
+        masked already, swallowed the REST OF THE COMMAND (`# note<LF>sendmail x`
+        and `echo a#b; sendmail x` were "not a send"). With comments=True a `#`
+        at the start of a word skips to the end of ITS line, raw, as the shell
+        does (quotes inside a comment are not quotes, a backslash before the
+        newline is not a continuation). comments=False reads every word instead:
+        the reading for a shell that does not take `#` as a comment.
+    Mirrored in email-send-gate.mjs (maskSubshellMarkers)."""
     out = []
     q = None  # None | "'" | '"'
     i, n = 0, len(cmd)
@@ -254,24 +328,44 @@ def _mask_subshell_markers(cmd: str) -> str:
             if ch == q:
                 q = None
             out.append(ch); i += 1; continue
+        if comments and ch == "#" and (i == 0 or cmd[i - 1] in _WORD_BREAK):
+            j = cmd.find("\n", i)
+            i = n if j == -1 else j  # the newline itself stays: it ends the command
+            continue
         if ch in "'\"":
             q = ch; out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n and cmd[i + 1] == "\n":
+            i += 2; continue
         if ch == "\\" and i + 1 < n:
             out.append(cmd[i:i + 2]); i += 2; continue
         if ch == "\n" or ch == "`":
             out.append(";"); i += 1; continue
         if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
             out.append(";"); i += 2; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "$":
+            out.append("$$"); i += 2; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == '"':
+            i += 1; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "'":
+            j = _ansi_c_end(cmd, i)
+            if j != -1:
+                out.append("'" + cmd[i + 2:j].replace("\\'", "'\"'\"'") + "'")
+                i = j + 1
+                continue
         out.append(ch); i += 1
     return "".join(out)
 
 
-def _segments_tokens(cmd: str):
-    """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve."""
+def _segments_tokens(cmd: str, comments: bool = True):
+    """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve.
+    comments: see _mask_subshell_markers (the send classifier reads BOTH ways)."""
     import shlex
-    lex = shlex.shlex(_mask_subshell_markers(_HEREDOC.sub(r"\1", cmd)),
+    lex = shlex.shlex(_mask_subshell_markers(_HEREDOC.sub(r"\1", cmd), comments),
                       posix=True, punctuation_chars="();|&")
     lex.whitespace_split = True
+    # QUOTEPARITY1018: comments are the mask's job (above); shlex's own '#' rule
+    # fires in mid-word and runs to the end of the masked string, so it is off.
+    lex.commenters = ""
     segments, cur = [], []
     for tok in lex:
         # SEGSPLIT923: shlex(punctuation_chars) returns a RUN of operator
@@ -418,6 +512,12 @@ def _head_is_send(toks, depth: int) -> bool:
     # graph-mail kimeno alparanccsal (tsx/node runner utan is)
     if any(_GRAPHMAIL.match(_basename(t)) for t in toks) and "send" in rest:
         return True
+    # graph-forward: the CLI run as a program -- every subcommand but the three
+    # reads is a send, a missing one too (see _GRAPHMAIL_READS).
+    if _GRAPHMAIL.match(prog) or _GRAPHMAIL_RUNNER.match(prog):
+        for k, t in enumerate(toks):
+            if _GRAPHMAIL.match(_basename(t)) and (k + 1 >= len(toks) or toks[k + 1] not in _GRAPHMAIL_READS):
+                return True
     # curl/wget: a cel-token akkor is muvelet, ha idezojelben allt -- a
     # horgonyzott minta valasztja el a payload-belseji emlitestol.
     # RESENDGATE826: csak a TENYLEGES kuldes (POST/PUT/... vagy torzs) akad
@@ -428,6 +528,18 @@ def _head_is_send(toks, depth: int) -> bool:
     return False
 
 
+def _both_readings(cmd: str):
+    """The segments of the comment reading AND the no-comment reading together
+    (QUOTEPARITY1018); a reading that does not parse contributes nothing."""
+    segs = []
+    for comments in (True, False):
+        try:
+            segs += _segments_tokens(cmd, comments)
+        except ValueError:
+            pass
+    return segs
+
+
 def wrapper_depth_hit(cmd: str) -> bool:
     """True when some segment is still a wrapper at the depth bound, so it was
     counted as a send without the real command being seen (HEADDEPTH924). The
@@ -436,11 +548,7 @@ def wrapper_depth_hit(cmd: str) -> bool:
     # Only when the depth bound is the WHOLE reason: if a visible segment is a
     # send on its own (`sendmail x; sudo x9 true`), that send is the reason,
     # and the ordinary wording must stay (Samu, #1523 review).
-    try:
-        segments = _segments_tokens(cmd)
-    except ValueError:
-        return False
-    heads = [h for toks in segments for h in _command_heads(toks)]
+    heads = [h for toks in _both_readings(cmd) for h in _command_heads(toks)]
     return any(h is None for h in heads) and not any(
         h is not None and _head_is_send(h, 0) for h in heads)
 
@@ -463,7 +571,7 @@ def wrapper_depth_hit(cmd: str) -> bool:
 # `python3 /tmp/x.py`, `python3 < /tmp/x.py`, `cat /tmp/x.py | python3 -`, and
 # `python3 -c "exec(open('/tmp/x.py').read())"`; also a here-string fed to an interpreter
 # (`python3 <<<'import send'`) and a CommonJS destructuring rename of the Graph sender
-# (`const { sendMail: s } = require(...)`).
+# (`const { sendMail: s } = require(...)`, the same for forwardMail).
 # A heredoc fed to a SHELL (`bash <<EOF`, `sh -s <<EOF`) is a shell program: its body is
 # judged with this classifier itself, one level deeper (Geri/Samu, #1855).
 # WRITTEN, THEN RUN IN THE SAME COMMAND (Samu/Geri, #1855: two of the three real gate-passing
@@ -497,11 +605,7 @@ def _written_then_run(cmd: str, written: dict, depth: int) -> bool:
     """A heredoc body written to a file that the same command then runs (see the note above)."""
     if not written:
         return False
-    try:
-        segments = _segments_tokens(cmd)
-    except ValueError:
-        return False
-    for toks in segments:
+    for toks in _both_readings(cmd):
         for head in _command_heads(toks):
             if not head:
                 continue
@@ -549,15 +653,26 @@ def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
 def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
     if _heredoc_program_sends(cmd, _depth):
         return True
-    try:
-        segments = _segments_tokens(cmd)
-    except ValueError:
-        # Parse-hiba (pl. lezaratlan idezojel): nem tudunk poziciot mondani.
-        # Konzervativ visszaeses: csak akkor auditalunk, ha eros kuldes-literal
-        # all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at
-        # neman, a tipikus belso parancsok viszont nem kapnak hamis pozitivot.
-        return bool(_FALLBACK_LITERALS.search(cmd))
-    return any(_segment_is_send(toks, _depth) for toks in segments)
+    # QUOTEPARITY1018: read twice, with and without shell comments, and a send in
+    # EITHER reading counts. Comments on is what bash and a non-interactive zsh do
+    # (`# Andi's note<LF>send...<LF># that's it`: the two apostrophes are comment
+    # text, and read as quotes they hide the send between them); comments off is
+    # what a shell without them runs (`echo hi # ; sendmail x`). The union can only
+    # add audits, never drop one that either reading alone would have made.
+    for comments in (True, False):
+        try:
+            segments = _segments_tokens(cmd, comments)
+        except ValueError:
+            # Parse-hiba (pl. lezaratlan idezojel): nem tudunk poziciot mondani.
+            # Konzervativ visszaeses: csak akkor auditalunk, ha eros kuldes-literal
+            # all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at
+            # neman, a tipikus belso parancsok viszont nem kapnak hamis pozitivot.
+            if _FALLBACK_LITERALS.search(cmd):
+                return True
+            continue
+        if any(_segment_is_send(toks, _depth) for toks in segments):
+            return True
+    return False
 
 # --- Hungarian detection (accent-insensitive markers) -----------------------
 # These fire on both the correct and the stripped spelling, so a transliterated
@@ -1040,6 +1155,53 @@ except Exception as _extract_exc:  # noqa: BLE001 -- deliberate fail-closed stub
 
     def collect_mcp_body(tool_input: dict):
         return ""
+
+# graph-forward r3 (Brainy 3092, 3094): the graph-mail whitelist, asked FIRST on every
+# Bash call, before is_send_invocation. Its own guarded import, and the stub is
+# fail-closed on the one thing it must never miss: a command that MENTIONS graph-mail
+# while the grammar does not load is a deny (an import problem is never a pass).
+try:
+    from email_extract import classify_graph_mail, GM_HELP  # noqa: E402
+except Exception as _gm_exc:  # noqa: BLE001 -- deliberate fail-closed stub
+    _GM_ERR = repr(_gm_exc)
+    GM_HELP = ""
+
+    def classify_graph_mail(cmd):
+        if re.search(r"graph-mail", cmd if isinstance(cmd, str) else "", re.I):
+            return ("deny", None, f"az email_extract modul (graph-mail szabalyok) nem toltheto be ({_GM_ERR})")
+        return ("none", None, None)
+
+# B4 (Brainy): the script-path rule, ONE function in email_extract shared with the
+# approval gate. The stub is fail-closed: when the module does not load, a script-runner
+# command naming a script file is refused (an import problem is never a pass).
+try:
+    from email_extract import script_path_meta_reason  # noqa: E402
+except Exception as _b4_exc:  # noqa: BLE001 -- deliberate fail-closed stub
+    _B4_ERR = repr(_b4_exc)
+
+    def script_path_meta_reason(cmd):
+        words = [w for w in (cmd if isinstance(cmd, str) else "").split()
+                 if not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", w)]
+        if (words and words[0].rsplit("/", 1)[-1] in ("tsx", "node", "npx", "bun", "deno")
+                and re.search(r"\.(?:ts|js|mjs|mts|cts|cjs)", cmd, re.I)):
+            return f"az email_extract modul nem toltheto be ({_B4_ERR}), a script-ut nem vizsgalhato"
+        return None
+
+# graph-forward N1b (spec G1-G4): the action classifier for the mail tools that
+# EMAIL_TOOL_RE below does not name. A separate guarded import, so a module that
+# predates it leaves the Bash path above intact. The stub is fail-closed: an MCP
+# tool it cannot classify is taken for a send, and with collect_mcp_body unable
+# to read it either, the send is blocked. Channel plugins stay out (the same
+# prefix test as email_extract._CHANNEL_PLUGIN_RE): their own branches below
+# run first, and they are never a letter.
+try:
+    from email_extract import mail_tool_action  # noqa: E402
+except Exception:  # noqa: BLE001 -- deliberate fail-closed stub
+    def mail_tool_action(tool_name):
+        name = tool_name if isinstance(tool_name, str) else ""
+        if name[:5].lower() != "mcp__" or re.match(r"mcp__plugin_(?:telegram|discord|slack)[-_]", name):
+            return None
+        return "send"
 
 
 # --- Telegram reply (GATETG816) ---------------------------------------------
@@ -1573,7 +1735,8 @@ def main():
         gated = (re.search(r"telegram.*__reply$", tool, re.I)
                  or re.search(r"(^|__)manage_email$", tool, re.I)
                  or EMAIL_TOOL_RE.search(tool)
-                 or tool == "Bash")
+                 or tool == "Bash"
+                 or mail_tool_action(tool))
         if not gated:
             sys.exit(0)  # not a send: the net must never widen the gate
         _gate_log(f"outgoing-copy-gate: a tool_input nem szotar, hanem {shape} "
@@ -1623,12 +1786,44 @@ def main():
         text, unreadable = collect_mcp_body(tool_input), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
-        if not is_send_invocation(cmd):
+        # r3: the graph-mail whitelist decides BEFORE any send classifier. A refused
+        # command is blocked for every agent; a read needs no audit; a send or a forward
+        # is audited below on the text the strict reader recovered.
+        b4_reason = script_path_meta_reason(cmd)
+        if b4_reason:
+            sys.stderr.write(
+                "KIMENO-SZOVEG KAPU: TILTVA, a script-ut fajlnev-mintat, idezojelet vagy kiterjesztes-karaktert "
+                f"tartalmaz.\nOk: {b4_reason}.\n"
+            )
+            sys.exit(2)
+        gm_kind, _gm_fields, gm_reason = classify_graph_mail(cmd)
+        if gm_kind == "deny":
+            sys.stderr.write(
+                "KIMENO-SZOVEG KAPU: TILTVA, a parancs a graph-mail-t nevezi meg, de nem egyetlen, "
+                "szigoru alaku parancs.\n"
+                f"Ok: {gm_reason}.\n\n{GM_HELP}\n"
+            )
+            sys.exit(2)
+        if gm_kind == "read":
+            sys.exit(0)
+        if gm_kind == "none" and not is_send_invocation(cmd):
             http_channel_gate(cmd)  # exits if it is a human-facing HTTP send; else returns
             inter_agent_homoglyph_gate(cmd)  # exits; a no-op pass for anything else
         text, unreadable = collect_bash_body(cmd)
     else:
-        sys.exit(0)
+        # graph-forward N1b (G1-G4): a mail tool EMAIL_TOOL_RE does not name,
+        # by its action. A send is audited like every send: no readable text
+        # is a block below (a stored draft sent by id included). A draft-path
+        # call is audited when it carries text; when it carries none there is
+        # nothing of ours to read, and the draft verbs (create/update/save)
+        # also name label, filter and settings calls, so those pass untouched,
+        # as they did before.
+        action = mail_tool_action(tool)
+        if action is None:
+            sys.exit(0)
+        text, unreadable = collect_mcp_body(tool_input), None
+        if action == "draft" and not text.strip():
+            sys.exit(0)
 
     if unreadable or not text.strip():
         if tool == "Bash" and wrapper_depth_hit(cmd):

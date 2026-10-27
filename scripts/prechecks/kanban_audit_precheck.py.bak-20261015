@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""preCheck a kanban-audithoz (token-optimalizáció, Gyuri 2026-10-11).
+Szerződés: ha stdout "SKIP", a modell-kör kimarad; bármi más (hiba is) => a kör lefut (fail-open).
+A 08:00-s kör mindig lefut (napi teljes halmazos futás, 4c). Máskor csak akkor, ha az előző audit óta
+változott vagy keletkezett kártya, vagy van beakadt kártya."""
+import json, time, datetime as dt, urllib.request
+ROOT = '/Users/gyorgydecsi/marveen'
+try:
+    if dt.datetime.now().hour == 8:
+        raise SystemExit(0)
+    last = json.load(open(f'{ROOT}/store/kanban-audit-state.json')).get('last_audit_at') or 0
+    tok = open(f'{ROOT}/store/.dashboard-token').read().strip()
+    h = {'Authorization': f'Bearer {tok}'}
+    cards = json.load(urllib.request.urlopen(urllib.request.Request('http://localhost:3420/api/kanban', headers=h), timeout=10))
+    changed = [c for c in cards if not c.get('archived_at') and max(c.get('updated_at') or 0, c.get('created_at') or 0) > last]
+    stuck = json.load(urllib.request.urlopen(urllib.request.Request('http://localhost:3420/api/kanban/stuck?planned_days=7&active_days=3', headers=h), timeout=10))
+    n_stuck = len(stuck.get('stuck', [])) + len((stuck.get('waiting') or {}).get('overdue', []))
+    if not changed and n_stuck == 0 and last > 0:
+        print('SKIP')
+except SystemExit:
+    pass
+except Exception:
+    pass

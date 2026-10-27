@@ -208,7 +208,9 @@ describe('channels.sh tmux auth wiring (source pin)', () => {
     expect(SH).not.toContain('TMUX_AUTH_ENV')
     const paneCmds = SH.split('\n').filter(l => l.includes('${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}'))
     expect(paneCmds).toHaveLength(2)
-    for (const l of paneCmds) expect(l.trim().startsWith('"${AUTH_PANE_ENV}${STATE_DIR_ENV}')).toBe(true)
+    // fec6335f: the forbid-mode key unset sits right behind the sourced auth
+    // file (empty under allow), so the auth file is still the first thing.
+    for (const l of paneCmds) expect(l.trim().startsWith('"${AUTH_PANE_ENV}${KEY_UNSET_ENV}${STATE_DIR_ENV}')).toBe(true)
   })
 
   // TMUXSERVERREAP929: whichever launch creates the shared tmux server must not

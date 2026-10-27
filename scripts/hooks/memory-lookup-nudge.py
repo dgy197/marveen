@@ -16,6 +16,11 @@ When it stays silent: inter-agent traffic (<trusted-peer>, <untrusted>,
 prompts that start with "[" (context guard, recovery brief, inbox nudges,
 SYSTEM-DIREKTIVA), and local slash commands.
 
+Recall mod (card 94f8d99f): in the Brainy main session, while the "elohivas"
+recall mod is really active, the hook injects the candidates itself, so the
+"look now" imperative is dropped and only the recipe stays (see recall_mod_active).
+Every other agent, and Brainy with the mod off, gets the old text byte for byte.
+
 Never raises and never blocks: any error is a silent exit(0). The registration
 carries a 3 s timeout, and the hook does no network or DB work at all.
 """
@@ -84,14 +89,66 @@ def is_human(prompt):
     return not text.startswith("[") and not text.startswith("/")
 
 
-def nudge(agent, port, token_path):
-    return (
-        "[memoria-szetnezes] Emberi uzenet: mielott valaszolsz, nezd meg, van-e rola emleked. "
-        "A kulcsszot te valaszd (nev, tema), ne a mondat toltelekszavait.\n"
+def _is_sha12(name):
+    return len(name) == 12 and all(c in "0123456789abcdef" for c in name)
+
+
+def recall_mod_active(root, environ):
+    """True only in the Brainy main session with the recall mod really loaded and on.
+
+    Three conditions, all of them (anything else keeps the full old nudge):
+      1. realpath(CLAUDE_CONFIG_DIR) is <root>/.channels-config (the isolated config
+         root of the main session; the same self-gate as the mod's fallback);
+      2. an entry of CLAUDE_CODE_PLUGIN_DIRS (":"-separated) is the frozen copy
+         <root>/store/mods/elohivas/<sha12> or the live <root>/plugins/elohivas, and
+         has hooks/elohivas.py;
+      3. <root>/store/elohivas/DISABLE does not exist (the mod's kill switch).
+    Pure path and stat work, no network, no DB."""
+    try:
+        cfg = environ.get("CLAUDE_CONFIG_DIR") or ""
+        dirs = environ.get("CLAUDE_CODE_PLUGIN_DIRS") or ""
+        if not cfg or not dirs:
+            return False
+        root = os.path.realpath(root)
+        if os.path.realpath(cfg) != os.path.join(root, ".channels-config"):
+            return False
+        frozen = os.path.join(root, "store", "mods", "elohivas")
+        live = os.path.join(root, "plugins", "elohivas")
+        loaded = False
+        for entry in dirs.split(":"):
+            if not entry:
+                continue
+            real = os.path.realpath(entry)
+            ok = real == live or (
+                os.path.dirname(real) == frozen and _is_sha12(os.path.basename(real))
+            )
+            if ok and os.path.isfile(os.path.join(real, "hooks", "elohivas.py")):
+                loaded = True
+                break
+        if not loaded:
+            return False
+        return not os.path.lexists(os.path.join(root, "store", "elohivas", "DISABLE"))
+    except Exception:
+        return False
+
+
+def nudge(agent, port, token_path, recall_active=False):
+    recipe = (
         f'curl -s -G -D /tmp/mem-fejlec-{agent}.txt -H "Authorization: Bearer $(cat {token_path})" '
         f'--data-urlencode "agent={agent}" --data-urlencode "q=KULCSSZO" "http://localhost:{port}/api/memories"\n'
         f"grep -i '^x-memory-search' /tmp/mem-fejlec-{agent}.txt  "
-        "(relaxed=true = kozelites, nem bizonyitek; hiany-allitashoz: --data-urlencode \"strict=1\")"
+        "(relaxed=true = kozelites, nem bizonyitek; hiany-allitashoz: --data-urlencode \"strict=1\"; "
+        "idoszak: date=tegnap | since= until=)"
+    )
+    if recall_active:
+        return (
+            "[memoria-szetnezes] Emberi uzenet. A felidezett jelolteket a rendszer a "
+            "[memoria-elohivas] blokkban mar elohozta (nem bizonyitek). Ha az nem jott, vagy "
+            "pontosabb emlek vagy hiany-allitas kell, a keresesi recept:\n" + recipe
+        )
+    return (
+        "[memoria-szetnezes] Emberi uzenet: mielott valaszolsz, nezd meg, van-e rola emleked. "
+        "A kulcsszot te valaszd (nev, tema), ne a mondat toltelekszavait.\n" + recipe
     )
 
 
@@ -104,7 +161,8 @@ def main():
         agent = agent_id(payload.get("cwd") or os.getcwd())
         port = _env_value("WEB_PORT", "3420")
         token_path = os.path.join(_project_root(), "store", ".dashboard-token")
-        print(nudge(agent, port, token_path))
+        recall = recall_mod_active(_project_root(), os.environ)
+        print(nudge(agent, port, token_path, recall))
     except SystemExit:
         raise
     except Exception:

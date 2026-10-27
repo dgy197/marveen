@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""preCheck a feszek-gmail-napi-triazs körhöz (token-optimalizáció, Gyuri 2026-10-12).
+
+Szerződés: stdout "SKIP" => a modell-kör kimarad; minden más (üres kimenet, hiba) => a kör lefut (fail-open).
+
+Mikor marad ki a kör: ha a georgd1979@gmail.com INBOX-ában nincs az utolsó SIKERES kör óta érkezett
+olvasatlan levél (UNSEEN, UID > az akkor rögzített legnagyobb UID), és az utolsó sikeres kör
+kevesebb mint MAX_AGE_H órája volt. A korlát azért kell, mert a kör a Brainy/Noise 60 napos
+purge-ját is tartalmazza, ami az idő múlásától függ, nem az új levelektől: legalább napi egy kör lefut.
+(A triázs után is olvasatlan marad a védett/c/b/e kategória, ezért az UNSEEN-szám önmagában nem jó mérce.)
+
+Állapot: store/feszek-gmail-triazs-state.json
+  last_ok:  {uidvalidity, max_uid, at}  -- az utolsó SIKERES kör (a SKILL.md 3. lépése hívja: --commit)
+  pending:  {uidvalidity, max_uid, at}  -- a legutóbb engedélyezett kör indulási pillanatának pillanatképe
+A --commit a pending-et teszi last_ok-vá (így a kör közben érkezett levél nem vész el, és hibás kör
+után a last_ok nem lép előre). A jelszó a Vaultból jön (dashboard API), nem íródik ki és nem naplózódik."""
+import imaplib, json, os, sys, time, urllib.parse, urllib.request
+
+ROOT = '/Users/gyorgydecsi/marveen'
+STATE = f'{ROOT}/store/feszek-gmail-triazs-state.json'
+VAULT_LABEL = 'GEORGD1979@GMAIL.COM Alkalmazás jelszó'
+MAX_AGE_H = 20
+PENDING_KEEP_S = 3 * 3600
+
+
+def load():
+    try:
+        return json.load(open(STATE))
+    except Exception:
+        return {}
+
+
+def save(st):
+    tmp = STATE + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(st, f, indent=1)
+    os.replace(tmp, STATE)
+
+
+def snapshot():
+    tok = open(f'{ROOT}/store/.dashboard-token').read().strip()
+    d = json.load(urllib.request.urlopen(urllib.request.Request(
+        'http://localhost:3420/api/vault/' + urllib.parse.quote(VAULT_LABEL),
+        headers={'Authorization': 'Bearer ' + tok}), timeout=10))
+    m = imaplib.IMAP4_SSL('imap.gmail.com', 993, timeout=20)
+    try:
+        m.login('georgd1979@gmail.com', d['value'])
+        typ, data = m.select('INBOX', readonly=True)
+        if typ != 'OK':
+            raise RuntimeError('select')
+        typ, st = m.status('INBOX', '(UIDVALIDITY UIDNEXT)')
+        s = st[0].decode()
+        uidvalidity = int(s.split('UIDVALIDITY')[1].split()[0].strip(' )'))
+        uidnext = int(s.split('UIDNEXT')[1].split()[0].strip(' )'))
+        typ, data = m.uid('SEARCH', None, 'UNSEEN')
+        if typ != 'OK':
+            raise RuntimeError('search')
+        unseen = [int(x) for x in (data[0] or b'').split()]
+        # 2026-10-19 (Gyuri tg 2976, Brainy msg 3254): a cél 0 olvasatlan MINDEN mappában. A szűrő-címkés (INBOX-ot
+        # kihagyó) és a Spam-beli olvasatlan nem látszik az INBOX-keresésben, ezért az Összes levélben és a Spamben is számolunk.
+        extra = 0
+        typ, boxes = m.list()
+        allmail = [b.decode() for b in boxes if b'\\All' in b][0].split(' "/" ')[-1]
+        for box in (allmail, '"[Gmail]/Spam"'):
+            if m.select(box, readonly=True)[0] == 'OK':
+                typ, d2 = m.uid('SEARCH', None, 'UNSEEN')
+                extra += len((d2[0] or b'').split()) if typ == 'OK' else 0
+    finally:
+        try:
+            m.logout()
+        except Exception:
+            pass
+    return {'uidvalidity': uidvalidity, 'max_uid': uidnext - 1}, unseen, extra
+
+
+try:
+    if '--commit' in sys.argv:
+        st = load()
+        p = st.get('pending')
+        if p:
+            st['last_ok'] = {**p, 'at': int(time.time())}
+            st.pop('pending', None)
+            save(st)
+            print('COMMIT max_uid=%s' % st['last_ok']['max_uid'])
+        else:
+            print('COMMIT: nincs pending')
+        raise SystemExit(0)
+
+    now = int(time.time())
+    snap, unseen, extra_unseen = snapshot()
+    st = load()
+    ok = st.get('last_ok') or {}
+    fresh = (
+        ok.get('uidvalidity') == snap['uidvalidity']
+        and now - int(ok.get('at', 0)) < MAX_AGE_H * 3600
+        and not [u for u in unseen if u > int(ok.get('max_uid', 0))]
+        and extra_unseen == 0
+    )
+    if fresh:
+        print('SKIP')
+    else:
+        # a kör lefut: pillanatkép a --commit-hoz (a régebbi, alacsonyabb pending marad, az a konzervatív)
+        p = st.get('pending')
+        if not p or now - int(p.get('at', 0)) > PENDING_KEEP_S or p.get('uidvalidity') != snap['uidvalidity']:
+            st['pending'] = {**snap, 'at': now}
+            save(st)
+except SystemExit:
+    pass
+except Exception:
+    if os.environ.get('PRECHECK_DEBUG'):
+        import traceback; traceback.print_exc()

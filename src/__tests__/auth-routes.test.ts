@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import type http from 'node:http'
+import { writeFileSync } from 'node:fs'
 import { Readable } from 'node:stream'
 import { initDatabase, getDb, getDashboardUser } from '../db.js'
 import { tryHandleAuth } from '../web/routes/auth.js'
@@ -7,6 +8,32 @@ import { requiresAuth, parseCookies, SESSION_COOKIE_NAME } from '../web/auth-gat
 import { resolveSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
 import { _resetThrottleForTest } from '../web/login-throttle.js'
 import type { RouteContext } from '../web/routes/types.js'
+
+// Card 053f4e66 B: the shared Bearer ('token') issues no credential (user,
+// device key, password reset) unless the install .env opens
+// BEARER_CREDENTIAL_ADMIN_ENABLED=1 (credential-admin.ts). Most of this suite
+// is NOT about that gate -- it seeds users through the token path and tests
+// login, sessions, validation, listing and deletion -- so it runs against a
+// throwaway install whose .env has the switch open (setSwitch(true) in
+// beforeEach). The gate itself is pinned here per behaviour: the token's first
+// user creation and its break-glass reset answer 403 with the switch off and
+// keep their old result with it on. credential-admin-gate.test.ts holds the
+// full matrix. CLAUDECLAW_ENV_DIR must be set before any app module loads.
+const ENV = await vi.hoisted(async () => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'auth-routes-env-')))
+  process.env.CLAUDECLAW_ENV_DIR = dir
+  for (const k of ['BEARER_CREDENTIAL_ADMIN_ENABLED', 'BEARER_CREDENTIAL_ADMIN_UNTIL', 'BEARER_CREDENTIAL_ADMIN_NONCE']) delete process.env[k]
+  return { file: path.join(dir, '.env') }
+})
+
+// The switch is read from the .env per request, so it can flip between calls.
+function setSwitch(on: boolean): void {
+  writeFileSync(ENV.file, on ? 'BEARER_CREDENTIAL_ADMIN_ENABLED=1\n' : 'BEARER_CREDENTIAL_ADMIN_ENABLED=0\n')
+}
+const OFF_CODE = 'bearer_credential_admin_off'
 
 // Break-glass password resets in this suite hit the REAL notifier: auth.ts
 // fires notifySecurityEvent on a token-auth reset, and notify.ts reads the
@@ -102,6 +129,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  setSwitch(true)
   getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users')
   _clearSessionCacheForTest()
   _resetThrottleForTest()
@@ -224,7 +252,7 @@ describe('POST /api/auth/password', () => {
     expect(login.res.statusCode).toBe(200)
   })
 
-  it('does NOT require current_password on the token break-glass path', async () => {
+  it('does NOT require current_password on the token break-glass path (switch open)', async () => {
     await seedUser('alice')
     const ok = await call('POST', '/api/auth/password', {
       auth: TOKEN_AUTH,
@@ -233,6 +261,19 @@ describe('POST /api/auth/password', () => {
     expect(ok.res.statusCode).toBe(200)
     const login = await call('POST', '/api/auth/login', { body: { username: 'alice', password: 'token-reset-pass' } })
     expect(login.res.statusCode).toBe(200)
+  })
+
+  it('the token break-glass reset is refused with the switch off: 403, the old password still works, the new one does not', async () => {
+    await seedUser('alice')
+    setSwitch(false)
+    const refused = await call('POST', '/api/auth/password', {
+      auth: TOKEN_AUTH,
+      body: { username: 'alice', new_password: 'token-reset-pass' },
+    })
+    expect(refused.res.statusCode).toBe(403)
+    expect(refused.json().code).toBe(OFF_CODE)
+    expect((await call('POST', '/api/auth/login', { body: { username: 'alice', password: 'token-reset-pass' } })).res.statusCode).toBe(401)
+    expect((await call('POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })).res.statusCode).toBe(200)
   })
 
   it('revokes OTHER sessions on password change but keeps the caller', async () => {
@@ -266,6 +307,21 @@ describe('users CRUD', () => {
     // request is 401'd before reaching the handler.
     expect(requiresAuth('/api/auth/users', 'POST')).toBe(true)
     expect(requiresAuth('/api/auth/users/alice', 'DELETE')).toBe(true)
+  })
+
+  it('the token\'s first-user creation: 403 with the switch off (nothing written), 201 with it on', async () => {
+    setSwitch(false)
+    const refused = await call('POST', '/api/auth/users', { auth: TOKEN_AUTH, body: { username: 'alice', password: GOOD_PW } })
+    expect(refused.res.statusCode).toBe(403)
+    expect(refused.json().code).toBe(OFF_CODE)
+    expect(getDashboardUser('alice')).toBeUndefined()
+    expect((getDb().prepare('SELECT COUNT(*) AS c FROM dashboard_users').get() as { c: number }).c).toBe(0)
+    // Setup stays open: with no user the instance still reports setup_required.
+    expect((await call('GET', '/api/auth/status', { auth: TOKEN_AUTH })).json()).toMatchObject({ setup_required: true, login_available: false })
+    setSwitch(true)
+    const created = await call('POST', '/api/auth/users', { auth: TOKEN_AUTH, body: { username: 'alice', password: GOOD_PW } })
+    expect(created.res.statusCode).toBe(201)
+    expect(getDashboardUser('alice')).toBeDefined()
   })
 
   it('rejects a duplicate username with 409', async () => {
@@ -340,7 +396,7 @@ describe('credential-kind allowlists (default-deny for future kinds)', () => {
     })
   }
 
-  it('keeps the token break-glass reset working (allowlist did not over-tighten)', async () => {
+  it('keeps the token break-glass reset working with the switch open (allowlist did not over-tighten)', async () => {
     await seedUser('alice')
     const reset = await call('POST', '/api/auth/password', { auth: TOKEN_AUTH, body: { username: 'alice', new_password: 'legit-reset-pw' } })
     expect(reset.res.statusCode).toBe(200)

@@ -1,8 +1,9 @@
 // VAULTSZELES826 F0: every vault VALUE read leaves one audit row (id, kind,
-// principal, allowlist verdict, found) and NEVER the value. Audit only: the
-// allowlist verdict does not block anything in this phase.
+// principal, allowlist verdict, found, self-asserted caller) and NEVER the
+// value. Audit only: neither the allowlist verdict nor the caller label blocks
+// anything in this phase (card 053f4e66, F0.5).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type http from 'node:http'
@@ -90,10 +91,19 @@ describe('evaluateVaultRead', () => {
 
 describe('logVaultRead', () => {
   it('emits one info row with id, kind, principal, verdict, mode and found', () => {
-    logVaultRead('A', { kind: 'session', user: 'szabi' }, true, { A: ['dani'] })
+    logVaultRead('A', { kind: 'session', user: 'szabi' }, true, { headers: {} } as unknown as http.IncomingMessage, { A: ['dani'] })
     expect(logSpy.info).toHaveBeenCalledTimes(1)
     const [fields] = logSpy.info.mock.calls[0]
-    expect(fields).toMatchObject({ event: 'vault-read', id: 'A', kind: 'session', principal: 'szabi', acl: 'owner-lane', mode: 'audit', found: true })
+    expect(fields).toMatchObject({ event: 'vault-read', id: 'A', kind: 'session', principal: 'szabi', acl: 'owner-lane', mode: 'audit', found: true, caller: 'unknown' })
+  })
+  it('computes the caller itself from the request: it takes no pre-made label, and no value parameter', () => {
+    const req = { headers: { 'x-agent-id': 'ezermester' } } as unknown as http.IncomingMessage
+    logVaultRead('A', { kind: 'token' }, true, req, {})
+    expect(logSpy.info.mock.calls[0][0].caller).toBe('ezermester')
+    // source check: parameters are (id, auth, found, req, acl) -- nothing that could carry a secret value
+    const src = readFileSync(new URL('../web/vault-acl.ts', import.meta.url), 'utf-8')
+    const sig = src.match(/export function logVaultRead\(([^)]*)\)/)?.[1] ?? ''
+    expect(sig.split(',').map(p => p.trim().split(/[:=]/)[0].trim())).toEqual(['id', 'auth', 'found', 'req', 'acl'])
   })
 })
 
@@ -109,10 +119,10 @@ function mkRes(): MockRes {
   }
   return r
 }
-async function get(path: string, auth: RouteContext['auth']) {
+async function get(path: string, auth: RouteContext['auth'], headers: Record<string, string | string[]> = {}) {
   const res = mkRes()
   const ctx: RouteContext = {
-    req: { headers: {}, method: 'GET', url: path } as unknown as http.IncomingMessage,
+    req: { headers, method: 'GET', url: path } as unknown as http.IncomingMessage,
     res: res as unknown as http.ServerResponse,
     path, method: 'GET', url: new URL(`http://127.0.0.1:3420${path}`), auth,
   }
@@ -155,6 +165,67 @@ describe('GET /api/vault/:id audit row', () => {
     logSpy.info.mockImplementation(() => undefined)
     expect(orderRowIndex).toBeGreaterThanOrEqual(0)
     expect(orderEndIndex).toBeGreaterThan(orderRowIndex)
+  })
+})
+
+describe('GET /api/vault/:id caller label (F0.5): self-asserted, informational only', () => {
+  const callerOfLastRow = (): unknown => logSpy.info.mock.calls.filter(c => c[0]?.event === 'vault-read').at(-1)?.[0]?.caller
+  it('X-Agent-Id present: the label lands in the audit row', async () => {
+    await get('/api/vault/EXISTS', { kind: 'token' }, { 'x-agent-id': 'ezermester' })
+    expect(callerOfLastRow()).toBe('ezermester')
+  })
+  it('header absent, empty or whitespace-only: unknown', async () => {
+    await get('/api/vault/EXISTS', { kind: 'token' })
+    expect(callerOfLastRow()).toBe('unknown')
+    await get('/api/vault/EXISTS', { kind: 'token' }, { 'x-agent-id': '' })
+    expect(callerOfLastRow()).toBe('unknown')
+    await get('/api/vault/EXISTS', { kind: 'token' }, { 'x-agent-id': '   ' })
+    expect(callerOfLastRow()).toBe('unknown')
+  })
+  it('oversize header: cut to 64 characters', async () => {
+    await get('/api/vault/EXISTS', { kind: 'token' }, { 'x-agent-id': 'a'.repeat(200) })
+    expect(callerOfLastRow()).toBe('a'.repeat(64))
+  })
+  it('unsafe characters become _ and the row stays one JSON record', async () => {
+    await get('/api/vault/EXISTS', { kind: 'token' }, { 'x-agent-id': 'a\r\nb"c{d e\u00e9\u{1F600}' })
+    const caller = callerOfLastRow() as string
+    expect(caller).toMatch(/^[A-Za-z0-9_.@-]+$/)
+    expect(caller.startsWith('a__b_c_d_e')).toBe(true)
+    const row = logSpy.info.mock.calls.filter(c => c[0]?.event === 'vault-read').at(-1)![0]
+    expect(JSON.parse(JSON.stringify(row)).caller).toBe(caller)
+    expect(JSON.stringify(row)).not.toContain('\\n')
+  })
+  it('header sent twice (Node joins with ", "): the joined value, sanitised', async () => {
+    await get('/api/vault/EXISTS', { kind: 'token' }, { 'x-agent-id': 'ezermester, evil' })
+    expect(callerOfLastRow()).toBe('ezermester__evil')
+  })
+  it('the missing-secret 404 row and the ssh-key 403 row carry the caller too', async () => {
+    await get('/api/vault/MISSING', { kind: 'token' }, { 'x-agent-id': 'brainy' })
+    expect(callerOfLastRow()).toBe('brainy')
+    await get(`/api/vault/${SSH_KEY_ID}`, { kind: 'token' }, { 'x-agent-id': 'brainy' })
+    expect(callerOfLastRow()).toBe('brainy')
+  })
+  it('never decides anything: status and body are identical with and without the header, even for a hostile label', async () => {
+    const plain = await get('/api/vault/EXISTS', { kind: 'token' })
+    for (const h of ['ezermester', 'nobody', 'a'.repeat(500), 'x\r\ny']) {
+      const withHeader = await get('/api/vault/EXISTS', { kind: 'token' }, { 'x-agent-id': h })
+      expect(withHeader.res.statusCode).toBe(plain.res.statusCode)
+      expect(withHeader.res.body).toBe(plain.res.body)
+    }
+    const m1 = await get('/api/vault/MISSING', { kind: 'token' })
+    const m2 = await get('/api/vault/MISSING', { kind: 'token' }, { 'x-agent-id': 'ezermester' })
+    expect([m2.res.statusCode, m2.res.body]).toEqual([m1.res.statusCode, m1.res.body])
+    const s1 = await get(`/api/vault/${SSH_KEY_ID}`, { kind: 'token' })
+    const s2 = await get(`/api/vault/${SSH_KEY_ID}`, { kind: 'token' }, { 'x-agent-id': 'ezermester' })
+    expect([s2.res.statusCode, s2.res.body]).toEqual([s1.res.statusCode, s1.res.body])
+  })
+  it('the secret value and the ssh marker are never in any log payload, with any header', async () => {
+    for (const h of [undefined, 'ezermester']) {
+      await get('/api/vault/EXISTS', { kind: 'token' }, h ? { 'x-agent-id': h } : {})
+      await get(`/api/vault/${SSH_KEY_ID}`, { kind: 'token' }, h ? { 'x-agent-id': h } : {})
+    }
+    expect(allLogPayloads()).not.toContain(SECRET_VALUE)
+    expect(allLogPayloads()).not.toContain(SSH_PRIVATE)
   })
 })
 

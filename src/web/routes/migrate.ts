@@ -1,9 +1,13 @@
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, existsSync, readdirSync, statSync, realpathSync } from 'node:fs'
+import { join, relative, isAbsolute, sep, resolve } from 'node:path'
+import { homedir } from 'node:os'
 import { saveAgentMemory } from '../../db.js'
-import { MAIN_AGENT_ID, OLLAMA_URL } from '../../config.js'
+import { MAIN_AGENT_ID, OLLAMA_URL, PROJECT_ROOT, STORE_DIR } from '../../config.js'
+import { readEnvFile } from '../../env.js'
+import { channelStateDir, type ChannelProviderType } from '../../channel-provider.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { callerLabel, MIGRATE_ROOTS_ENV } from '../admin-switch.js'
 import type { RouteContext } from './types.js'
 
 // Longest run of characters a single memory row may hold. Anything longer is
@@ -80,6 +84,101 @@ export function chunkText(text: string, maxLen: number): string[] {
   return chunks
 }
 
+// Card 053f4e66: /api/migrate/run reads the files named in its request body.
+// It used to read ANY path it was given -- through the one shared Bearer, any
+// file the dashboard user can read, into memory rows anyone with the token can
+// list. A run may now read only a file that a scan of this process listed,
+// recently: the scan records the realpath of its root and of every file it
+// reported, and the run compares realpaths, so "../", an absolute path
+// elsewhere, and a symlink pointing out of the root are all refused (403)
+// before anything is read. The registry is in memory: after a dashboard
+// restart the UI simply scans again.
+const SCAN_TTL_MS = 60 * 60 * 1000
+const MAX_SCANS = 20
+const scanRegistry = new Map<string, { expires: number; files: Set<string> }>()
+
+/** true iff `child` (a realpath) is strictly inside `root` (a realpath). */
+function isStrictlyUnder(root: string, child: string): boolean {
+  const rel = relative(root, child)
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+}
+
+// realpathSync.native (realpath(3)), not the JS realpathSync: on a
+// case-insensitive APFS volume the JS version hands back the letter case it
+// was given, so ".../MARVEEN/STORE" would not compare equal to the protected
+// ".../marveen/store" in relative() and would slip past forbiddenReason().
+// The native call returns the on-disk case (053f4e66, BE round 3).
+function realOrNull(p: string): string | null {
+  try { return realpathSync.native(p) } catch { return null }
+}
+
+function recordScan(root: string, files: Set<string>, now = Date.now()): void {
+  for (const [k, v] of scanRegistry) if (v.expires < now) scanRegistry.delete(k)
+  scanRegistry.delete(root)
+  scanRegistry.set(root, { expires: now + SCAN_TTL_MS, files })
+  while (scanRegistry.size > MAX_SCANS) scanRegistry.delete(scanRegistry.keys().next().value as string)
+}
+
+/** The realpath of a run path if a live scan listed it, else null. Reads no file content. */
+function scannedRealPath(p: unknown, now = Date.now()): string | null {
+  if (typeof p !== 'string' || p.length === 0 || p.includes('\0')) return null
+  const real = realOrNull(p)
+  if (!real) return null
+  for (const [root, v] of scanRegistry) {
+    if (v.expires >= now && v.files.has(real) && isStrictlyUnder(root, real)) return real
+  }
+  return null
+}
+
+// Card 053f4e66 (M1): the scan root itself comes from an allowlist. The
+// install's .env MIGRATE_ROOTS (':'-separated absolute folders, read per
+// request, never writable through the Bearer: admin-switch.ts) names where a
+// migration source may live; without it every scan is 403. Whatever the list
+// says, these are always refused after realpath: the store, the install root
+// and everything below it, ~/.claude, ~/.config, every main channel state dir,
+// and any path with a dot-folder component.
+const PROVIDERS: ChannelProviderType[] = ['telegram', 'slack', 'discord', 'googlechat', 'teams']
+
+function isUnderOrEqual(base: string, p: string): boolean {
+  const rel = relative(base, p)
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
+}
+
+function forbiddenBases(): string[] {
+  const home = homedir()
+  const raw = [STORE_DIR, PROJECT_ROOT, join(home, '.claude'), join(home, '.config'), ...PROVIDERS.map(p => channelStateDir(p))]
+  const out = new Set<string>()
+  for (const b of raw) {
+    out.add(resolve(b))
+    const real = realOrNull(b)
+    if (real) out.add(real)
+  }
+  return [...out]
+}
+
+/** Why `p` (absolute, ideally a realpath) may never be scanned, or null. */
+function forbiddenReason(p: string): string | null {
+  if (p.split(sep).some(c => c.startsWith('.') && c !== '.' && c !== '..')) return 'dot-folder'
+  for (const b of forbiddenBases()) if (isUnderOrEqual(b, p)) return 'protected'
+  return null
+}
+
+/** The usable allowlist roots (realpaths), forbidden ones dropped. */
+function migrateRoots(): string[] {
+  const raw = readEnvFile([MIGRATE_ROOTS_ENV])[MIGRATE_ROOTS_ENV] ?? ''
+  const roots: string[] = []
+  for (const part of raw.split(':')) {
+    const t = part.trim()
+    if (!t || !isAbsolute(t)) continue
+    const real = realOrNull(t)
+    if (real && !forbiddenReason(real)) roots.push(real)
+  }
+  return roots
+}
+
+/** Test hook: forget every recorded scan. */
+export function _resetMigrateScansForTest(): void { scanRegistry.clear() }
+
 export async function tryHandleMigrate(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -87,15 +186,41 @@ export async function tryHandleMigrate(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { sourcePath } = JSON.parse(body.toString()) as { sourcePath: string; sourceType: string }
 
-    if (!sourcePath?.trim()) { json(res, { error: 'Útvonal megadása kötelező' }, 400); return true }
-    if (!existsSync(sourcePath)) { json(res, { error: 'A megadott útvonal nem létezik' }, 404); return true }
+    if (typeof sourcePath !== 'string' || !sourcePath.trim()) { json(res, { error: 'Útvonal megadása kötelező' }, 400); return true }
+
+    // M1: allowlist first, so a refused path does not even learn whether it exists.
+    const roots = migrateRoots()
+    const refuseScan = (reason: string): true => {
+      logger.warn({ caller: callerLabel(req), at: new Date().toISOString(), reason }, 'Migrate scan refused')
+      json(res, { error: `A feltérképezés csak a ${MIGRATE_ROOTS_ENV} (.env) mappáiban engedélyezett, védett és pont-mappán kívül.`, reason }, 403)
+      return true
+    }
+    if (roots.length === 0) return refuseScan('migrate_roots_missing')
+    const rootReal = realOrNull(sourcePath)
+    const where = rootReal ?? resolve(sourcePath)
+    const bad = forbiddenReason(where)
+    if (bad) return refuseScan(bad)
+    if (!roots.some(r => isUnderOrEqual(r, where))) return refuseScan('outside_migrate_roots')
+    if (!rootReal || !existsSync(rootReal)) { json(res, { error: 'A megadott útvonal nem létezik' }, 404); return true }
+    if (!statSync(rootReal).isDirectory()) { json(res, { error: 'A megadott útvonal nem mappa' }, 400); return true }
 
     const findings: { type: string; path: string; name: string; size: number }[] = []
+    const scannedReal = new Set<string>()
+
+    // Only a regular file whose realpath stays strictly under the scanned root
+    // is listed (053f4e66): a symlink pointing out of the root is skipped.
+    const listable = (filePath: string): string | null => {
+      const real = realOrNull(filePath)
+      if (!real || !isStrictlyUnder(rootReal, real) || forbiddenReason(real)) return null
+      try { return statSync(real).isFile() ? real : null } catch { return null }
+    }
 
     const addFinding = (type: string, filePath: string) => {
-      if (existsSync(filePath)) {
-        const stat = statSync(filePath)
+      const real = listable(filePath)
+      if (real) {
+        const stat = statSync(real)
         findings.push({ type, path: filePath, name: filePath.split('/').pop() || '', size: stat.size })
+        scannedReal.add(real)
       }
     }
 
@@ -121,6 +246,8 @@ export async function tryHandleMigrate(ctx: RouteContext): Promise<boolean> {
         const scanPath = dir ? join(sourcePath, dir) : sourcePath
         if (!existsSync(scanPath)) continue
         const files = readdirSync(scanPath).filter(f =>
+          // Dotfiles are never listed (053f4e66): e.g. ~/.claude/.credentials.json.
+          !f.startsWith('.') &&
           (f.endsWith('.md') || f.endsWith('.txt') || f.endsWith('.json')) &&
           !['package.json', 'tsconfig.json', 'package-lock.json', '.mcp.json'].includes(f)
         )
@@ -128,7 +255,9 @@ export async function tryHandleMigrate(ctx: RouteContext): Promise<boolean> {
           const fullPath = join(scanPath, f)
           if (findings.some(fi => fi.path === fullPath)) continue
           try {
-            const stat = statSync(fullPath)
+            const real = listable(fullPath)
+            if (!real) continue
+            const stat = statSync(real)
             if (stat.isFile() && stat.size > 20) {
               const lower = f.toLowerCase()
               let type = 'memory'
@@ -138,11 +267,14 @@ export async function tryHandleMigrate(ctx: RouteContext): Promise<boolean> {
               else if (lower.includes('cron') || lower.includes('schedule')) type = 'schedule'
               else if (lower.match(/^\d{4}-\d{2}-\d{2}/)) type = 'daily-log'
               findings.push({ type, path: fullPath, name: f, size: stat.size })
+              scannedReal.add(real)
             }
           } catch {}
         }
       }
     } catch {}
+
+    recordScan(rootReal, scannedReal)
 
     json(res, {
       ok: true,
@@ -164,9 +296,26 @@ export async function tryHandleMigrate(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/migrate/run' && method === 'POST') {
     const body = await readBody(req)
-    const { findings, agentId: targetAgent } = JSON.parse(body.toString()) as {
+    const { findings: requested, agentId: targetAgent } = JSON.parse(body.toString()) as {
       findings: { type: string; path: string; name: string }[];
       agentId: string
+    }
+
+    // 053f4e66: every path must be a file a live scan listed (realpath
+    // compared); one that is not refuses the whole run before anything is
+    // read. The files are then read through their checked realpath.
+    if (!Array.isArray(requested)) { json(res, { error: 'findings tömb kötelező' }, 400); return true }
+    const findings: { type: string; path: string; name: string }[] = []
+    let refused = 0
+    for (const f of requested) {
+      const real = f && typeof f === 'object' ? scannedRealPath((f as { path?: unknown }).path) : null
+      if (!real) { refused++; continue }
+      findings.push({ type: String(f.type ?? ''), path: real, name: String(f.name ?? '') })
+    }
+    if (refused > 0) {
+      logger.warn({ caller: callerLabel(req), at: new Date().toISOString(), refused }, 'Migrate run refused: a path outside the scanned folders')
+      json(res, { error: 'Csak a feltérképezett mappákban talált fájl költöztethető; futtasd újra a feltérképezést.', refused }, 403)
+      return true
     }
 
     const agentId = targetAgent || MAIN_AGENT_ID

@@ -76,6 +76,8 @@ interface RawMessage {
   photo?: unknown[]
   document?: { file_id: string; file_name?: string }
   voice?: { file_id: string }
+  message_thread_id?: number
+  is_topic_message?: boolean
 }
 
 interface RawUser {
@@ -90,6 +92,25 @@ function displayName(u?: RawUser): string | null {
   if (u.username) return u.username
   const full = [u.first_name, u.last_name].filter(Boolean).join(' ')
   return full || String(u.id)
+}
+
+// Approval buttons carry `apv:<a|r>:<approval id>:<nonce>` as callback data
+// (src/web/approval-callback-data.ts). Only the native plugin may decide such
+// a press. If the coordinator stored or handed off the raw data, a still-valid
+// nonce would become readable to anyone holding the dashboard bearer token
+// (incoming_events, agent_messages). So the whole payload is replaced by a
+// fixed marker that carries neither the id nor the nonce; the press is
+// deliberately left undecided. Prefix match (not the strict format regex), so
+// a malformed or future variant is never stored verbatim either.
+export const APV_CALLBACK_REDACTED = 'apv:<redacted>'
+const APV_PREFIX_RE = /^\s*apv:/i
+
+export function isApprovalCallbackData(data: string): boolean {
+  return APV_PREFIX_RE.test(data)
+}
+
+export function redactCallbackData(data: string): string {
+  return isApprovalCallbackData(data) ? APV_CALLBACK_REDACTED : data
 }
 
 // Normalize a raw Telegram update into the flat shape the ingest layer stores.
@@ -107,6 +128,9 @@ export function mapUpdate(u: RawUpdate): NormalizedEvent | null {
     if (Array.isArray(msg.photo) && msg.photo.length > 0) meta['has_photo'] = true
     if (msg.document) meta['document'] = { file_id: msg.document.file_id, file_name: msg.document.file_name }
     if (msg.voice) meta['voice'] = { file_id: msg.voice.file_id }
+    // A topic of a private chat or forum; the handoff shows it only while
+    // TELEGRAM_TOPICS_ENABLED is on (buildHandoffContent).
+    if (msg.is_topic_message && msg.message_thread_id != null) meta['message_thread_id'] = msg.message_thread_id
     return {
       update_id: u.update_id,
       kind,
@@ -121,6 +145,9 @@ export function mapUpdate(u: RawUpdate): NormalizedEvent | null {
   }
   if (u.callback_query) {
     const cq = u.callback_query
+    const data = cq.data ?? ''
+    const meta: Record<string, unknown> = { callback_query_id: cq.id }
+    if (isApprovalCallbackData(data)) meta['approval_callback_redacted'] = true
     return {
       update_id: u.update_id,
       kind: 'callback_query',
@@ -128,8 +155,8 @@ export function mapUpdate(u: RawUpdate): NormalizedEvent | null {
       user_id: cq.from?.id ?? null,
       username: displayName(cq.from),
       message_id: cq.message?.message_id ?? null,
-      content: cq.data ?? '',
-      meta: { callback_query_id: cq.id },
+      content: redactCallbackData(data),
+      meta,
       tg_date: cq.message?.date ?? null,
     }
   }

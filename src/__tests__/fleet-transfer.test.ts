@@ -47,12 +47,16 @@ describe('encrypt/decrypt round-trip', () => {
 // importFleet: encrypted wrapper detection (with mocked FS / DB)
 // ---------------------------------------------------------------------------
 
+// Every statement the import runs and prepares, so a test can check that no
+// contacts table is ever touched (card f90928e3, C, AC24).
+const dbRuns = vi.hoisted(() => [] as { sql: string; args: unknown[] }[])
+const dbPrepared = vi.hoisted(() => [] as string[])
 vi.mock('../db.js', () => ({
   getDb: () => ({
-    prepare: () => ({
+    prepare: (sql: string) => (dbPrepared.push(sql), {
       all: () => [],
       get: () => null,
-      run: () => ({ changes: 0 }),
+      run: (...args: unknown[]) => { dbRuns.push({ sql, args }); return { changes: 0 } },
     }),
     transaction: (fn: Function) => fn,
   }),
@@ -324,6 +328,74 @@ describe('importFleet: identity takeover', () => {
     })
   })
 
+  // Card fec6335f (BE-3): the identity block is copied key by key into
+  // config-overrides.json and .env. A Bearer-caller's import must not be able
+  // to switch the credit gate or the interactive key policy through it: both
+  // flags are .env-only on purpose (blueprint 3.1). With the interactive key
+  // guard (PR-A) on the same install, such a key refuses the WHOLE import
+  // (dry-run and apply), so nothing at all is written.
+  it('apply never writes CREDIT_GATE_MODE or INTERACTIVE_ANTHROPIC_KEY_POLICY, to .env or config-overrides.json', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const { updateEnvFile } = await import('../env.js')
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    ;(updateEnvFile as any).mockClear()
+    ;(atomicWriteFileSync as any).mockClear()
+    const fleet = JSON.parse(FLEET_WITH_SOURCE_ID)
+    fleet.mainAgent.identity.CREDIT_GATE_MODE = 'off'
+    fleet.mainAgent.identity.INTERACTIVE_ANTHROPIC_KEY_POLICY = 'allow'
+    const result = importFleet(JSON.stringify(fleet), { apply: true }) as any
+    expect(result.dryRun).toBe(true)
+    expect(result.errors.some((e: string) => e.includes('CREDIT_GATE_MODE'))).toBe(true)
+    expect(result.errors.some((e: string) => e.includes('INTERACTIVE_ANTHROPIC_KEY_POLICY'))).toBe(true)
+    expect(updateEnvFile as any).not.toHaveBeenCalled()
+    expect((atomicWriteFileSync as any).mock.calls.filter((c: string[]) => c[0]?.includes('config-overrides.json'))).toHaveLength(0)
+  })
+
+  it('round 2: the deny list compares the trimmed, upper-cased key ("CREDIT_GATE_MODE ", "credit_gate_mode")', async () => {
+    const { importFleet, isDeniedIdentityKey } = await import('../web/fleet-transfer.js')
+    const { updateEnvFile } = await import('../env.js')
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    for (const key of ['CREDIT_GATE_MODE ', ' credit_gate_mode', 'Interactive_Anthropic_Key_Policy']) {
+      expect(isDeniedIdentityKey(key), key).toBe(true)
+      ;(updateEnvFile as any).mockClear()
+      ;(atomicWriteFileSync as any).mockClear()
+      const fleet = JSON.parse(FLEET_WITH_SOURCE_ID)
+      fleet.mainAgent.identity[key] = 'off'
+      const result = importFleet(JSON.stringify(fleet), { apply: true }) as any
+      expect(result.errors?.length, key).toBe(1)
+      expect(updateEnvFile as any).not.toHaveBeenCalled()
+      expect((atomicWriteFileSync as any).mock.calls.filter((c: string[]) => c[0]?.includes('config-overrides.json'))).toHaveLength(0)
+    }
+  })
+
+  it('round 2: an identity value with a line break, or a key that is not a variable name, is refused as an import error (400), nothing written', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const { updateEnvFile } = await import('../env.js')
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    for (const [key, val] of [['BOT_DISPLAY', 'x\nCREDIT_GATE_MODE=off'], ['BOT_NAME', 'a\rb'], ['BAD KEY', 'v'], ['bot_name', 'v']] as const) {
+      for (const apply of [false, true]) {
+        ;(updateEnvFile as any).mockClear()
+        ;(atomicWriteFileSync as any).mockClear()
+        const fleet = JSON.parse(FLEET_WITH_SOURCE_ID)
+        fleet.mainAgent.identity[key] = val
+        const result = importFleet(JSON.stringify(fleet), { apply }) as any
+        expect('dryRun' in result && result.errors.length > 0, `${key} apply=${apply}`).toBe(true)
+        expect(updateEnvFile as any).not.toHaveBeenCalled()
+        expect((atomicWriteFileSync as any).mock.calls.filter((c: string[]) => c[0]?.includes('config-overrides.json'))).toHaveLength(0)
+      }
+    }
+  })
+
+  it('a fleet whose identity holds only protected keys writes neither of them', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const { updateEnvFile } = await import('../env.js')
+    ;(updateEnvFile as any).mockClear()
+    const fleet = JSON.parse(FLEET_WITH_SOURCE_ID)
+    fleet.mainAgent.identity = { MAIN_AGENT_ID: 'atlas', CREDIT_GATE_MODE: 'off' }
+    importFleet(JSON.stringify(fleet), { apply: true })
+    for (const call of (updateEnvFile as any).mock.calls) expect(call[0]).not.toHaveProperty('CREDIT_GATE_MODE')
+  })
+
   // JSONCLOBBER926B: a corrupt config-overrides.json is refused, not replaced by
   // the identity keys alone. The refusal takes the import's own failure path:
   // the error surfaces and the overrides file is never written.
@@ -419,5 +491,32 @@ describe('importFleet: model ids are validated before any write', () => {
     expect((r.errors ?? []).join(' ')).not.toContain('modell-azonosító')
     const r2 = importFleet(fleetWith(agent({})), { apply: false }) as { errors?: string[] }
     expect((r2.errors ?? []).join(' ')).not.toContain('modell-azonosító')
+  })
+})
+
+describe('contacts are excluded from the fleet transfer (AC24)', () => {
+  const CONTACT_TABLES = /contacts|contact_values|contacts_fts|contact_reads|contact_writes/i
+
+  it('exportFleet never queries a contacts table and the package carries no contacts key', async () => {
+    const { exportFleet } = await import('../web/fleet-transfer.js')
+    dbPrepared.length = 0
+    const { data } = exportFleet()
+    expect(dbPrepared.length).toBeGreaterThan(0)
+    expect(dbPrepared.filter((q) => CONTACT_TABLES.test(q))).toEqual([])
+    expect(Object.keys(JSON.parse(data)).filter((k) => CONTACT_TABLES.test(k))).toEqual([])
+  })
+
+  it('importFleet ignores a contacts section smuggled into a package', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    dbRuns.length = 0
+    dbPrepared.length = 0
+    const pkg = JSON.stringify({
+      ...JSON.parse(MINIMAL_FLEET),
+      contacts: [{ id: 1, domain: 'family', display_name: 'X' }],
+      contact_values: [{ id: 1, contact_id: 1, field: 'phone', value: '1', source: 'owner', source_date: '2026-10-22' }],
+    })
+    importFleet(pkg, { apply: true })
+    expect(dbPrepared.filter((q) => CONTACT_TABLES.test(q))).toEqual([])
+    expect(dbRuns.filter((r) => CONTACT_TABLES.test(r.sql))).toEqual([])
   })
 })

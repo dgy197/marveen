@@ -42,6 +42,7 @@ import {
   mainSharedConfigTrigger,
   type MainSharedConfigTrigger,
 } from './agent-process.js'
+import { reportMainAgentSettingsKeys } from './main-agent-key-guard.js'
 
 declare const MAIN_CONFIG_DECISION: unique symbol
 
@@ -247,6 +248,11 @@ export function resolveMainConfigDecision(): MainConfigDecision {
     trigger: mainSharedConfigTrigger(state),
   }
   noteState(d)
+  // fec6335f: the settings this launch will load, checked for an API-key route
+  // the pane's key unset cannot reach (forbid only; the launch still goes ahead,
+  // loudly -- see main-agent-key-guard.ts). Here, not at the call sites, for the
+  // reason this module exists: no respawn can obtain a decision without it.
+  reportMainAgentSettingsKeys(d.isolatedConfigDir)
   return d as MainConfigDecision
 }
 

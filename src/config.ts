@@ -531,6 +531,175 @@ export const EMBED_MODEL = cfg('EMBED_MODEL') ?? 'nomic-embed-text'
 const rawEmbedDims = parseInt(cfg('EMBED_DIMS') ?? '0', 10)
 export const EMBED_DIMS = Number.isFinite(rawEmbedDims) && rawEmbedDims > 0 ? rawEmbedDims : 0
 
+// How long Ollama keeps the embedding model loaded after a request. Without a
+// keep_alive in the request Ollama falls back to its own 5 minute default, and
+// every pause longer than that costs a cold model load (~1-2 s) that does not
+// fit the recall hook's 1.5 s budget (measured 2026-10-17: 22 of 74 searches
+// timed out, all 22 during a cold load). The default "24h" frees the model after
+// a day of idleness; -1 (keep forever) is deliberately NOT accepted. Neither is
+// zero ("0", "0s", "0ms", ...): to Ollama that means "unload right after this
+// request", so every search would pay the cold load this setting exists to
+// avoid -- worse than sending nothing at all.
+//
+// Valid: an Ollama duration like "24h", "30m", "90s", "500ms", or a plain
+// integer number of seconds ("3600"). Anything else -- including -1 and other
+// negatives, zero, decimals and compound durations -- falls back to the default.
+// config.ts is imported before the logger exists, so the rejected raw value is
+// exported (like APP_TZ_INVALID) and generateEmbedding warns once.
+export const EMBED_KEEP_ALIVE_DEFAULT = '24h'
+export function resolveEmbedKeepAlive(raw: string | undefined): { value: string | number; invalid?: string } {
+  const text = (raw ?? '').trim()
+  if (text === '') return { value: EMBED_KEEP_ALIVE_DEFAULT }
+  if (/^0+(ms|s|m|h)?$/.test(text)) return { value: EMBED_KEEP_ALIVE_DEFAULT, invalid: text }
+  if (/^[0-9]{1,5}(ms|s|m|h)$/.test(text)) return { value: text }
+  if (/^[0-9]{1,9}$/.test(text)) return { value: parseInt(text, 10) }
+  return { value: EMBED_KEEP_ALIVE_DEFAULT, invalid: text }
+}
+const embedKeepAlive = resolveEmbedKeepAlive(cfg('EMBED_KEEP_ALIVE'))
+export const EMBED_KEEP_ALIVE = embedKeepAlive.value
+export const EMBED_KEEP_ALIVE_INVALID = embedKeepAlive.invalid
+
+// Keep-warm of the loaded embedding model (card 94f8d99f, w3 DW3; the rules
+// are in embedding-keepwarm.ts). The keep_alive above keeps the model LOADED,
+// but measured 2026-10-17 the first call after ~79 idle minutes still took
+// 654 ms instead of ~100 ms. So after this many minutes without any embedding
+// call the dashboard pings the model once, with the time it has LEFT as the
+// keep_alive (the window is not extended). Default 5: the one measured point,
+// no slow call below 300 s of idleness (39 of 39).
+//
+// Valid: 0 (off) or a whole number from 5 to 10. Anything else falls back to
+// the default; the rejected raw value is exported, and the runner warns once
+// at start (config.ts is imported before the logger exists).
+export const EMBED_KEEPWARM_MINUTES_DEFAULT = 5
+export function resolveEmbedKeepWarmMinutes(raw: string | undefined): { value: number; invalid?: string } {
+  const text = (raw ?? '').trim()
+  if (text === '') return { value: EMBED_KEEPWARM_MINUTES_DEFAULT }
+  if (/^(0|[5-9]|10)$/.test(text)) return { value: parseInt(text, 10) }
+  return { value: EMBED_KEEPWARM_MINUTES_DEFAULT, invalid: text }
+}
+const embedKeepWarmMinutes = resolveEmbedKeepWarmMinutes(cfg('EMBED_KEEPWARM_MINUTES'))
+export const EMBED_KEEPWARM_MINUTES = embedKeepWarmMinutes.value
+export const EMBED_KEEPWARM_MINUTES_INVALID = embedKeepWarmMinutes.invalid
+
+// Relevance label of the hybrid search (card 94f8d99f, point 3). A caller that
+// sends abstain=1 gets `relevance=low|ok|unknown` in X-Memory-Search; the rows
+// are never hidden, the label only says how sure the match is. The decision is
+// one monotone linear score in cosine units:
+//
+//   score = topCos + W_GAP * (topCos - secondCos) + W_OVERLAP * min(overlap, 2)
+//           + W_FTS * (keyword branch matched without relaxing ? 1 : 0)
+//   relevance = low  <=>  score < MIN_COS
+//
+// MIN_COS unset (the default) = not calibrated: abstain=1 answers `unknown`, so
+// nothing changes until an operator sets it, and it stays unset until Brainy's
+// hold-out set confirms the value. Calibrated 2026-10-17 on the v2 set (36
+// positive, 6 negative questions, bge-m3; numbers and ablations in the card's
+// m35-report.md): MIN_COS 0.53 with every weight 0 labels 6/6 negatives and two
+// positives, one of them (q10) a rank-1 hit, so the labelled top-1 drops by one
+// (limit 30: 14 -> 13, limit 8: 15 -> 14) and the labelled top-5 too (28 -> 27,
+// 25 -> 24). Margins 0.013 below and 0.011 above, with four positives within
+// 0.023 above the threshold: fitted on six negatives, so a new negative can well
+// land above it. The gap barely matters: weight 0.25 widens the free interval by
+// 0.00015 (0.02405 vs 0.0239), weight 1 shrinks it to 0.0008. The overlap keeps
+// q10 at limit 30 only (it is limit-dependent), at half the margin. The strict
+// keyword match never occurred (all 42 questions relaxed), so W_FTS is untested
+// and stays 0. Weights below zero would make
+// the rule non-monotone and are refused like other bad values: an invalid
+// MIN_COS turns the label off, an invalid weight counts as 0.
+export interface AbstainConfig {
+  /** Score below which a hybrid answer is labelled low; null = off (abstain=1 answers unknown). */
+  minCos: number | null
+  wGap: number
+  wOverlap: number
+  wFts: number
+}
+export function resolveAbstainConfig(raw: (key: string) => string | undefined): { config: AbstainConfig; invalid: string[] } {
+  const invalid: string[] = []
+  const num = (key: string, lo: number, hi: number): number | null => {
+    const text = (raw(key) ?? '').trim()
+    if (text === '') return null
+    const n = /^[0-9]+(\.[0-9]+)?$/.test(text) ? Number(text) : NaN
+    if (!Number.isFinite(n) || n < lo || n > hi) {
+      invalid.push(key)
+      return null
+    }
+    return n
+  }
+  return {
+    config: {
+      minCos: num('MEMORY_ABSTAIN_MIN_COS', 0, 1),
+      wGap: num('MEMORY_ABSTAIN_W_GAP', 0, 10) ?? 0,
+      wOverlap: num('MEMORY_ABSTAIN_W_OVERLAP', 0, 1) ?? 0,
+      wFts: num('MEMORY_ABSTAIN_W_FTS', 0, 1) ?? 0,
+    },
+    invalid,
+  }
+}
+const abstainResolved = resolveAbstainConfig(cfg)
+export const MEMORY_ABSTAIN_CONFIG: AbstainConfig = abstainResolved.config
+export const MEMORY_ABSTAIN_INVALID: string[] = abstainResolved.invalid
+
+// Recency in the hybrid fusion (card 94f8d99f, point 5). The fused score of a
+// row becomes
+//
+//   score = RRF + WEIGHT * exp(-age / TAU),   age = now - created_at (>= 0)
+//
+// so with two near-equal rows the newer one wins. RRF is in rank units (rank 1
+// of one branch = 1/61 ~ 0.0164), so a weight of 0.005 moves a brand-new row
+// about one place against an old one; 0.02 can outweigh a whole branch.
+// created_at only: updated_at is restamped by tier moves (the nightly
+// dream-engine) and salience is a pure age function today, so neither tells
+// "newer fact" from "touched row". WEIGHT 0 (the default) = the fusion is
+// byte-for-byte the previous one; nothing changes until an operator sets it.
+//
+// FTS_RECENCY (default on) is the keyword branch's own recency re-rank inside
+// the hybrid search (lambda 0.7, tau 7 days); off = the branch keeps the plain
+// bm25 order, so the time signal is not counted twice. It does not touch the
+// keyword-only search.
+//
+// Invalid values fall back to the default and are reported once (db.ts).
+export interface HybridRecencyConfig {
+  /** Weight of the created_at recency term in the fused score; 0 = off. */
+  weight: number
+  /** Time constant of the term, in days. */
+  tauDays: number
+  /** The hybrid search's keyword branch keeps its own recency re-rank. */
+  ftsRecency: boolean
+}
+export const HYBRID_RECENCY_DEFAULT: HybridRecencyConfig = { weight: 0, tauDays: 30, ftsRecency: true }
+export function resolveHybridRecencyConfig(raw: (key: string) => string | undefined): { config: HybridRecencyConfig; invalid: string[] } {
+  const invalid: string[] = []
+  const num = (key: string, lo: number, hi: number, loOpen: boolean): number | null => {
+    const text = (raw(key) ?? '').trim()
+    if (text === '') return null
+    const n = /^[0-9]+(\.[0-9]+)?$/.test(text) ? Number(text) : NaN
+    if (!Number.isFinite(n) || n > hi || (loOpen ? n <= lo : n < lo)) {
+      invalid.push(key)
+      return null
+    }
+    return n
+  }
+  const flag = (key: string): boolean | null => {
+    const text = (raw(key) ?? '').trim().toLowerCase()
+    if (text === '') return null
+    if (['1', 'true', 'yes', 'on'].includes(text)) return true
+    if (['0', 'false', 'no', 'off'].includes(text)) return false
+    invalid.push(key)
+    return null
+  }
+  return {
+    config: {
+      weight: num('MEMORY_HYBRID_RECENCY_WEIGHT', 0, 1, false) ?? HYBRID_RECENCY_DEFAULT.weight,
+      tauDays: num('MEMORY_HYBRID_RECENCY_TAU_DAYS', 0, 3650, true) ?? HYBRID_RECENCY_DEFAULT.tauDays,
+      ftsRecency: flag('MEMORY_HYBRID_FTS_RECENCY') ?? HYBRID_RECENCY_DEFAULT.ftsRecency,
+    },
+    invalid,
+  }
+}
+const hybridRecencyResolved = resolveHybridRecencyConfig(cfg)
+export const MEMORY_HYBRID_RECENCY: HybridRecencyConfig = hybridRecencyResolved.config
+export const MEMORY_HYBRID_RECENCY_INVALID: string[] = hybridRecencyResolved.invalid
+
 // The base URL an OLLAMA-CLASSED agent talks to is not the same thing as the
 // ollama API this install uses elsewhere. agent-process.ts only needs an
 // ANTHROPIC-compatible /v1/messages endpoint; the other four OLLAMA_URL

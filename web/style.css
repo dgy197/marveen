@@ -1656,6 +1656,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .agents-grid[data-card-mode="activity"] .agent-card-footer,
 .agents-grid[data-card-mode="activity"] .agent-card-actions,
 .agents-grid[data-card-mode="activity"] .agent-reauth-banner,
+.agents-grid[data-card-mode="activity"] .agent-sharedenv-banner,
 .agents-grid[data-card-mode="activity"] .agent-tmux-cmds { display: none; }
 .agents-grid[data-card-mode="activity"] .agent-card-activity { display: block; margin-top: 14px; }
 /* Cards that carry no live state: the add button and federated (remote-system)
@@ -7107,6 +7108,14 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   margin: 8px 0 0;
 }
 .agent-reauth-reason { font-size: 11px; color: #ef4444; font-weight: 600; flex: 1; }
+.agent-sharedenv-banner {
+  background: color-mix(in srgb, var(--warning, #d4a52c) 12%, transparent);
+  border: 1px solid var(--warning, #d4a52c);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 8px 0 0;
+}
+.agent-sharedenv-text { font-size: 11px; color: var(--warning, #d4a52c); font-weight: 600; overflow-wrap: anywhere; }
 .btn-danger {
   background: #ef4444;
   color: #fff;

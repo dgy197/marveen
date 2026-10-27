@@ -97,3 +97,54 @@ describe('updateEnvFile keeps the .env mode', () => {
     expect(modeOf(testEnvPath)).toBe(0o600)
   })
 })
+
+// Card fec6335f (BE-3, round 2): the .env writer is shared, and the fleet
+// import feeds it keys and values from an uploaded file. A key that is not a
+// plain variable name, or a value with a line break or NUL, could forge a
+// second line (`x\nCREDIT_GATE_MODE=off`) or slip past an exact-match deny
+// list (`CREDIT_GATE_MODE `). Such an entry is refused, and nothing is written.
+describe('updateEnvFile refuses entries that could forge a line', () => {
+  it('a key that is not ^[A-Z_][A-Z0-9_]*$, or a value with CR, LF or NUL: throws, the file is untouched', async () => {
+    writeFileSync(testEnvPath, 'MAIN_AGENT_ID=brainy\nCREDIT_GATE_MODE=enforce\n')
+    const before = readFileSync(testEnvPath, 'utf-8')
+    const { updateEnvFile, readEnvFile, InvalidEnvEntryError } = await import('../env.js')
+    const bad: Array<Record<string, string>> = [
+      { 'CREDIT_GATE_MODE ': 'off' },
+      { ' CREDIT_GATE_MODE': 'off' },
+      { credit_gate_mode: 'off' },
+      { '1ABC': 'x' },
+      { 'A-B': 'x' },
+      { BOT_DISPLAY: 'x\nCREDIT_GATE_MODE=off' },
+      { BOT_DISPLAY: 'x\rCREDIT_GATE_MODE=off' },
+      { BOT_DISPLAY: 'x\u0000y' },
+      { MAIN_AGENT_ID: 'ok', BOT_DISPLAY: 'x\nINTERACTIVE_ANTHROPIC_KEY_POLICY=allow' },
+    ]
+    for (const updates of bad) {
+      expect(() => updateEnvFile(updates), JSON.stringify(updates)).toThrow(InvalidEnvEntryError)
+      expect(readFileSync(testEnvPath, 'utf-8')).toBe(before)
+    }
+    expect(readEnvFile(['CREDIT_GATE_MODE']).CREDIT_GATE_MODE).toBe('enforce')
+  })
+
+  it('the error names the key, never the value', async () => {
+    writeFileSync(testEnvPath, 'A=1\n')
+    const { updateEnvFile } = await import('../env.js')
+    let msg = ''
+    try {
+      updateEnvFile({ BOT_DISPLAY: 'secret-value\nX=1' })
+    } catch (err) {
+      msg = (err as Error).message
+    }
+    expect(msg).toContain('BOT_DISPLAY')
+    expect(msg).not.toContain('secret-value')
+  })
+
+  it('a valid entry is still written as before', async () => {
+    writeFileSync(testEnvPath, 'A=1\n')
+    const { updateEnvFile } = await import('../env.js')
+    updateEnvFile({ MAIN_AGENT_MODEL: 'claude-sonnet-5-5', _X1: 'a=b c' })
+    const text = readFileSync(testEnvPath, 'utf-8')
+    expect(text).toContain('MAIN_AGENT_MODEL=claude-sonnet-5-5')
+    expect(text).toContain('_X1=a=b c')
+  })
+})

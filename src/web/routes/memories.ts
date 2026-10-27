@@ -1,21 +1,32 @@
 import {
   saveAgentMemory, getAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
-  hybridSearch, backfillEmbeddings,
+  hybridSearchWith, backfillEmbeddings, classifyRelevance, relevanceHeaderFields,
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
   getMemoryById, deleteMemoryById, getMemoryVersions,
   type Memory, type MemoryRow,
 } from '../../db.js'
-import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ } from '../../config.js'
+import {
+  MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ,
+  MEMORY_ABSTAIN_CONFIG, MEMORY_ABSTAIN_INVALID,
+} from '../../config.js'
 import { createHash } from 'crypto'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
-import type { HybridSearchTrace } from '../../db.js'
+import type { HybridSearchTrace, SearchStageTimes } from '../../db.js'
+import { SERVER_TIMING_HYBRID, SERVER_TIMING_KEYWORD, serverTimingHeader } from '../server-timing.js'
+import { explainHit, type MemorySearchExplain } from '../memory-explain.js'
+import { resolveDateFilter } from '../../date-range.js'
+import { noteGateOrigin } from '../../memory-gate/origin.js'
 import type { RouteContext } from './types.js'
 
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
 // src/db.ts so the API rejects bad values before they even reach SQLite.
 const MEMORY_CATEGORIES = new Set(['hot', 'warm', 'cold', 'shared'])
+
+// One WARN per process for a rejected MEMORY_ABSTAIN_* value (config.ts is
+// imported before the logger exists, so the boot cannot log it itself).
+let abstainInvalidWarned = false
 
 // --- Memory content filter (card b1ea54ce) ---------------------------------
 //
@@ -106,7 +117,7 @@ function stripDiacritics(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '')
 }
 
-function containsSuspiciousContent(content: string): boolean {
+export function containsSuspiciousContent(content: string): boolean {
   const plain = stripDiacritics(content)
   return SUSPICIOUS_PATTERNS.some((pattern) => pattern.test(content) || pattern.test(plain))
 }
@@ -237,6 +248,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       data.keywords || undefined,
       true
     )
+    noteGateOrigin(result.id) // memory write gate b1: deferred, total, inert unless the gate is on
     // Warn-only homoglyph check (GATEHOMOGLIFSWEEP816): the save above already
     // happened -- legitimate Cyrillic/Greek content (quotes, foreign records)
     // must never be lost, so the finding rides the response instead of a 4xx.
@@ -252,6 +264,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/memories' && method === 'GET') {
+    const tHandler = performance.now()
     const q = url.searchParams.get('q')?.trim() || ''
     const agentIdAlias = url.searchParams.get('agent_id')
     if (agentIdAlias && !url.searchParams.get('agent')) {
@@ -266,6 +279,20 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // find its memory; what the default owes the caller is the LABEL below,
     // not silence.
     const strictOnly = url.searchParams.get('strict') === '1'
+    // abstain=1 asks the hybrid answer for a relevance label (card 94f8d99f,
+    // point 3). Opt-in, so every existing caller gets a byte-identical answer;
+    // it labels, it never hides rows, and the strict=1 path ignores it.
+    const wantRelevance = url.searchParams.get('abstain') === '1'
+    // timing=1 asks a SEARCH (q given) for a Server-Timing header with the
+    // stage times (card 94f8d99f, w3 DW1). Opt-in like abstain=1, so every
+    // existing caller gets a byte-identical answer; a listing never gets one.
+    const wantTiming = url.searchParams.get('timing') === '1' && q !== ''
+    const stageTimes: SearchStageTimes = { fts: 0, embed: 0, vecsql: 0, vecscore: 0, fuse: 0 }
+    // explain=1 puts a `search` object (rrf, fts_rank, vec_rank, cos) on every
+    // row of a HYBRID search (card 94f8d99f, w3 DW2 / kanban 6a2827da). Opt-in;
+    // on any other branch it is ignored, not an error: a caller that falls back
+    // from hybrid to keyword search must not get a 400 for the same URL.
+    const wantExplain = url.searchParams.get('explain') === '1' && q !== '' && mode === 'hybrid'
     // #947: offset is honoured on the LISTING branches only. A negative or
     // non-numeric value is clamped to 0 (no page skip) rather than erroring --
     // the failure this fixes was a SILENT one, and a hard 400 on a stray value
@@ -282,6 +309,22 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
+    // Card f90928e3: date= / since= / until= narrow the search to a created_at
+    // window. An unknown expression is a 400 with the accepted forms: a filter
+    // that is silently dropped would answer a wider question than the one asked.
+    // The window goes INTO every search branch below (like `category`), never
+    // after the LIMIT.
+    const dateFilter = resolveDateFilter({
+      date: url.searchParams.get('date'),
+      since: url.searchParams.get('since'),
+      until: url.searchParams.get('until'),
+    })
+    if (!dateFilter.ok) {
+      json(res, { error: dateFilter.error }, 400)
+      return true
+    }
+    const tsRange = dateFilter.filter?.ts
+
     let results: Memory[]
     // GH #1025: a hybrid answer built entirely by the vector branch looks the
     // same as one with lexical support. The trace rides the response so the
@@ -293,35 +336,46 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // `limit`, which meant a filtered search truncated silently -- and said
     // relaxed=false while doing it. Every search branch below takes it now.
     const searchCategory = tier || undefined
+    // The fused rows with their numbers, kept only for explain=1.
+    const explainById = new Map<number, MemorySearchExplain>()
+    // The keyword branches below time themselves as one `fts` stage (the LIKE
+    // fallback inside it); the hybrid branch gets its five stages from the search.
+    const tSearch = wantTiming ? performance.now() : 0
     if (q && mode === 'hybrid') {
-      results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, hybridTrace, searchCategory)
+      // Same rows as hybridSearch (that is this call minus the scores).
+      const hits = await hybridSearchWith(
+        getDb(), agentId || MAIN_AGENT_ID, q, limit, hybridTrace, searchCategory,
+        { ...(wantTiming ? { timing: stageTimes } : {}), ...(tsRange ? { range: tsRange } : {}) },
+      )
+      results = hits.map(h => h.memory)
+      if (wantExplain) for (const h of hits) explainById.set(h.memory.id, explainHit(h))
     } else if (q && agentId) {
-      results = searchAgentMemories(agentId, q, limit, searchTrace, !strictOnly, searchCategory)
+      results = searchAgentMemories(agentId, q, limit, searchTrace, !strictOnly, searchCategory, tsRange)
       if (results.length === 0) {
         // Substring fallback. It is NOT a second relaxation: LIKE %q% still
         // requires the query to appear literally, so a query that matches
         // nothing still returns nothing.
         const db2 = getDb()
-        results = (searchCategory
-          ? db2.prepare("SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?")
-              .all(agentId, searchCategory, `%${q}%`, `%${q}%`, limit)
-          : db2.prepare("SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?")
-              .all(agentId, `%${q}%`, `%${q}%`, limit)) as Memory[]
+        const dt = tsRange ? ' AND created_at >= ? AND created_at <= ?' : ''
+        results = db2.prepare(`SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${searchCategory ? ' AND category = ?' : ''}${dt} AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?`)
+          .all(agentId, ...(searchCategory ? [searchCategory] : []), ...(tsRange ? [tsRange.fromTs, tsRange.toTs] : []), `%${q}%`, `%${q}%`, limit) as Memory[]
       }
     } else if (q) {
-      results = searchMemories(q, ALLOWED_CHAT_ID, limit, !strictOnly, searchCategory)
+      results = searchMemories(q, ALLOWED_CHAT_ID, limit, !strictOnly, searchCategory, tsRange)
       if (results.length === 0) {
         const db2 = getDb()
-        results = (searchCategory
-          ? db2.prepare('SELECT * FROM memories WHERE content LIKE ? AND category = ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, searchCategory, limit)
-          : db2.prepare('SELECT * FROM memories WHERE content LIKE ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, limit)) as Memory[]
+        const dt = tsRange ? ' AND created_at >= ? AND created_at <= ?' : ''
+        results = db2.prepare(`SELECT * FROM memories WHERE content LIKE ?${searchCategory ? ' AND category = ?' : ''}${dt} ORDER BY accessed_at DESC LIMIT ?`)
+          .all(`%${q}%`, ...(searchCategory ? [searchCategory] : []), ...(tsRange ? [tsRange.fromTs, tsRange.toTs] : []), limit) as Memory[]
       }
     } else if (agentId) {
-      // Category goes into the query, not a post-filter: see getAgentMemories.
-      results = getAgentMemories(agentId, limit, tier || undefined, offset)
+      // Category and date window go into the query, not a post-filter: see getAgentMemories.
+      results = getAgentMemories(agentId, limit, tier || undefined, offset, tsRange)
     } else {
-      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset)
+      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset, tsRange)
     }
+
+    if (wantTiming && mode !== 'hybrid') stageTimes.fts = performance.now() - tSearch
 
     // Kept as a backstop, not as the mechanism. Since MEMKERESVAK917 every
     // branch above filters in SQL, so this is a no-op on a correct answer --
@@ -334,21 +388,52 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // e.g. the dashboard browsing all memories) is NOT a recall and must not
     // refresh accessed_at -- otherwise every poll would keep everything "fresh"
     // and defeat staleness detection.
+    const tTouch = wantTiming ? performance.now() : 0
     if (q && results.length) touchMemoriesAccessed(results.map(m => m.id))
+    const tFmt = wantTiming ? performance.now() : 0
 
     const formatted = results.map(m => ({
       ...m,
       embedding: undefined,
       created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
+      // Without explain=1 there is no `search` key at all, so the body is the old one.
+      ...(wantExplain ? { search: explainById.get(m.id) ?? null } : {}),
     }))
+    if (wantTiming) {
+      const tDone = performance.now()
+      // `mode === 'hybrid'` is the same test the X-Memory-Search branch below uses.
+      res.setHeader(
+        'Server-Timing',
+        serverTimingHeader(mode === 'hybrid' ? SERVER_TIMING_HYBRID : SERVER_TIMING_KEYWORD, {
+          ...stageTimes,
+          touch: tFmt - tTouch,
+          fmt: tDone - tFmt,
+          total: tDone - tHandler,
+        }),
+      )
+    }
+    // The window actually applied, appended last so a caller matching the
+    // earlier fields keeps working. A side the caller left open stays empty
+    // (`date=2026-10-01..`). The filter never relaxes: no tag means no window.
+    const dateTag = dateFilter.filter
+      ? `; date=${dateFilter.filter.from ?? ''}..${dateFilter.filter.to ?? ''}`
+      : ''
     // The body of this endpoint is a bare array and several callers index into
     // it, so the trace rides a header rather than changing the shape.
     if (q && mode === 'hybrid') {
+      let relevanceFields = ''
+      if (wantRelevance) {
+        if (MEMORY_ABSTAIN_INVALID.length > 0 && !abstainInvalidWarned) {
+          abstainInvalidWarned = true
+          logger.warn({ keys: MEMORY_ABSTAIN_INVALID }, 'memory relevance: invalid MEMORY_ABSTAIN_* value ignored (an invalid MIN_COS keeps the label unknown, an invalid weight counts as 0)')
+        }
+        relevanceFields = relevanceHeaderFields(hybridTrace, classifyRelevance(hybridTrace, MEMORY_ABSTAIN_CONFIG).relevance)
+      }
       res.setHeader(
         'X-Memory-Search',
         `fts=${hybridTrace.ftsHits}; vector=${hybridTrace.vectorHits};` +
-          ` relaxed=${hybridTrace.ftsRelaxed}; vector-only=${hybridTrace.vectorOnly}`,
+          ` relaxed=${hybridTrace.ftsRelaxed}; vector-only=${hybridTrace.vectorOnly}` + relevanceFields + dateTag,
       )
     } else if (q) {
       // The label the endpoint owed its callers. `relaxed=true` means no row
@@ -356,7 +441,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       // caller answering "do we have anything on this" can tell the two apart
       // without asking twice. `strict=true` says the caller demanded a real
       // match, and an empty body then means exactly what it looks like.
-      res.setHeader('X-Memory-Search', `strict=${strictOnly}; relaxed=${searchTrace.relaxed}; hits=${results.length}`)
+      res.setHeader('X-Memory-Search', `strict=${strictOnly}; relaxed=${searchTrace.relaxed}; hits=${results.length}${dateTag}`)
     } else {
       // The listing branches owe a label too. Without one the caller cannot
       // tell "this endpoint does not label its answers" from "this answer was
@@ -370,7 +455,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       // body alone cannot see that.
       res.setHeader(
         'X-Memory-Search',
-        `listing=true; hits=${results.length}; truncated=${results.length >= limit}`,
+        `listing=true; hits=${results.length}; truncated=${results.length >= limit}${dateTag}`,
       )
     }
     jsonMaybeGzip(req, res, formatted)
@@ -549,11 +634,14 @@ Respond ONLY with JSON, nothing else:
   if (memUpdateMatch && method === 'GET') {
     const id = parseInt(memUpdateMatch[1], 10)
     const row = getDb()
-      .prepare('SELECT id, agent_id, category, content, keywords, created_at, accessed_at, updated_at, updated_by FROM memories WHERE id = ?')
+      .prepare('SELECT id, agent_id, category, content, keywords, created_at, accessed_at, updated_at, updated_by, embedding IS NOT NULL AS has_embedding FROM memories WHERE id = ?')
       .get(id) as Record<string, unknown> | undefined
     if (!row) { json(res, { error: 'Memory not found' }, 404); return true }
     // PR #1357: `length` lets a caller see the size before a guarded write.
-    json(res, { ...row, version: memoryVersion(row.content as string), length: String(row.content ?? '').length })
+    // `has_embedding` (card d4e7fea7) says whether the row has a vector, so an
+    // edited memory that is still waiting for its re-embedding can be told apart
+    // from an indexed one. The vector itself is never part of the response.
+    json(res, { ...row, has_embedding: row.has_embedding === 1, version: memoryVersion(row.content as string), length: String(row.content ?? '').length })
     return true
   }
 

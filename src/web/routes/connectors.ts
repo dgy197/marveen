@@ -17,6 +17,8 @@ import { shellEscape } from '../sanitize.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
 import { logVaultRead, isSshPrivateKeyId, principalOf } from '../vault-acl.js'
+import { noteCreditKeyRead } from '../credit-gate/key-reads.js'
+import { getCreditGateRuntime } from '../credit-gate/runtime.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
   syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
@@ -754,16 +756,19 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     // feature, the dashboard's reveal/edit buttons, scripts, skills, agent commands: 0).
     // The audit row is kept so an attempt stays visible, and the key is not even decrypted.
     if (isSshPrivateKeyId(id)) {
-      logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id))
+      logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), ctx.req)
       json(res, { error: 'SSH private keys are not served by this route' }, 403)
       return true
     }
     const val = getSecret(id)
     // VAULTSZELES826 F0: one audit row per value read (id, kind, principal,
     // allowlist verdict) BEFORE the value leaves the server. Audit only: the
-    // verdict never blocks here. The value is not passed to the logger.
-    logVaultRead(id, ctx.auth, val !== null)
+    // verdict never blocks here, and neither does the self-asserted caller label
+    // the row carries. The value is not passed to the logger.
+    logVaultRead(id, ctx.auth, val !== null, ctx.req)
     if (val === null) { json(res, { error: 'Not found' }, 404); return true }
+    // Credit gate G-03: a counter of the shared batch key's reads (a name and a number, never the value).
+    noteCreditKeyRead(id, ctx.auth, getCreditGateRuntime())
     json(res, { id, value: val })
     return true
   }

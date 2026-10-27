@@ -40,6 +40,7 @@ import {
 import { sendSystemDirective } from './system-directive.js'
 import { isRestartInFlight, beginRestart, endRestart } from './restart-lock.js'
 import { resolveMainConfigDecision, type MainConfigDecision } from './main-config-decision.js'
+import { claimMainOwnerAlert, keyGuardRefusalStands, mainKeyGuardRefusal, mainSessionHeldAlertText } from './main-agent-key-guard.js'
 import { runMainContinueRestart, type ContinueRestartResult } from './main-rotation-continue.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence, reapForeignMainPollers } from './channel-poller-reap.js'
@@ -79,6 +80,15 @@ import { getDesiredAgents } from './agent-desired-state.js'
 import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { exactTmuxTarget } from '../tmux-target.js'
+import {
+  interactiveKeyPolicy,
+  assertLaunchCmdClean,
+  recordGuardEvent,
+  InteractiveKeyGuardError,
+  INTERACTIVE_UNSET,
+  INTERACTIVE_KEY_ENV_NAMES,
+  type InteractiveKeyPolicy,
+} from './interactive-key-guard.js'
 
 // Lazily resolved (see makeLazyBinResolver): a module-level `resolveFromPath`
 // const throws at IMPORT time, so any environment where the binary is not
@@ -926,8 +936,18 @@ export function buildMainSessionRespawnCmd(opts: {
    * disabled, and the extra bot comes up deaf. null/absent = no flag.
    */
   extraSettingsPath?: string | null
+  /**
+   * fec6335f: INTERACTIVE_ANTHROPIC_KEY_POLICY for this launch. Absent = the
+   * dashboard process's policy (interactiveKeyPolicy(), from .env), so no call
+   * site can forget it; tests pin it. This command never carries a custom
+   * provider's env, so it is always a first-party launch: under `forbid` it
+   * starts with INTERACTIVE_UNSET (the pane gets the tmux SERVER's global env)
+   * and is checked by assertLaunchCmdClean; under `allow` it is unchanged.
+   */
+  keyPolicy?: InteractiveKeyPolicy
 }): string {
-  return [
+  const keyPolicy = opts.keyPolicy ?? interactiveKeyPolicy()
+  const cmd = (keyPolicy === 'forbid' ? INTERACTIVE_UNSET : '') + [
     // FLEETVENV923: same venv-first PATH as startAgentProcess and channels.sh.
     `export PATH="${fleetVenvPathPrefix()}/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"`,
     `&& export ${opts.channelStateEnv.name}=${shSingleQuote(opts.channelStateEnv.dir)}`,
@@ -984,6 +1004,17 @@ export function buildMainSessionRespawnCmd(opts: {
     ...(opts.model ? ['--model', shSingleQuote(opts.model)] : []),
     [`--channels plugin:${opts.pluginId}`, ...(opts.extraPluginIds ?? []).map((p) => `plugin:${p}`)].join(' '),
   ].join(' ')
+  // The last check before every main-session respawn-pane sink (all of them
+  // build their command here); a no-op under allow.
+  try {
+    assertLaunchCmdClean(cmd, { policy: keyPolicy, firstParty: true })
+  } catch (err) {
+    if (err instanceof InteractiveKeyGuardError) {
+      recordGuardEvent({ source: 'main-launch-guard', where: 'buildMainSessionRespawnCmd:launch-cmd', names: err.names, agent: MAIN_AGENT_ID })
+    }
+    throw err
+  }
+  return cmd
 }
 
 // The *_STATE_DIR export every main-session respawn must carry -- the same
@@ -991,6 +1022,31 @@ export function buildMainSessionRespawnCmd(opts: {
 // dir on a not-yet-migrated install).
 export function mainChannelStateEnv(provider: ChannelProviderType): { name: string; dir: string } {
   return { name: channelStateDirEnvVar(provider), dir: channelStateDir(provider) }
+}
+
+// 45b778e9: the relaunch branch of respawnMainSessionFresh, with its two effects injected so the
+// "no silent success" promise is held by BEHAVIOUR. The source-only asserts in
+// channel-monitor-respawn-session-gone.test.ts let a real mutation of the call site
+// (`if (false && !mainRelaunchSucceeded(created))`) stay green in that test and in the full suite.
+//
+// 'grace' counts as success ON PURPOSE (mainRelaunchSucceeded): a launch is already in flight.
+// Its measured limit: createMainChannelsSession() starts the grace window right after the
+// synchronous spawn(), and channels.sh runs detached, unref'd and with stdio ignored, so a launch
+// that dies early is never observed here. For at most MAIN_SESSION_CREATE_GRACE_MS such a failed
+// launch still reads as 'grace'; after the window the monitor's session-absent check calls
+// createMainChannelsSession() again. A missing script or a synchronous spawn error stays loud.
+export function relaunchGoneMainSession(
+  create: () => MainSessionCreateResult,
+  stamp: () => void,
+): MainSessionCreateResult {
+  const created = create()
+  logger.warn({ session: MAIN_CHANNELS_SESSION, created },
+    'respawnMainSessionFresh: session gone after reap, relaunched via channels.sh')
+  if (!mainRelaunchSucceeded(created)) {
+    throw new Error(`main channels session gone and relaunch failed: ${created}`)
+  }
+  stamp()
+  return created
 }
 
 // FRESH respawn of the main channels session, for hosts with no launchd.
@@ -1048,15 +1104,9 @@ export function respawnMainSessionFresh(): void {
   if (mainChannelsSessionExists()) {
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
   } else {
-    const created = createMainChannelsSession()
-    logger.warn({ session: MAIN_CHANNELS_SESSION, created },
-      'respawnMainSessionFresh: session gone after reap, relaunched via channels.sh')
-    if (!mainRelaunchSucceeded(created)) {
-      throw new Error(`main channels session gone and relaunch failed: ${created}`)
-    }
     // A fresh session starts its own claude: the respawn-specific follow-ups below
     // (identity, plugin unlock) are channels.sh's job on this path, not ours.
-    writeRespawnStamp()
+    relaunchGoneMainSession(createMainChannelsSession, writeRespawnStamp)
     return
   }
   // Stamp IMMEDIATELY after the respawn, before the scheduling follow-ups.
@@ -1375,10 +1425,25 @@ export function createMainChannelsSession(): MainSessionCreateResult {
       cwd: PROJECT_ROOT,
     })
     child.unref()
+    const prevSessionCreate = marveenLastSessionCreate
     marveenLastSessionCreate = now
     // Fold into the shared cold-start grace so the down-cascade defers to this
     // boot instead of stacking a respawn on a session that is still coming up.
     writeRespawnStamp()
+    // fec6335f: a main session absent because channels.sh refuses it on the
+    // interactive-key guard (its marker, checked in main-agent-key-guard.ts) is
+    // not "gone" news every grace window: channels.sh was still started above
+    // (it re-runs the decision), and the owner hears about it once a day. A
+    // stale marker (the previous start did not refuse) does not count: see
+    // keyGuardRefusalStands.
+    const keyGuardRefusal = mainKeyGuardRefusal(now)
+    if (keyGuardRefusal && keyGuardRefusalStands(keyGuardRefusal, now, prevSessionCreate)) {
+      logger.warn({ session: MAIN_CHANNELS_SESSION, ageS: keyGuardRefusal.ageS }, 'Main channels session absent: channels.sh holds an interactive-key-guard refusal -- re-running it, owner alerted at most once a day')
+      if (claimMainOwnerAlert([{ source: 'channels-hold', agent: MAIN_AGENT_ID, names: [...INTERACTIVE_KEY_ENV_NAMES] }], now)) {
+        notifyChannel(mainSessionHeldAlertText()).catch(() => {})
+      }
+      return 'started'
+    }
     logger.warn({ session: MAIN_CHANNELS_SESSION }, 'Main channels session absent -- recreating via channels.sh')
     sendRoutineAlert('main-session-recreate', `♻️ A ${MAIN_CHANNELS_SESSION} session eltunt -- ujrainditom (channels.sh). Enelkul minden utemezett feladat csendben kimaradna.`)
     return 'started'

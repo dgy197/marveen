@@ -15,7 +15,8 @@ import {
   mainChannelsSessionExists,
   createMainChannelsSession,
 } from '../channel-monitor.js'
-import { liveProbeAuth, stampTokenVerified } from '../claude-credentials-guard.js'
+import { liveProbeAuth, stampTokenVerified, looksLikeSetupToken } from '../claude-credentials-guard.js'
+import { ENV_KEY_RE, InvalidEnvEntryError } from '../../env-entry.js'
 import { json, readBody } from '../http-helpers.js'
 import { isManagedSettingsReady, getManagedSettingsSudoCommand } from './agents.js'
 import type { RouteContext } from './types.js'
@@ -184,9 +185,24 @@ function agentsRunning(): boolean {
   try { return sessionExistsOnHost(null, MAIN_CHANNELS_SESSION) } catch { return false }
 }
 
+// Card 053f4e66: any control character (CR, LF, NUL, TAB, ESC, DEL, ...).
+// One LF in a value is a second .env line -- e.g. an install switch such as
+// FLEET_IMPORT_APPLY_ENABLED=1 forged through the shared Bearer.
+const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f]/
+
+// The setup-token shape is the one the installers and the credentials guard
+// check (looksLikeSetupToken: ^sk-ant-oat01-[A-Za-z0-9_-]{40,}$). An API key is
+// sk-ant-apiNN- plus the same URL-safe charset; the old prefix-only tests let
+// anything after the prefix through, line breaks included.
+export const API_KEY_RE = /^sk-ant-api\d{2}-[A-Za-z0-9_-]{20,}$/
+
 // Atomic, idempotent .env update for one key: drop any prior line for the key,
 // keep every other line verbatim, append the new value, chmod 600. Never sed.
-function setEnvKey(key: string, value: string): void {
+// Refuses (throws InvalidEnvEntryError, writes nothing) a key that is not a
+// plain variable name or a value holding any control character.
+export function setEnvKey(key: string, value: string): void {
+  if (typeof key !== 'string' || !ENV_KEY_RE.test(key)) throw new InvalidEnvEntryError(String(key), 'key')
+  if (typeof value !== 'string' || CONTROL_CHAR_RE.test(value)) throw new InvalidEnvEntryError(key, 'value')
   let lines: string[] = []
   try { lines = readFileSync(ENV_FILE, 'utf-8').split('\n') } catch { /* fresh .env */ }
   const kept = lines.filter((l) => l.length > 0 && !l.startsWith(key + '='))
@@ -312,7 +328,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     const agentName = (body.agentName ?? '').trim()
     const ownerName = (body.ownerName ?? '').trim()
     if (!agentName || !ownerName) { json(res, { error: 'agentName es ownerName szukseges.', reason: 'missing' }, 400); return true }
-    if (agentName.length > 40 || ownerName.length > 60 || /[\n\r\0=]/.test(agentName + ownerName)) {
+    if (agentName.length > 40 || ownerName.length > 60 || /[=]/.test(agentName + ownerName) || CONTROL_CHAR_RE.test(agentName + ownerName)) {
       json(res, { error: 'A nev tul hosszu vagy tiltott karaktert tartalmaz.', reason: 'bad-name' }, 400)
       return true
     }
@@ -383,8 +399,9 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     const token = (body.token ?? '').trim()
     const apiKey = (body.apiKey ?? '').trim()
     if (!token && !apiKey) { json(res, { error: 'token vagy apiKey szukseges.', reason: 'missing' }, 400); return true }
-    if (token && !/^sk-ant-oat/.test(token)) { json(res, { error: 'A setup-token formatuma nem stimmel (sk-ant-oat...).', reason: 'bad-token' }, 400); return true }
-    if (apiKey && !/^sk-ant-/.test(apiKey)) { json(res, { error: 'Az API-kulcs formatuma nem stimmel (sk-ant-...).', reason: 'bad-key' }, 400); return true }
+    // Whole-value shape checks (053f4e66): the value lands verbatim in .env.
+    if (token && !looksLikeSetupToken(token)) { json(res, { error: 'A setup-token formatuma nem stimmel (sk-ant-oat01-...).', reason: 'bad-token' }, 400); return true }
+    if (apiKey && !API_KEY_RE.test(apiKey)) { json(res, { error: 'Az API-kulcs formatuma nem stimmel (sk-ant-api03-...).', reason: 'bad-key' }, 400); return true }
 
     // Read BEFORE persisting: on a fresh install the channels session is
     // booted by the installer/service unit with NO credentials, so if the

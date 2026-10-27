@@ -360,6 +360,41 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'EMBED_KEEP_ALIVE',
+    type: 'string',
+    default: '24h',
+    // The same two shapes resolveEmbedKeepAlive (config.ts) accepts, so a value
+    // the boot would discard is refused at save time instead of surfacing as a
+    // WARN after the next restart. Inline: importing config.ts here would be
+    // circular. Empty = unset, the default applies. Zero is refused too: to
+    // Ollama it means "unload after every request".
+    validate: (v) => {
+      const text = v.trim()
+      if (text === '') return null
+      if (/^0+(ms|s|m|h)?$/.test(text)) return 'A 0 nem elfogadott: az Ollama ekkor minden kérés után kiüríti a modellt, így minden keresés hidegindítással indul.'
+      if (/^[0-9]{1,5}(ms|s|m|h)$/.test(text) || /^[0-9]{1,9}$/.test(text)) return null
+      return 'Érvénytelen időtartam: Ollama-formátum (pl. 24h, 30m, 90s, 500ms) vagy egész másodperc. A -1, a tört és az összetett érték (1h30m) nem elfogadott.'
+    },
+    description: 'Mennyi ideig tartsa az Ollama betöltve az embedding-modellt az utolsó kérés után. Ollama időtartam (pl. 24h, 30m, 90s, 500ms) vagy egész másodperc. A -1 (örökre) NEM elfogadott, és a 0 sem: az Ollama a 0-t úgy érti, hogy minden kérés után kiüríti a modellt, így minden keresés hidegindítással (1-2 s) indulna, pont az, ami ellen ez a beállítás van. Hibás érték esetén az alapérték (24h) érvényes, és egyszer WARN kerül a naplóba.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'EMBED_KEEPWARM_MINUTES',
+    type: 'int',
+    default: 5,
+    // Exactly the values resolveEmbedKeepWarmMinutes (config.ts) accepts, so a
+    // value the boot would discard is refused at save time. A value set, not
+    // min/max: 1-4 are not valid. Inline: importing config.ts here would be
+    // circular.
+    valueSet: ['0', '5', '6', '7', '8', '9', '10'],
+    description: 'Hány perc tétlenség (embedding-hívás nélküli idő) után "pingelje" meg a dashboard a már betöltött embedding-modellt, hogy az első keresés ne legyen lassú. A ping keep_alive-ja a modell HÁTRALÉVŐ ideje, így az EMBED_KEEP_ALIVE ablakát nem hosszabbítja; nem betöltött modellnél, leállt Ollamánál és nem loopback EMBED_URL-nél nincs ping. 0 = kikapcsolva. Hibás érték esetén az alapérték (5) érvényes, és egyszer WARN kerül a naplóba.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'AGENT_LOCAL_BASE_URL',
     type: 'string',
     default: '',
@@ -629,6 +664,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: 'boolean',
     default: '0',
     description: 'Telepítés-szintű alapértelmezés a bejövő hangüzenetek átiratához a text módú ügynököknél. Bekapcsolva minden olyan text módú ügynöknél helyi faster-whisper átirat készül, amelynek az agent-config.json-jában nincs voice.transcribeInbound beállítás (az ügynökönkénti érték felülírja ezt). A voice/auto módú ügynököknél az átirat ettől függetlenül mindig elkészül. Hangüzenetenként CPU-időbe kerül. Alapértelmezés: kikapcsolva. A módosítás a dashboard újraindításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'TELEGRAM_TOPICS_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'Telegram-témák: ha a bot privát chatjében témák vannak, a válasz abba a témába megy, ahonnan az üzenet jött, és a gépelés-jelzés is ott látszik. Bekapcsolva a csatorna-indítás egy kiegészítést tesz a Telegram plugin forrására (scripts/patch-telegram-plugin.py), ami a bejövő üzenet téma-azonosítóját átadja az ügynöknek, és a reply toolt témába küldésre is képessé teszi; kikapcsolva a kiegészítést leveszi, és a plugin pontosan a mai. A privát chatben a témákat a BotFather-ben kell bekapcsolni. A riasztások, a jóváhagyás-kérések és a többi rendszerüzenet ettől függetlenül téma nélkül megy ki. Alapértelmezés: kikapcsolva. A módosítás a csatorna következő indításakor lép életbe.',
     module: 'channels',
     secret: false,
     requiresRestart: true,

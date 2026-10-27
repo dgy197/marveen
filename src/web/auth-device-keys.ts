@@ -8,8 +8,13 @@
 // credential.
 //
 // Differences from sessions, both deliberate:
-//   - No idle/absolute TTL by default. A rarely used phone must not die
-//     silently; expiry is per-key OPT-IN (expires_at) chosen at mint time.
+//   - No idle TTL, and the absolute one is fixed per key at mint time
+//     (expires_at), not renewed by use: a rarely used phone must not die
+//     silently, and its end date shows in the key list. A key minted over the
+//     HTTP API always has one (routes/auth.ts: 90 days unless set, at most 365,
+//     card 053f4e66 B); only Bridge pairing still mints without one (K1), and it
+//     sits behind the credential-admin gate. At this module's level expiry
+//     stays optional, so rows stored before that rule resolve as they did.
 //   - The principal is the device itself (name + id), not a user.
 //
 // Zero rows = the feature is off: resolveDeviceKey misses and the gate falls
@@ -38,8 +43,17 @@ const KEY_PREFIX = 'mvdk_'
 export type DeviceKeyScope = 'full' | 'operator'
 export const DEVICE_KEY_SCOPES: readonly DeviceKeyScope[] = ['full', 'operator']
 export const OPERATOR_KEY_DEFAULT_EXPIRY_DAYS = 90
-/** An operator key lives at most a year (owner decision 2026-10-05; a full key keeps its own ceiling). */
+/** An operator key lives at most a year (owner decision 2026-10-05). */
 export const OPERATOR_KEY_MAX_EXPIRY_DAYS = 365
+/**
+ * A full key minted over the HTTP API must expire too (card 053f4e66 B, E1-E6):
+ * 90 days unless set, at most a year. It reaches everything an operator key
+ * does and more, so its ceiling must never exceed the operator's (a test pins
+ * FULL_KEY_MAX_EXPIRY_DAYS <= OPERATOR_KEY_MAX_EXPIRY_DAYS). Separate names on
+ * purpose: equal today, and a change to one must be a decision about that one.
+ */
+export const FULL_KEY_DEFAULT_EXPIRY_DAYS = 90
+export const FULL_KEY_MAX_EXPIRY_DAYS = 365
 
 export interface DeviceKeyPrincipal {
   id: number
@@ -89,8 +103,9 @@ function nowSec(): number {
 }
 
 // Mint a new key. The raw value exists only in the returned object; the row
-// stores its hash. expiresInDays is opt-in -- omitted means the key lives until
-// revoked.
+// stores its hash. expiresInDays is optional here -- omitted means the key lives
+// until revoked, which only Bridge pairing still relies on; the HTTP mint route
+// always passes one (FULL_KEY_* / OPERATOR_KEY_*).
 export function createDeviceKey(name: string, opts: { expiresInDays?: number; installId?: string; scope?: DeviceKeyScope } = {}): MintedDeviceKey {
   const scope = opts.scope ?? 'full'
   if (scope === 'operator' && !(opts.expiresInDays && opts.expiresInDays > 0)) {
@@ -118,7 +133,7 @@ function removeByHash(keyHash: string): void {
 }
 
 // Validate a presented raw key. Returns the device principal or null. Enforces
-// the opt-in expiry and debounces the last_used write to <= once per 60s. The
+// the per-key expiry and debounces the last_used write to <= once per 60s. The
 // cache is hydrated lazily from SQLite so keys survive dashboard restarts.
 export function resolveDeviceKey(raw: string): DeviceKeyPrincipal | null {
   if (!raw || !raw.startsWith(KEY_PREFIX)) return null
@@ -196,7 +211,7 @@ export function revokeAllDeviceKeys(): number {
   return res.changes
 }
 
-// Hourly sweep of keys past their (opt-in) expiry, alongside the session sweep.
+// Hourly sweep of keys past their per-key expiry, alongside the session sweep.
 // Keys without expires_at are never touched.
 export function sweepExpiredDeviceKeys(): number {
   const now = nowSec()

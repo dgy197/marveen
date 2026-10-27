@@ -23,6 +23,11 @@ These files are managed by the dashboard and change at runtime. They are not che
 | `store/claudeclaw.db` | not directly | SQLite database -- memory, kanban, messages, token log, etc. |
 | `store/config-overrides.json` | dashboard UI | Settings-page overrides (plain values only, never contains secrets) |
 | `store/update.pid` | automatic | Update process PID file (concurrency lock) |
+| `store/interactive-key-guard-events.jsonl` | automatic | Guard events of the interactive key guard (names only, never values) -- see [INTERACTIVE_ANTHROPIC_KEY_POLICY](#interactive_anthropic_key_policy----interactive-key-guard) |
+| `store/interactive-key-guard-audit.jsonl` | automatic | The runtime guard's findings in `allow` mode (names only, 0600) |
+| `store/interactive-key-guard-owner-alerts.json` | automatic | Dedupe log of the owner's Telegram alerts (0600) |
+| `store/interactive-key-guard-runner.json` | automatic | The runtime guard's cursor and alert log (0600) |
+| `store/.channels-key-guard-refused` | automatic (channels.sh) | Refusal marker for the main agent's launch under `forbid` |
 
 ### Dashboard language
 
@@ -147,6 +152,8 @@ Every dashboard-editable setting is a registry entry with the following fields:
 |-----|------|---------|-------------|---------|
 | `DASHBOARD_PUBLIC_URL` | string | (empty) | Publicly accessible URL of the dashboard | yes |
 | `OLLAMA_URL` | string | `http://localhost:11434` | Ollama API base URL | yes |
+| `EMBED_KEEP_ALIVE` | string | `24h` | How long Ollama keeps the embedding model loaded after the last request (the request's `keep_alive` field). An Ollama duration (`24h`, `30m`, `90s`, `500ms`) or an integer number of seconds; `-1` (forever), `0` and invalid values are not accepted: the default applies and one WARN is logged. `0` (`0s`, `0ms`, ...) is refused because Ollama then unloads the model after every request, so every search would pay a cold load. The Settings page refuses these at save time | yes |
+| `EMBED_KEEPWARM_MINUTES` | int | `5` | Keep-warm: after this many minutes without an embedding call the dashboard sends one short embedding request with a fixed text to the model that is already loaded, so the first search after a quiet stretch is not slow. It first reads `GET /api/ps` to see whether `EMBED_MODEL` is loaded and how much time it has left; the ping's `keep_alive` is that remaining time (whole seconds, rounded down), so it never extends the `EMBED_KEEP_ALIVE` window and never loads a model. No ping when the model is not loaded, when 60 seconds or less or more than 30 days are left, while an embedding call or a backfill pass runs, during an embedding outage, and when `EMBED_URL` is not a loopback address (127.0.0.1, ::1, localhost). After a failure it pauses 15 minutes, doubling up to 4 hours; a real embedding call that succeeds ends the pause. `0` = off; otherwise a whole number from 5 to 10. Invalid = 5, one WARN; the Settings page refuses it at save time. Read only from `store/config-overrides.json` and `.env`; the launchd plist key is NOT consulted | yes |
 | `MEMORY_IMPORT_CATEGORIZE_MODEL` | string | (empty) | Ollama model that tiers memories on import (override); empty = auto-detect an installed `gemma4`, else all warm | yes |
 
 **Registry -- Heartbeat module:**
@@ -168,6 +175,7 @@ Every dashboard-editable setting is a registry entry with the following fields:
 | Key | Type | Default | Platform | Restart |
 |-----|------|---------|----------|---------|
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (off) | macOS only | yes |
+| `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (off) | all | yes (channel start) |
 
 #### `MAIN_AGENT_ISOLATED_CONFIG` -- main-agent config isolation (macOS)
 
@@ -207,6 +215,55 @@ in `.env`. The change takes effect on the next channels-session restart (the
 **Reverting.** Turn it OFF (dashboard) or set `MAIN_AGENT_ISOLATED_CONFIG=0` (`.env`),
 then restart the channels session -- all three launch paths fall back to the shared
 `~/.claude` behaviour.
+
+#### `TELEGRAM_TOPICS_ENABLED`: the answer goes to the topic the message came from
+
+**What it is for.** Telegram allows topics in a bot's private chat as well (switched on
+for the bot in BotFather). Every message is then written in a topic, but the Telegram
+plugin does not pass the topic id on to the agent, and its `reply` tool cannot address
+a topic: the answer lands outside the topic.
+
+**What it does when on.** At channel start `scripts/patch-telegram-plugin.py` (the same
+script that handles `/status` and the inbound evidence) adds a patch to the plugin source:
+- the `<channel>` tag of a topic message carries a `message_thread_id` attribute (only
+  for a real topic message, `is_topic_message`);
+- the typing indicator shows in the topic;
+- the new, optional `message_thread_id` parameter of the `reply` tool sends every text
+  chunk and every attached file into the topic; a value that is not a positive integer
+  is an error, and nothing is sent;
+- the plugin's instructions and the `telegram-reply-directive.py` hook ask the agent to
+  pass the topic back.
+
+Marveen's own answer paths follow the same topic: the "Dolgozom rajta" placeholder and
+its fallback senders (`telegram_progress*.py`), the commands the hook answers
+(`marveen-commands.py`, mid-turn commands included), and the fallback poller's handoff
+(`channel-coordinator`).
+
+For a message without a topic every call is exactly what it is with the switch off.
+
+**Shared plugin cache.** The patch changes the plugin source in the plugin cache
+(`$CLAUDE_CONFIG_DIR/plugins/cache`, else `~/.claude/plugins/cache`), and every Claude Code
+session that uses the same cache loads the Telegram plugin from there, sessions outside
+Marveen included. They see the optional `message_thread_id` parameter of the `reply` tool
+and the attribute on a topic message's tag as well; as long as they do not pass the
+parameter, they behave as before.
+
+**What does not change.** The `chat_id` stays the same, so owner identification, command
+permissions and approvals are not affected. Alerts, approval requests, scheduled task
+results and the voice reply still go out without a topic.
+
+**Enabling.** Dashboard: *Settings → Channels → `TELEGRAM_TOPICS_ENABLED`*, or
+`TELEGRAM_TOPICS_ENABLED=1` in `.env`. It takes effect at the next channel start. While
+it is on, the "Telegram plugin-patch" row of `/status` measures the patch as well: a
+missing one shows as a `HIÁNYZIK (témák)` line.
+
+**Reverting.** Turn it OFF and restart the channel: the script takes the patch out, and
+the plugin file is byte for byte what it was before the patch.
+
+**After a plugin update.** The next channel start patches the new plugin version. If the
+anchors of the patch do not match, the whole patch is left out (one loud line in
+`store/channels-failures.log`, and `/status` says so); answers then land outside the
+topic, and the channel itself keeps working.
 
 **API endpoints:**
 
@@ -295,6 +352,56 @@ Every sub-agent's directory is gitignored (`agents/` folder), keeping secrets sa
 
 ---
 
+## INTERACTIVE_ANTHROPIC_KEY_POLICY -- interactive key guard
+
+**Purpose.** An interactive Claude Code session (every tmux agent, the worker, the main agent, a background task) that runs on an API key spends that key's own prepaid balance, not the subscription. `forbid` rules this out for every first-party Claude agent, on every launch path this install owns. First-party means: a `claude-` model without a custom provider; a custom provider that is Anthropic itself (a `*.anthropic.com` endpoint, or one that reads the shared `ANTHROPIC_API_KEY_BATCH` key); and every path that exports no provider URL (the worker, the remote ssh launch, `scripts/watchdog.sh`), where the model name does not matter (an `opus` alias included). Whether `authMode: api` is refused differs per path, see the `forbid`, sub-agent item.
+
+**Values.** Read from `.env` only. The Settings page and `config-overrides.json` do not write it (a Bearer call cannot switch it; the fleet import cannot write it into `.env` either).
+
+| `.env` line | Effect |
+|-------------|--------|
+| no such line, no `.env`, or an empty value | `allow` (the previous behaviour, byte-identical) |
+| `INTERACTIVE_ANTHROPIC_KEY_POLICY=allow` | `allow` |
+| `INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid` | `forbid` |
+| anything else (`Allow`, `frobid`, an `export ...` prefix, an unreadable `.env`) | `forbid` (fail-closed: a typo cannot switch the guard off) |
+
+With several lines, the LAST matching `INTERACTIVE_ANTHROPIC_KEY_POLICY=...` line wins, even if its value is invalid (`=frobid` as the last line is `forbid`; an earlier invalid line, on the other hand, is overridden by a later `=allow`). Independently of that, any non-comment line that carries the name in another shape (an `export ` prefix, a Unicode space around the name) is `forbid`, wherever it sits. The dashboard reads it once per process (a change takes effect on dashboard restart); the shell launchers (`channels.sh`, `channel-watchdog.sh`, `stuck-modal-guard.sh`, `watchdog.sh`, `morning-briefing.sh`) read it on every run. The TS and the shell reader give the same answer for the same text (pinned by a test).
+
+**Behaviour per mode.**
+
+- **`allow`**: every launch command is unchanged. The runtime guard still runs, but only writes to the audit log (one line per fingerprint per day); it sends no message and no guard event, and causes no INCIDENT.
+- **`forbid`, sub-agent** (dashboard launch, remote ssh launch, worker, background task; `watchdog.sh` is a separate item, below): the launch does not start, and a guard event is written, if `authMode: api`, if the custom provider is Anthropic itself, or if any settings file the session loads carries a key route (`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` under `env`, or a top-level `apiKeyHelper`), because the settings `env` overrides a shell `unset`. Every allowed launch starts with `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN` (the tmux pane inherits the server's global env), and the finished command is checked once more before the sink (`assertLaunchCmdClean`). The dashboard's agent-modifying endpoints answer 422 to a change that would put a first-party agent on a key.
+  - *Refusing `authMode: api` differs per path.* The dashboard launch and the 422 endpoints refuse only for a `claude-` model (`agent-process.ts:2210`, `routes/agents.ts:252`; only then does the agent's own key go into the launch, `agent-process.ts:2256`). The remote ssh launch, however, refuses for an alias model (`opus`, `sonnet`, `chatgpt/...`) too, because it exports no provider URL (`directAnthropic: true`, `agent-process.ts:1981`; the `authMode` comes from the config, `:1982`). The worker and the background task call the decision with a fixed `authMode: 'shared'` (`agent-worker.ts:662`, `routes/background-tasks.ts:104`), so `authMode` never refuses there; a settings key or an Anthropic custom provider does.
+- **`forbid`, `scripts/watchdog.sh`** (the cron restarter for sub-agents): it does not behave like the dashboard paths.
+  - *No guard event.* On a refusal it writes only one line to its own log (`logs/watchdog.log`, `$LOG`, `scripts/watchdog.sh:352`): `[watchdog] <agent>: interactive-key-guard <reason> (INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid), not starting`. Nothing goes into `store/interactive-key-guard-events.jsonl`, so this refusal produces neither a message to the main agent nor an owner alert. Anyone who expects an event under `forbid` for a watchdog refusal will not find one there; look in `logs/watchdog.log` instead (`grep interactive-key-guard logs/watchdog.log`). The agent stays down until the cause is gone, and the watchdog logs it again on every run.
+  - *The custom provider does not count.* It does not read the `customProvider` field, so it does not refuse a `customProvider` = Anthropic case; it starts the agent with `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN` (`scripts/watchdog.sh:354`; the decision function is `interactive_key_decision`, from `:131`). This is safe because the watchdog exports no key and no provider URL (so every agent it starts is first-party, whatever the model name).
+  - *`authMode: api` refuses only for a `claude-` model* (`:144`, `startswith('claude-')`). An alias model (`opus`, `sonnet`, `chatgpt/...`) starts with the `unset`, because the watchdog never puts the agent's own key into the launch. This is where it differs from the remote ssh path, which refuses for an alias too (see above).
+  - *No `assertLaunchCmdClean`.* It does not check the finished command again; the protection is the decision (`allow` / `unset` / `refuse:<reason>`) and the `unset` prefix. The reasons: `auth-mode-api`, `settings-auth-key` (for any model name: a key name or `apiKeyHelper` in the loaded settings files), `settings-unreadable`, `guard-error`.
+  - The watchdog leaves the main agent's restart to `channels.sh` (`scripts/watchdog.sh:293`), so the `channels.sh` rules apply to it (below).
+- **`forbid`, main agent**: `channels.sh` does not read or export the `.env` key, clears an inherited value, removes it from the tmux server's global env with `-g -u`, and the pane command starts with an `unset`. If the main agent's settings files carry a key route, the main agent STILL starts (channel availability comes first), but a guard event and a direct Telegram alert go to the owner. If the main agent's customProvider is Anthropic itself, `channels.sh` does not start it (the helper's exit code 3) and keeps that decision for 300 seconds (`store/.channels-key-guard-refused`), so launchd does not repeat it every 30 seconds.
+- **Runtime guard**: at startup and every 10 minutes, looking at names only, it scans the tmux global and session env, the settings files, `.env`, the dashboard's own env, the shell rc files, this install's launchd plists and the env names of running `claude` processes; every minute it reads the launch paths' guard events. Under `forbid` it messages the main agent (once per fingerprint per day), and for an event about the main agent the owner also gets a Telegram message (at most one per hour). There is no automatic fix. The own key of a non-Anthropic custom provider agent does not alert.
+
+**Store files.** Each holds names and locations only, never values.
+
+| File | Written by | Content |
+|------|------------|---------|
+| `store/interactive-key-guard-events.jsonl` | every launch path, `channels.sh`, the runtime guard (`forbid` only); `scripts/watchdog.sh` does NOT write here, it logs its refusal to `logs/watchdog.log` | One guard event per line: `{ts, source, where, names, agent}`. The PR-B credit gate goes into INCIDENT from this. |
+| `store/interactive-key-guard-audit.jsonl` | the runtime guard, `allow` only | The findings, one line per fingerprint per day. |
+| `store/interactive-key-guard-owner-alerts.json` | the dashboard | The shared dedupe log of owner alerts (24 hours per fingerprint, at most one alert per hour); survives a dashboard restart. |
+| `store/interactive-key-guard-runner.json` | the runtime guard | The event file's read cursor and the log of alerts sent to the main agent. |
+| `store/.channels-key-guard-refused` | `channels.sh` | `<epoch> <sha256 of the decision's inputs>`. Only under `forbid`, and it counts only as a regular file of our own uid (not a symlink), with no future timestamp and an unchanged input hash. |
+
+**Known limits.**
+
+- *Forged marker.* Any process of the same uid can write a marker with a valid hash (the inputs are readable). The dashboard then sends the once-a-day "customProvider = Anthropic" alert instead of the "session vanished, restarting" one. `channels.sh` still starts and decides again, so the marker does not bypass the decision, it only swaps the alert text. The alert therefore says it speaks from the marker and gives its path; if `store/channels-failures.log` has no fresh `main-agent-custom-provider refused` line, the marker was not written by `channels.sh`.
+- *Remote ssh launch with a non-Anthropic custom provider.* There is deliberately no `unset`: the agent is not first-party, its provider route comes from the remote host's own env (the command exports nothing), and a custom provider authenticates with exactly these names. If the remote host's env has no provider URL, a key there reaches Anthropic unguarded; the runtime guard does not see the remote host.
+- *The guard event's `where` field* appears in the message to the main agent only if it is (a) a known launch label (`<launcher>:<fixed reason>`), or (b) a settings file under the home or the install: `.claude/settings.json`, `.claude/settings.local.json`, `.claude-config/settings.json`, `.claude-config/settings.local.json`, or the same with an `agents/<id>/` prefix, where `<id>` is text that passes the agent-id filter: the same pattern as `AGENT_ID_RX`, which filters the event file's `agent` field (`interactive-key-guard-runner.ts:742`, `^[A-Za-z0-9_-]{1,64}$`), with `SETTINGS_UNDER_ROOT_RX` (`:759`) holding its own identical copy (`shownGuardWhere`, `:761`). So a message to the main agent may quote an `agents/<id>/...` path, but the `<id>` can only be ASCII letters, digits, `_` and `-`, at most 64 characters. The id after the `main-agent-custom-provider:` label is shown as `<egyéb>`; everything else is shown as `<egyéb>` too (the full line stays in the event file).
+- The `unset` at launch protects new sessions only; a session that is already running is flagged by the guard but not stopped.
+
+**Rollback.** In `.env` set `INTERACTIVE_ANTHROPIC_KEY_POLICY=allow` (or delete the line), then restart the dashboard; the shell launchers read `allow` on their next run. Under `allow` every launch command is byte-identical to the old one, the marker has no effect, and on the next start `channels.sh` puts the `.env` key back into the tmux global env. The store files need not be deleted: under `allow` the marker is inert, and the runtime guard writes no guard event and sends no alert.
+
+---
+
 ## templates/ -- Agent Creation Templates
 
 These templates are populated during agent scaffolding and placed into `agents/<name>/`.
@@ -318,6 +425,20 @@ These templates are populated during agent scaffolding and placed into `agents/<
 | `researcher.json` | strict | Researcher profile, limited writes |
 
 Profile is set via the `profileId` field in `agent-config.json` and configurable from the dashboard "Agents" view.
+
+---
+
+## Memory: daily-log mirror and date filter
+
+There is nothing to configure: both are always on. Details: [memory-system.md](memory-system.md) (Hungarian).
+
+| What | Behaviour |
+|------|-----------|
+| Log mirror | Every `POST /api/daily-log` entry also creates a `cold`-tier, `episodic` `memories` row (`[Napló YYYY-MM-DD HH:MM] <text>`, keywords `napi-naplo, YYYY-MM-DD`); the `daily_log_memory` table holds the link. Text that fails the memory content filter is still saved to the log, without a mirror (`memory_mirror: "skipped:content-filter"`). |
+| Backfill | `npx tsx scripts/daily-log-backfill-memories.ts [--db <path>] [--apply]`. A dry run by default that writes nothing (the database is opened read-only, no migration); `--apply` writes, idempotent. |
+| Date filter | `GET /api/memories?...&date=<expression>` or `&since=YYYY-MM-DD&until=YYYY-MM-DD`, calendar days in the install time zone (`APP_TZ`). Applied in SQL before the LIMIT in every search branch. An invalid value is a 400. The `X-Memory-Search` header carries `date=<from>..<to>` with the range actually used. |
+| Relevance | The similarity floor (`MEMORY_VECTOR_MIN_MARGIN`, `MEMORY_VECTOR_BASELINE_MIN_ROWS`, `MEMORY_VECTOR_SMALL_CORPUS_MIN_SIMILARITY`) is computed from the candidates inside the date window; a narrow window can fall back to the small-corpus floor. |
+| Indexes | `memories(agent_id, created_at)`, `memories(category, created_at)` (created at startup, idempotent). |
 
 ---
 
@@ -381,9 +502,31 @@ Key configuration variables live in the launchd plist (`~/Library/LaunchAgents/c
 | `SLACK_CHANNEL_ID` | Slack channel ID |
 | `WEB_PORT` | Dashboard port (default: 3420). Can be set at install time via the `--port <N>` CLI flag (`./install-linux.sh --port 3421`) or as an env variable (`WEB_PORT=3421 ./install.sh`). |
 | `ANTHROPIC_API_KEY` | Claude API key |
+| `INTERACTIVE_ANTHROPIC_KEY_POLICY` | `allow` (default; a missing or empty value too) or `forbid` (any other value too): whether an interactive first-party Claude session may be started on an API key. `.env` only. See [above](#interactive_anthropic_key_policy----interactive-key-guard) |
 | `OWNER_NAME` | Owner name (e.g. "Jónás Gergő") |
 | `BOT_NAME` | Main agent name (e.g. "Jarvis") |
 | `VOICE_TRANSCRIBE_INBOUND` | `1` = transcribe inbound voice notes for text-mode agents too (default off; per-agent `voice.transcribeInbound` overrides). See `voice.md` |
+| `MEMORY_ABSTAIN_MIN_COS` | Read only from `store/config-overrides.json` and `.env` (in that order); the process environment, the launchd plist included, is NOT consulted. Threshold (0-1) of the hybrid memory search's relevance label. Only `GET /api/memories?mode=hybrid` called with `abstain=1` uses it: `X-Memory-Search` then ends in `; top-cos=<x.xx>; overlap=<n>; relevance=<low\|ok\|unknown>`. A label, not a filter: the rows are the same. Score = topCos + `W_GAP` * (topCos - second cosine) + `W_OVERLAP` * min(overlap, 2) + `W_FTS` * (strict keyword match); `low` when the score is below the threshold. Empty (default) or invalid = off: `relevance=unknown`. When the vector branch is out (embedding failure) always `unknown`, never `low`. Calibrated (2026-10-17, v2 set, bge-m3): 0.53, every weight 0; do NOT set it before the hold-out measurement (fitted on 6 negative questions, upper margin 0.011) |
+| `MEMORY_ABSTAIN_W_GAP` | Read only from `store/config-overrides.json` and `.env` (in that order); the process environment, the launchd plist included, is NOT consulted. Weight of the gap (best minus second cosine) in the relevance score, 0-10, default 0. Invalid = 0 |
+| `MEMORY_ABSTAIN_W_OVERLAP` | Read only from `store/config-overrides.json` and `.env` (in that order); the process environment, the launchd plist included, is NOT consulted. Weight of the rows shared by the two branches' top 10 (at most 2), 0-1, default 0. Invalid = 0 |
+| `MEMORY_ABSTAIN_W_FTS` | Read only from `store/config-overrides.json` and `.env` (in that order); the process environment, the launchd plist included, is NOT consulted. Weight of a strict (not relaxed) keyword match, 0-1, default 0. Invalid = 0 |
+| `MEMORY_HYBRID_RECENCY_WEIGHT` | Read only from `store/config-overrides.json` and `.env` (in that order); the process environment, the launchd plist included, is NOT consulted. Weight of the hybrid memory search's recency term, 0-1, default 0 (off: the order is the previous one, bit for bit). A row scores `RRF + weight * exp(-age / TAU)`, the age taken from `created_at` (not `updated_at`, which tier moves restamp; a future value counts as 0 days). Rank 1 of one RRF branch is about 0.0164, so a weight around 0.005 puts the newer of two near-equal rows first, while 0.02 can outweigh a whole branch. Invalid = 0, one WARN |
+| `MEMORY_HYBRID_RECENCY_TAU_DAYS` | Read only from `store/config-overrides.json` and `.env` (in that order); the process environment, the launchd plist included, is NOT consulted. Time constant of the recency term in days, above 0, at most 3650, default 30. Invalid = 30, one WARN |
+| `MEMORY_HYBRID_FTS_RECENCY` | Read only from `store/config-overrides.json` and `.env` (in that order); the process environment, the launchd plist included, is NOT consulted. `on` (default) or `off`: the hybrid search's keyword branch keeps its own recency re-rank (λ 0.7, τ 7 days). `off` = the branch keeps the plain bm25 order, so the time signal is not counted twice. The keyword-only search is not affected. Invalid = `on`, one WARN |
+| `MEMORY_GATE_MODE` | `.env` only (neither `store/config-overrides.json`, nor the process environment, nor the Settings page is consulted); a change needs a dashboard restart. See [memory-write-gate.md](memory-write-gate.md). Mode of the memory write gate: `off` (default; a missing, empty or unknown value too), `shadow` or `active`. In b1 it only logs: it writes nothing to `memories`; `active` also runs as `shadow` (WARN) |
+| `MEMORY_GATE_OWNERS` | `.env` only (neither `store/config-overrides.json`, nor the process environment, nor the Settings page is consulted); a change needs a dashboard restart. See [memory-write-gate.md](memory-write-gate.md). Comma-separated agent ids (`[a-z0-9_-]{1,32}`) whose `warm`/`cold` memories may reach the gate. Empty (default) = the gate does nothing. A malformed element or `feszek` = config error, the whole gate stays inert |
+| `MEMORY_GATE_MAIN_AGENT_OK` | `.env` only (neither `store/config-overrides.json`, nor the process environment, nor the Settings page is consulted); a change needs a dashboard restart. See [memory-write-gate.md](memory-write-gate.md). A `tg-<digits>` reference to the owner's decision; only with it does the main agent count as an owner. Any other shape or empty = the main agent is dropped, the other owners keep working |
+| `MEMORY_GATE_BATCH_DIR` | `.env` only (neither `store/config-overrides.json`, nor the process environment, nor the Settings page is consulted); a change needs a dashboard restart. See [memory-write-gate.md](memory-write-gate.md). Absolute path of the shared batch client directory (`batch_client.py`, `usage_log.py`). Required once the gate would call; missing or relative = config error |
+| `MEMORY_GATE_MODEL` | `.env` only (neither `store/config-overrides.json`, nor the process environment, nor the Settings page is consulted); a change needs a dashboard restart. See [memory-write-gate.md](memory-write-gate.md). Classifier model id, default `claude-haiku-5-5` |
+| `MEMORY_GATE_MAX_CALLS_PER_DAY` | `.env` only (neither `store/config-overrides.json`, nor the process environment, nor the Settings page is consulted); a change needs a dashboard restart. See [memory-write-gate.md](memory-write-gate.md). Daily call cap per Budapest day, 1-2000, default 300. Invalid = config error |
+| `MEMORY_GATE_DAILY_USD` | `.env` only (neither `store/config-overrides.json`, nor the process environment, nor the Settings page is consulted); a change needs a dashboard restart. See [memory-write-gate.md](memory-write-gate.md). Daily spend cap in USD, 0.01-0.50, at most two decimals, default 0.50. The upper bound is fixed in code: `.env` can only lower it. Reserved before every call. Invalid = config error |
+| `MEMORY_GATE_MAX_PROMPT_BYTES` | `.env` only (neither `store/config-overrides.json`, nor the process environment, nor the Settings page is consulted); a change needs a dashboard restart. See [memory-write-gate.md](memory-write-gate.md). Upper size of the outgoing prompt in bytes, 2000-48000, default 12000 |
+| `MEMORY_GATE_MAX_TOKENS` | `.env` only (neither `store/config-overrides.json`, nor the process environment, nor the Settings page is consulted); a change needs a dashboard restart. See [memory-write-gate.md](memory-write-gate.md). Answer length in tokens, 64-1000, default 300 |
+| `MEMORY_GATE_CANDIDATES` | `.env` only (neither `store/config-overrides.json`, nor the process environment, nor the Settings page is consulted); a change needs a dashboard restart. See [memory-write-gate.md](memory-write-gate.md). Candidates per call, 1-5, default 5 |
+| `MEMORY_GATE_SUPERSEDE_MIN_CONF` | `.env` only (neither `store/config-overrides.json`, nor the process environment, nor the Settings page is consulted); a change needs a dashboard restart. See [memory-write-gate.md](memory-write-gate.md). Confidence threshold of a `SUPERSEDE` decision, 0.5-1, default 0.85. In b1 it only feeds the `would_apply` evaluation |
+| `MEMORY_GATE_OTHER_MIN_CONF` | `.env` only (neither `store/config-overrides.json`, nor the process environment, nor the Settings page is consulted); a change needs a dashboard restart. See [memory-write-gate.md](memory-write-gate.md). Threshold of the other effect-bearing decisions, 0.5-1, default 0.70. In b1 it only feeds the `would_apply` evaluation |
+| `MEMORY_GATE_MAX_SUPERSEDE_PER_DAY` | `.env` only (neither `store/config-overrides.json`, nor the process environment, nor the Settings page is consulted); a change needs a dashboard restart. See [memory-write-gate.md](memory-write-gate.md). At most this many `SUPERSEDE` decisions a day may be marked `would_apply`, 0-1000, default 20 |
+| `MEMORY_GATE_MAX_CONTRADICT_PER_DAY` | `.env` only (neither `store/config-overrides.json`, nor the process environment, nor the Settings page is consulted); a change needs a dashboard restart. See [memory-write-gate.md](memory-write-gate.md). At most this many `CONTRADICT` decisions a day may be marked `would_apply`, 0-1000, default 20 |
 
 ---
 

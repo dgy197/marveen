@@ -58,6 +58,58 @@ _guard_sender() {
   printf '%s' "${MAIN_AGENT_ID:-marveen}"
 }
 
+# INTERACTIVE_ANTHROPIC_KEY_POLICY (fec6335f), the same rule as
+# src/web/interactive-key-guard.ts: absent, empty or `allow` -> allow (the
+# launch below is unchanged); any other value -> forbid (fail-closed). The .env
+# is read like policyFromEnvText() in that file (BE-1 parity, pinned by
+# src/__tests__/interactive-key-guard-main.test.ts): see the function body.
+interactive_key_policy() {
+  local f="$INSTALL_DIR/.env" text raw bom
+  # No .env at all: allow (upstream default). One that exists but cannot be
+  # read as a regular file: forbid -- a check that cannot read its input must
+  # not pass (BE-1).
+  [ -e "$f" ] || { echo allow; return; }
+  if [ ! -f "$f" ] || [ ! -r "$f" ]; then echo forbid; return; fi
+  # Byte-wise in the C locale, so the answer does not depend on the caller's
+  # LANG; a UTF-8 BOM in front of line 1 is dropped first.
+  bom="$(printf '\357\273\277')"
+  text="$(LC_ALL=C sed "1s/^$bom//" "$f" 2>/dev/null)" || { echo forbid; return; }
+  # A non-comment line that names the key but is not a plain `KEY=value` line
+  # (Unicode space around the key, an `export ` prefix, ...) is forbid: the TS
+  # reader and this one would otherwise disagree, possibly in the open direction.
+  if printf '%s\n' "$text" | LC_ALL=C grep -F 'INTERACTIVE_ANTHROPIC_KEY_POLICY' | LC_ALL=C grep -Ev '^[[:space:]]*#' \
+    | LC_ALL=C grep -Evq '^[[:space:]]*INTERACTIVE_ANTHROPIC_KEY_POLICY[[:space:]]*='; then
+    echo forbid; return
+  fi
+  raw="$(printf '%s\n' "$text" | LC_ALL=C grep -E '^[[:space:]]*INTERACTIVE_ANTHROPIC_KEY_POLICY[[:space:]]*=' | tail -1 | cut -d= -f2-)"
+  raw="$(printf '%s' "$raw" | LC_ALL=C sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$raw" in
+    \"*) case "$raw" in *\") raw="${raw#\"}"; raw="${raw%\"}" ;; esac ;;
+    \'*) case "$raw" in *\') raw="${raw#\'}"; raw="${raw%\'}" ;; esac ;;
+  esac
+  # Trimmed again inside the quotes, as the TS reader does: `" allow "` is allow in both.
+  raw="$(printf '%s' "$raw" | LC_ALL=C sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$raw" in
+    ''|allow) echo allow ;;
+    *) echo forbid ;;
+  esac
+}
+# Decided once, before anything below reads or exports a key. Under `forbid`
+# the main agent is a first-party interactive session like any other: its
+# launch must not carry ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN, from .env,
+# from the environment this script inherited (launchd plist, systemd unit, or
+# the dashboard's own env via createMainChannelsSession), or from the tmux
+# server's global environment.
+INTERACTIVE_KEY_POLICY="$(interactive_key_policy)"
+
+# Test seam, and the ONE shell resolver the main-agent respawners ask
+# (channel-watchdog.sh, stuck-modal-guard.sh), like --resolve-main-model:
+# print allow|forbid and exit before .env is read any further.
+if [ "${1:-}" = "--interactive-key-policy" ]; then
+  echo "$INTERACTIVE_KEY_POLICY"
+  exit 0
+fi
+
 # Read MAIN_AGENT_ID and CHANNEL_PROVIDER from .env WITHOUT exporting
 # every variable into the shell environment. `set -a && source .env`
 # would also export TELEGRAM_BOT_TOKEN, which then leaks into the tmux
@@ -87,8 +139,12 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   # Claude Code auth: pass API key or OAuth token so the tmux-spawned
   # claude process can authenticate. These are safe to export -- unlike
   # TELEGRAM_BOT_TOKEN they don't cause cross-session conflicts.
-  _api_key="$(grep -E '^ANTHROPIC_API_KEY=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
-  [ -n "$_api_key" ] && export ANTHROPIC_API_KEY="$_api_key"
+  # fec6335f: under forbid the .env API key is not even read (the OAuth token
+  # below is the subscription route and stays).
+  if [ "$INTERACTIVE_KEY_POLICY" != forbid ]; then
+    _api_key="$(grep -E '^ANTHROPIC_API_KEY=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
+    [ -n "$_api_key" ] && export ANTHROPIC_API_KEY="$_api_key"
+  fi
   _oauth="$(grep -E '^CLAUDE_CODE_OAUTH_TOKEN=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   # Fallback: the fleet setup-token file (written by the wizard / auth.sh /
   # the boot-time credentials sync). Keeps the MAIN agent on the same stable
@@ -100,6 +156,13 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   fi
   [ -n "$_oauth" ] && export CLAUDE_CODE_OAUTH_TOKEN="$_oauth"
   unset _api_key _oauth
+fi
+# fec6335f: and an inherited value goes too. Everything this script starts --
+# the tmux server when this launch creates it, the node helpers, the pane --
+# inherits this shell's environment, and the auth file / tmux globals below
+# only ever copy what is set here.
+if [ "$INTERACTIVE_KEY_POLICY" = forbid ]; then
+  unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
 fi
 CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
 SESSION="${MAIN_AGENT_ID:-marveen}-channels"
@@ -1152,8 +1215,73 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
     # arg makes it fall back to ~/.claude.json (the standard path).
     _cp_cfg_dir=""
     [ -d "${_cfg_dir:-}" ] && _cp_cfg_dir="${_cfg_dir:-}"
-    _cp_env="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-custom-provider.mjs" "$_cp_cfg_dir" 2>>"$INSTALL_DIR/store/channels-failures.log")"
+    # fec6335f: an interactive-key-guard refusal (exit 3 below) is HELD, not
+    # repeated at the service manager's pace. The refusal comes from config,
+    # not from a transient fault, so a retry 30s later (launchd ThrottleInterval)
+    # only repeats it: a new guard event and log line every round, ~2880 a day.
+    # This exit is too early for the rapid-exit backoff at the bottom of this
+    # script (that one counts sessions that ran, and its 0/60/300s ramp would
+    # still let the first rounds through), so the hold is its own:
+    #   - after a refusal the script waits _kg_hold seconds before it exits, so
+    #     launchd/systemd cannot restart it sooner;
+    #   - the DECISION is never skipped: every start runs the helper. Inside the
+    #     hold only its guard event and the log line are left out
+    #     (IKG_GUARD_EVENT_QUIET), so a refusal is one event per _kg_hold.
+    # The marker (store/.channels-key-guard-refused: "<epoch> <sha256 of the
+    # decision's inputs>") only counts under forbid, as a regular file of our
+    # own (not a symlink) whose mtime and time are not in the future, and only
+    # while the inputs (.env, the main agent's agent-config.json, the provider
+    # store, the guard module in dist) hash the same -- by content, not mtime.
+    # The dashboard (main-agent-key-guard.ts) reads it by the same rules.
+    _kg_marker="$INSTALL_DIR/store/.channels-key-guard-refused"
+    _kg_hold=300
+    _kg_sha() {
+      if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+      elif command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
+      else return 1; fi
+    }
+    _kg_inputs_hash() {
+      local f h
+      h="$(for f in "$INSTALL_DIR/.env" "$INSTALL_DIR/agents/${MAIN_AGENT_ID:-marveen}/agent-config.json" "$INSTALL_DIR/store/custom-providers.json" "$INSTALL_DIR/dist/web/interactive-key-guard.js"; do
+        if [ -f "$f" ]; then _kg_sha < "$f" || echo unhashable; else echo absent; fi
+      done | _kg_sha)" || return 1
+      case "$h" in *[!0-9a-f]*|'') return 1 ;; esac
+      [ "${#h}" -eq 64 ] || return 1
+      printf '%s' "$h"
+    }
+    _kg_quiet=""
+    _kg_now="$(date +%s)"
+    if [ "$INTERACTIVE_KEY_POLICY" = forbid ] && [ -f "$_kg_marker" ] && [ ! -L "$_kg_marker" ] && [ -O "$_kg_marker" ]; then
+      _kg_mtime="$(stat -c %Y "$_kg_marker" 2>/dev/null || stat -f %m "$_kg_marker" 2>/dev/null)"
+      read -r _kg_at _kg_sum _kg_rest < "$_kg_marker" 2>/dev/null
+      if _kg_cur="$(_kg_inputs_hash)" \
+        && case "${_kg_mtime:-x}${_kg_at:-x}" in *[!0-9]*) false ;; *) true ;; esac \
+        && [ "$_kg_mtime" -le "$_kg_now" ] && [ "$_kg_at" -le "$_kg_now" ] \
+        && [ "$((_kg_now - _kg_at))" -lt "$_kg_hold" ] && [ "${_kg_sum:-}" = "$_kg_cur" ]; then
+        _kg_quiet=1
+      fi
+    fi
+    _cp_env="$(IKG_GUARD_EVENT_QUIET="$_kg_quiet" "$_node_bin" "$INSTALL_DIR/scripts/main-agent-custom-provider.mjs" "$_cp_cfg_dir" 2>>"$INSTALL_DIR/store/channels-failures.log")"
     _cp_rc=$?
+    if [ "$_cp_rc" -eq 3 ]; then
+      # fec6335f: exit 3 is the helper's interactive-key-guard refusal (forbid,
+      # and the provider is Anthropic itself), not a broken config.
+      if [ -n "$_kg_quiet" ]; then
+        # The same refusal inside the hold: no event, no log line, wait out the rest.
+        sleep "$((_kg_hold - (_kg_now - _kg_at)))"
+        exit 3
+      fi
+      if [ "$INTERACTIVE_KEY_POLICY" = forbid ] && _kg_cur="$(_kg_inputs_hash)"; then
+        # Own tmp name (mktemp: unpredictable, created 0600), then an atomic rename.
+        _kg_tmp="$(mktemp "$INSTALL_DIR/store/.channels-key-guard-refused.XXXXXX" 2>/dev/null)" \
+          && printf '%s %s\n' "$_kg_now" "$_kg_cur" > "$_kg_tmp" && mv -f "$_kg_tmp" "$_kg_marker" 2>/dev/null \
+          || rm -f "${_kg_tmp:-}" 2>/dev/null
+      fi
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent-custom-provider refused (exit 3): INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid and the main agent's customProvider is Anthropic itself -- not starting the main agent on an API key (see the guard event in store/interactive-key-guard-events.jsonl); holding ${_kg_hold}s before exiting" >> "$INSTALL_DIR/store/channels-failures.log"
+      sleep "$_kg_hold"
+      exit 3
+    fi
+    rm -f "$_kg_marker" 2>/dev/null
     if [ "$_cp_rc" -ne 0 ]; then
       echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent-custom-provider exited $_cp_rc -- customProvider configured but broken; aborting to avoid silent wrong-backend launch (see channels-failures.log)" >> "$INSTALL_DIR/store/channels-failures.log"
       exit "$_cp_rc"
@@ -1162,9 +1290,15 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
       CUSTOM_PROVIDER_ENV="$_cp_env"
       echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent custom-provider env injected" >> "$INSTALL_DIR/store/channels-failures.log"
     fi
-    unset _cp_env _cp_rc _cp_cfg_dir
+    unset _cp_env _cp_rc _cp_cfg_dir _kg_marker _kg_hold _kg_at _kg_now _kg_sum _kg_rest _kg_cur _kg_mtime _kg_quiet _kg_tmp
+    unset -f _kg_sha _kg_inputs_hash
   fi
 
+  # fec6335f: the user config dir CFG_ENV hands claude, for the forbid-mode
+  # settings scan before the launch (no CFG_ENV = the shared ~/.claude).
+  if [ "$INTERACTIVE_KEY_POLICY" = forbid ] && [ -n "$CFG_ENV" ]; then
+    _ikg_cfg_dir="$_cfg_dir"
+  fi
   unset _cfg_raw _cfg_line _cfg_mode _cfg_dir
 fi
 unset _node_bin
@@ -1342,7 +1476,13 @@ _tmux_set_auth_globals() {
   if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     $TMUX set-environment -g CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_OAUTH_TOKEN" 2>/dev/null || true
   fi
-  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  if [ "${INTERACTIVE_KEY_POLICY:-}" = forbid ]; then
+    # fec6335f: the reverse under forbid. A key in the SERVER's global env
+    # reaches every later pane (sub-agents, respawns), so it is removed there,
+    # whoever put it in (an earlier allow-mode boot, a hand-set -g).
+    $TMUX set-environment -g -u ANTHROPIC_API_KEY 2>/dev/null || true
+    $TMUX set-environment -g -u ANTHROPIC_AUTH_TOKEN 2>/dev/null || true
+  elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
     $TMUX set-environment -g ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY" 2>/dev/null || true
   fi
   # Propagate the prompt-suggestion disable to every sub-agent tmux session.
@@ -1404,6 +1544,92 @@ else
 fi
 unset _auth_file
 
+# fec6335f (I-01 for the main agent). Under forbid the pane strips the key
+# names right after the auth file is sourced: the pane gets the tmux SERVER's
+# global env, which this script does not own (a dashboard worker may have
+# created the server), so the -g -u above is not enough on its own. Skipped
+# when CUSTOM_PROVIDER_ENV is set: that provider is not Anthropic (the helper
+# refuses an Anthropic one under forbid, exit 3 above) and its own prefix
+# already sets exactly the auth var it uses, so that command stays as it was.
+# Under allow KEY_UNSET_ENV is empty and both launches below are unchanged.
+KEY_UNSET_ENV=""
+
+# Names only: which API-key routes the settings files this launch loads carry
+# (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN under "env", a top-level
+# apiKeyHelper) -- an `unset` in the pane cannot reach those. The same rule as
+# interactiveKeyNamesInSettingsText (src/web/interactive-key-guard.ts): a file
+# that does not parse is searched for the quoted names, one that exists but
+# cannot be read is the finding "<unreadable>", an absent one is nothing.
+# Each finding becomes a guard event ({ts, source, where, names, agent}, the
+# PR-B gate reads it) and one "<path>: <names>" line on stdout. Never a value.
+main_settings_key_scan() {
+  python3 - "$@" <<'PY'
+import json, os, re, sys
+from datetime import datetime, timezone
+events, agent, paths = sys.argv[1], sys.argv[2], sys.argv[3:]
+NAMES = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+for p in paths:
+    try:
+        with open(p, encoding="utf-8") as f:
+            text = f.read()
+    except (FileNotFoundError, NotADirectoryError):
+        continue
+    except Exception:
+        found = ["<unreadable>"]
+    else:
+        try:
+            d = json.loads(text)
+        except Exception:
+            found = [n for n in NAMES + ("apiKeyHelper",) if re.search('"%s"\\s*:' % n, text)]
+        else:
+            found = []
+            if isinstance(d, dict):
+                env = d.get("env")
+                if isinstance(env, dict):
+                    found = [n for n in NAMES if n in env]
+                if "apiKeyHelper" in d:
+                    found.append("apiKeyHelper")
+    if not found:
+        continue
+    ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    line = json.dumps({"ts": ts, "source": "main-launch-guard", "where": p, "names": found, "agent": agent})
+    try:
+        # O_NOFOLLOW + fchmod: never append through, or chmod the target of, a
+        # symlink planted at the path (ELOOP instead) -- the TS appendNoFollow rule.
+        fd = os.open(events, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, (line + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+    except Exception as e:
+        print("%s: %s (guard event NOT written: %s)" % (p, ",".join(found), type(e).__name__))
+        continue
+    print("%s: %s" % (p, ",".join(found)))
+PY
+}
+
+if [ "$INTERACTIVE_KEY_POLICY" = forbid ] && [ -z "$CUSTOM_PROVIDER_ENV" ]; then
+  KEY_UNSET_ENV="unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN && "
+  # Blueprint 12.8: the MAIN agent still starts when its settings carry a key
+  # route -- the channel being reachable comes first, the loss is bounded --
+  # but it does not start quietly: a guard event (the credit gate turns it
+  # into an INCIDENT) and a failures-log line. A sub-agent in the same state
+  # is refused instead (startAgentProcess).
+  _ikg_found="$(main_settings_key_scan "$INSTALL_DIR/store/interactive-key-guard-events.jsonl" "${MAIN_AGENT_ID:-marveen}" \
+    "${_ikg_cfg_dir:-${HOME:-}/.claude}/settings.json" "$INSTALL_DIR/.claude/settings.json" "$INSTALL_DIR/.claude/settings.local.json" 2>/dev/null)"
+  _ikg_rc=$?
+  if [ "$_ikg_rc" -ne 0 ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN interactive-key-guard: the main agent's settings could not be scanned for an API-key route (python3 exit $_ikg_rc) -- NOT measured, starting anyway" >> "$INSTALL_DIR/store/channels-failures.log"
+  elif [ -n "$_ikg_found" ]; then
+    printf '%s\n' "$_ikg_found" | while IFS= read -r _ikg_line; do
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN interactive-key-guard: INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid, but the main agent's settings carry an API-key route the pane unset cannot remove ($_ikg_line) -- starting anyway (channel availability first), guard event written" >> "$INSTALL_DIR/store/channels-failures.log"
+    done
+  fi
+  unset _ikg_found _ikg_rc
+fi
+unset _ikg_cfg_dir
+
 # Owner commands (ELSOKOR922 spec D-4): the Telegram plugin answers /status
 # and /help itself, so those two never reach the session's command hook. Take
 # them out of every cached plugin version BEFORE the plugin is spawned.
@@ -1462,7 +1688,7 @@ $TMUX kill-session -t "=$SESSION:" 2>/dev/null || true
 # MAIN session's channel state dir. The -g -u after the launch cleans a server
 # polluted earlier.
 env -u "$STATE_ENV_VAR" $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+  "${AUTH_PANE_ENV}${KEY_UNSET_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
 # The server certainly exists now: see CHANNELSAUTHRACE923 above.
 _tmux_set_auth_globals
 # remain-on-exit: without this, if the pane's claude process dies for ANY
@@ -1554,7 +1780,7 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
         env -u "$STATE_ENV_VAR" $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
-          "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+          "${AUTH_PANE_ENV}${KEY_UNSET_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
         # See the primary new-session above: remain-on-exit keeps the pane
         # (and session) alive if claude dies early, so the scheduled relaunch
         # can always find it. This is the /tmp-fallback launch path, same fix.

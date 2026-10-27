@@ -1,0 +1,2095 @@
+{
+  "_comment": "Shared vectors for the graph-mail forward feature (graph-forward card, spec B, D, E, Brainy 2958). recipients: D1/D2, both validators (Python in the gate, TypeScript in the CLI) must give the same verdict on every string. ids: E2, accept/reject plus the encodeURIComponent form used in the request path. argv: E1, the CLI argv after the word forward; expect ok = parsed, exit2 = rejected before any network call. gate_commands: B1-B5, a Bash command string and the verdict of the approval gate's forward rules: deny = exit 2 at every level, with or without a standing recipient or an approval; rules-ok = the rules pass and the normal level/standing/anchor flow decides. copy_gate: B6, the copy gate audits the comment only, never --orig-subject. All strings are JSON escapes (homoglyphs, zero-width, bidi, NUL, TAB, LF are \\u/\\t/\\n escapes); never edit this file with a tool that rewrites them. Written by build_vectors.py; ASCII only.",
+  "_comment_file": "N0b: --comment-file vectors (spec-delta-commentfile.md, KG1-KG7, Brainy 3011). {ROOT} in a path is the outbox root the test substitutes. The fixture file {ROOT}/a.txt holds the text \"Szia!\" and every vector that carries a literal hex uses its sha256 (92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d). comment_file_argv: the CLI argv after the word forward, expect ok or exit2 before any network call (KA1-KA3). comment_file_paths: the --comment-file value, the gate and the CLI must give the same verdict (KA4). comment_file_contents: the file bytes given as text, bytes_hex or a fill (prefix_text then ASCII a up to total_bytes), with byte_len and the sha256 of exactly those bytes; expect ok or deny for both readers (KB). comment_file_kinds: file system situations the test builds itself (KB1-KB3). comment_file_gate_commands: Bash command strings and the approval gate's verdict, deny or rules-ok (KA, B2-B4). comment_file_copy_gate: the cmd plus the file text it points at (cmd carries the sha256 of text), expect pass or block from the copy gate's audit() (KD). forward_anchors: the C1 anchor of (to, id, subject, text), source marks inline or file (KC1: same text, same anchor). Rows with extra=true are consequences of the rule, not in the KG list. Written by build_vectors.py; ASCII only.",
+  "recipients": {
+    "accept": [
+      "kovacs@fireeng.hu",
+      "Kovacs.Bela@FIREENG.HU",
+      "x@FireEng.Hu",
+      "a.b-c_d+x@fireeng.hu",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@fireeng.hu"
+    ],
+    "reject": [
+      "a@fireeng.hu.evil",
+      "a@fireeng.hu.",
+      "a@x.fireeng.hu",
+      "a@fireeng-hu.com",
+      "a@fireenghu",
+      "a@fireeng.hu.com",
+      "a@evil.com",
+      " a@fireeng.hu",
+      "a@fireeng.hu ",
+      "a@fireeng.hu\t",
+      "a@fireeng.hu\n",
+      "\"a\"@fireeng.hu",
+      "\"a@evil.com\"@fireeng.hu",
+      "Bela <a@fireeng.hu>",
+      "<a@fireeng.hu>",
+      "a@fireeng.hu,b@fireeng.hu",
+      "a@fireeng.hu;b@fireeng.hu",
+      "a@fireeng.hu b@fireeng.hu",
+      "a%evil.com@fireeng.hu",
+      "a!b@fireeng.hu",
+      "a(c)@fireeng.hu",
+      "a@fireeng.hu(c)",
+      ".a@fireeng.hu",
+      "a.@fireeng.hu",
+      "a..b@fireeng.hu",
+      "@fireeng.hu",
+      "a@@fireeng.hu",
+      "a@fireeng.hu@evil.com",
+      "a@[127.0.0.1]",
+      "mailto:a@fireeng.hu",
+      "a@fireeng.hu?cc=x@evil.com",
+      "a@fir\u0435eng.hu",
+      "a\uff20fireeng.hu",
+      "\u0430@fireeng.hu",
+      "a\u200b@fireeng.hu",
+      "a@fireeng.hu\u200b",
+      "a@fireeng.hu\u202e",
+      "a@fireeng.hu\u0000",
+      "",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@fireeng.hu"
+    ]
+  },
+  "ids": {
+    "accept": [
+      "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "AAAAAAAAAAAAAAAA",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "AAMk/AG+Z=-_xxxxxxxxxx",
+      "0123456789abcdefABCDEF_-=+/"
+    ],
+    "reject": [
+      "../x",
+      "AAMkAGFmZXN0../MDEz",
+      "AAMkAGFm ZXN0MDEyMzQ1",
+      "AAAAAAAAAAAAAAA",
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "AAMkAGFmZXN0MDEyMzQ1\u00e9",
+      "AAMkAGFmZXN0MDEyMzQ1\n",
+      "AAMkAGFmZXN0MDEyMzQ1\u0000",
+      "",
+      "AAMkAGFmZXN0MDEyMzQ1\\x",
+      "AAMkAGFmZXN0MDEyMzQ1%2F",
+      "AAMkAGFmZXN0MDEyMzQ1?x=1",
+      "AAMkAGFmZXN0MDEyMzQ1#f",
+      "AAMkAGFmZXN0MDEyMzQ1&x",
+      "AAMkAGFmZXN0MDEyMzQ1:x",
+      "AAMkAGFmZXN0MDEyMzQ1$x"
+    ],
+    "path_encoding": [
+      {
+        "id": "AAMk/AG+Z=-_xxxxxxxxxx",
+        "encoded": "AAMk%2FAG%2BZ%3D-_xxxxxxxxxx"
+      },
+      {
+        "id": "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "encoded": "AAMkAGFmZXN0MDEyMzQ1Njc4OQ%3D%3D"
+      }
+    ]
+  },
+  "argv": [
+    {
+      "name": "ok canonical order",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "ok",
+      "rule": "E1"
+    },
+    {
+      "name": "ok reordered a",
+      "argv": [
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--comment",
+        "Szia!"
+      ],
+      "expect": "ok",
+      "rule": "E1"
+    },
+    {
+      "name": "ok reordered b",
+      "argv": [
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ=="
+      ],
+      "expect": "ok",
+      "rule": "E1"
+    },
+    {
+      "name": "ok comment with LF",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!\nM\u00e1sik sor.",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "ok",
+      "rule": "E1"
+    },
+    {
+      "name": "missing --id",
+      "argv": [
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "duplicate --id",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ=="
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "missing --to",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "duplicate --to",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--to",
+        "x"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "missing --comment",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "duplicate --comment",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--comment",
+        "x"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "missing --orig-subject",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "duplicate --orig-subject",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--orig-subject",
+        "x"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "eq-form --to=",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to=kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "eq-form --id=",
+      "argv": [
+        "--id=AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "eq-form --comment=",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment=Szia!",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "eq-form --orig-subject=",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject=T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "extra --cc",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--cc",
+        "nagy@fireeng.hu"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "extra --bcc",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--bcc",
+        "nagy@fireeng.hu"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "extra --attach",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--attach",
+        "/tmp/x.pdf"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "extra --html",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--html",
+        "/tmp/x.html"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "extra --subject",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--subject",
+        "x"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "extra --body",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--body",
+        "x"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "unknown flag",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--foo",
+        "bar"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "unknown flag without value",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--dry-run"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "positional trailing",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "extra"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "positional leading",
+      "argv": [
+        "extra",
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "flag without value (last)",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "flag as value",
+      "argv": [
+        "--id",
+        "--to",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "empty argv",
+      "argv": [],
+      "expect": "exit2",
+      "rule": "E1"
+    },
+    {
+      "name": "bad recipient",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "a@evil.com",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "D1"
+    },
+    {
+      "name": "two recipients in one --to",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "a@fireeng.hu,b@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "D1"
+    },
+    {
+      "name": "bad id",
+      "argv": [
+        "--id",
+        "../x",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "E2"
+    },
+    {
+      "name": "empty comment",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "B5"
+    },
+    {
+      "name": "whitespace comment",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "  \n ",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "B5"
+    }
+  ],
+  "gate_commands": [
+    {
+      "name": "canonical forward",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "rules-ok",
+      "rule": "B"
+    },
+    {
+      "name": "reordered flags",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --to kovacs@fireeng.hu --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "expect": "rules-ok",
+      "rule": "B"
+    },
+    {
+      "name": "tsx without npx",
+      "cmd": "tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'T\u00e1rgy'",
+      "expect": "rules-ok",
+      "rule": "B2"
+    },
+    {
+      "name": "absolute path runner outside this repo (Q2: only scripts/graph-mail.ts or <repo>/scripts/graph-mail.ts)",
+      "cmd": "npx tsx /Volumes/8T/x/scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "Q2"
+    },
+    {
+      "name": "double-quoted values",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment \"Szia Andi! K\u00e9rlek, n\u00e9zd meg.\" --orig-subject \"T\u00e1rgy\"",
+      "expect": "rules-ok",
+      "rule": "B3"
+    },
+    {
+      "name": "LF inside quoted comment",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!\nM\u00e1sik sor.' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "uppercase domain accepted",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to Kovacs.Bela@FIREENG.HU --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "rules-ok",
+      "rule": "B1"
+    },
+    {
+      "name": "B1 two --to",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' --to nagy@fireeng.hu",
+      "expect": "deny",
+      "rule": "B1"
+    },
+    {
+      "name": "B1 no --to",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --comment 'Szia!' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B1"
+    },
+    {
+      "name": "B1 --cc",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' --cc nagy@fireeng.hu",
+      "expect": "deny",
+      "rule": "B1"
+    },
+    {
+      "name": "B1 --bcc",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' --bcc nagy@fireeng.hu",
+      "expect": "deny",
+      "rule": "B1"
+    },
+    {
+      "name": "B1 --attach",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' --attach /tmp/x.pdf",
+      "expect": "deny",
+      "rule": "B1"
+    },
+    {
+      "name": "B1 --html",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' --html /tmp/x.html",
+      "expect": "deny",
+      "rule": "B1"
+    },
+    {
+      "name": "B1 foreign domain",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@evil.com --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B1"
+    },
+    {
+      "name": "B1 subdomain",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@x.fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B1"
+    },
+    {
+      "name": "B1 trailing dot",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu. --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B1"
+    },
+    {
+      "name": "B1 display name",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to 'Bela <a@fireeng.hu>' --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B1"
+    },
+    {
+      "name": "B1 comma pair",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fireeng.hu,b@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B1"
+    },
+    {
+      "name": "B1 cyrillic e in domain",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to a@fir\u0435eng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B1"
+    },
+    {
+      "name": "B1 to inside quoted comment",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia! --to evil@evil.com' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B1"
+    },
+    {
+      "name": "B1 cc inside quoted subject",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'T\u00e1rgy --cc evil@evil.com'",
+      "expect": "deny",
+      "rule": "B1"
+    },
+    {
+      "name": "B2 semicolon",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'; echo x",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 and-and",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' && echo x",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 or-or",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' || echo x",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 pipe",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' | cat",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 background",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' &",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 redirect out",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' > /tmp/out.txt",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 redirect in",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' < /tmp/in.txt",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 heredoc",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' <<'EOF'\nx\nEOF",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 unquoted newline",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'\necho x",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 env assignment",
+      "cmd": "X=1 npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 command substitution",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' $(echo x)",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 backtick",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' `echo x`",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 leading cd",
+      "cmd": "cd /tmp && npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 node runner",
+      "cmd": "node scripts/graph-mail.js forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 direct invocation",
+      "cmd": "./scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 bash -c wrapper",
+      "cmd": "bash -c \"npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'\"",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 env wrapper",
+      "cmd": "env npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 sudo wrapper",
+      "cmd": "sudo npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 ts-node runner",
+      "cmd": "npx ts-node scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 npx without tsx",
+      "cmd": "npx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 tsx flag before script",
+      "cmd": "npx tsx --no-warnings scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B2 if-then wrapper",
+      "cmd": "if true; then npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'; fi",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "B3 no --id",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 no --comment",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 no --orig-subject",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 duplicate --id",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 duplicate --comment",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' --comment 'x'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 duplicate --orig-subject",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' --orig-subject 'x'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 eq-form --to",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to=kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 eq-form --comment",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment='Szia!' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 eq-form --id",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id=AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 unknown flag",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' --dry-run",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 unknown flag with value",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' --foo bar",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 positional",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' extra",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 dollar in comment",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment \"Szia $HOME\" --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 dollar in subject",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject '\u00c1r: $5'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 backtick in comment",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia `x`' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 backtick in subject",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'T\u00e1rgy `x`'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 backslash in comment",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia \\n' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 backslash in subject",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'C:\\temp'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 CR in comment",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!\rM\u00e1sik' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 NUL in subject",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'T\u00e1rgy\u0000x'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 LF in subject",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'T\u00e1rgy\nm\u00e1sik sor'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 ANSI-C quoted comment",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment $'Szia\\x27!' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B3 id with slash-dot",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id ../../x/AAMkAGFmZXN0MDEyMzQ1 --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B3"
+    },
+    {
+      "name": "B4 to quote-concat",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to \"kovacs\"@fireeng.hu --comment 'Szia!' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B4"
+    },
+    {
+      "name": "B4 apostrophe idiom in comment",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Ez nem az'\\''en hibam' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B4"
+    },
+    {
+      "name": "B4 adjacent quotes in subject",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'T\u00e1rgy'\"x\"",
+      "expect": "deny",
+      "rule": "B4"
+    },
+    {
+      "name": "B4 empty-quote concat in id",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZX''N0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B4"
+    },
+    {
+      "name": "B4 quoted flag name",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== \"--to\" kovacs@fireeng.hu --comment 'Szia!' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B4"
+    },
+    {
+      "name": "B5 empty comment",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment '' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B5"
+    },
+    {
+      "name": "B5 whitespace comment",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment '   ' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B5"
+    },
+    {
+      "name": "B5 LF-only comment",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment '\n' --orig-subject 'T\u00e1rgy'",
+      "expect": "deny",
+      "rule": "B5"
+    }
+  ],
+  "copy_gate": [
+    {
+      "name": "accented comment passes",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "pass",
+      "rule": "B6"
+    },
+    {
+      "name": "accentless comment blocks",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most uton van, ezert tovabbitom neked ezt a levelet. Kerlek, nezd meg, es intezd el.' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "block",
+      "rule": "B6"
+    },
+    {
+      "name": "em dash in comment blocks",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! K\u00e9rlek, n\u00e9zd meg \u2014 k\u00f6sz\u00f6n\u00f6m!' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "block",
+      "rule": "B6"
+    },
+    {
+      "name": "accentless orig-subject passes",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Ajanlatkeres: Teszt utca 5.'",
+      "expect": "pass",
+      "rule": "B6"
+    },
+    {
+      "name": "em dash in orig-subject passes",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s \u2014 Teszt utca'",
+      "expect": "pass",
+      "rule": "B6"
+    },
+    {
+      "name": "double hyphen in orig-subject passes",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment 'Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense' --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s -- Teszt utca'",
+      "expect": "pass",
+      "rule": "B6"
+    }
+  ],
+  "comment_file_argv": [
+    {
+      "name": "ok canonical (b) order",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment-file",
+        "{ROOT}/a.txt",
+        "--comment-sha256",
+        "92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "ok",
+      "rule": "KA1"
+    },
+    {
+      "name": "ok reordered a",
+      "argv": [
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--comment-file",
+        "{ROOT}/a.txt",
+        "--comment-sha256",
+        "92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu"
+      ],
+      "expect": "ok",
+      "rule": "KA1"
+    },
+    {
+      "name": "ok reordered b",
+      "argv": [
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment-sha256",
+        "92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--comment-file",
+        "{ROOT}/a.txt"
+      ],
+      "expect": "ok",
+      "rule": "KA1"
+    },
+    {
+      "name": "exit2 (a) and (b) together",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment-file",
+        "{ROOT}/a.txt",
+        "--comment-sha256",
+        "92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--comment",
+        "Szia!"
+      ],
+      "expect": "exit2",
+      "rule": "KA1"
+    },
+    {
+      "name": "exit2 --comment with --comment-sha256",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment",
+        "Szia!",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--comment-sha256",
+        "92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d"
+      ],
+      "expect": "exit2",
+      "rule": "KA1"
+    },
+    {
+      "name": "exit2 file without hash",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment-file",
+        "{ROOT}/a.txt",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "KA1"
+    },
+    {
+      "name": "exit2 hash without file",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment-sha256",
+        "92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "KA1"
+    },
+    {
+      "name": "exit2 duplicate --comment-file",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment-file",
+        "{ROOT}/a.txt",
+        "--comment-sha256",
+        "92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--comment-file",
+        "{ROOT}/b.txt"
+      ],
+      "expect": "exit2",
+      "rule": "KA2"
+    },
+    {
+      "name": "exit2 eq-form --comment-file=",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment-file={ROOT}/a.txt",
+        "--comment-sha256",
+        "92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "KA2"
+    },
+    {
+      "name": "exit2 hex uppercase",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment-file",
+        "{ROOT}/a.txt",
+        "--comment-sha256",
+        "92D1F492EAA9F4B21DF5D20EACB1DD1A67047F5D2B63D0C8EE8142D1E528901D",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "KA3"
+    },
+    {
+      "name": "exit2 hex 63 chars",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment-file",
+        "{ROOT}/a.txt",
+        "--comment-sha256",
+        "92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "KA3"
+    },
+    {
+      "name": "exit2 hex 65 chars",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment-file",
+        "{ROOT}/a.txt",
+        "--comment-sha256",
+        "92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d0",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "KA3"
+    },
+    {
+      "name": "exit2 hex with g",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment-file",
+        "{ROOT}/a.txt",
+        "--comment-sha256",
+        "g2d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "KA3"
+    },
+    {
+      "name": "exit2 hex trailing space",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment-file",
+        "{ROOT}/a.txt",
+        "--comment-sha256",
+        "92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d ",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "KA3"
+    },
+    {
+      "name": "exit2 neither comment source",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "KA1",
+      "extra": true
+    },
+    {
+      "name": "exit2 duplicate --comment-sha256",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment-file",
+        "{ROOT}/a.txt",
+        "--comment-sha256",
+        "92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+        "--orig-subject",
+        "T\u00e1rgy",
+        "--comment-sha256",
+        "92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d"
+      ],
+      "expect": "exit2",
+      "rule": "KA2",
+      "extra": true
+    },
+    {
+      "name": "exit2 eq-form --comment-sha256=",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment-file",
+        "{ROOT}/a.txt",
+        "--comment-sha256=92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "KA2",
+      "extra": true
+    },
+    {
+      "name": "exit2 empty hex",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment-file",
+        "{ROOT}/a.txt",
+        "--comment-sha256",
+        "",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "KA3",
+      "extra": true
+    },
+    {
+      "name": "exit2 hex with non-hex letter z in the middle",
+      "argv": [
+        "--id",
+        "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+        "--to",
+        "kovacs@fireeng.hu",
+        "--comment-file",
+        "{ROOT}/a.txt",
+        "--comment-sha256",
+        "92d1f492eaa9f4b21df5d20eacb1ddza67047f5d2b63d0c8ee8142d1e528901d",
+        "--orig-subject",
+        "T\u00e1rgy"
+      ],
+      "expect": "exit2",
+      "rule": "KA3",
+      "extra": true
+    }
+  ],
+  "comment_file_paths": [
+    {
+      "name": "ok plain name",
+      "path": "{ROOT}/a.txt",
+      "expect": "ok",
+      "rule": "KA4"
+    },
+    {
+      "name": "ok 128 char name",
+      "path": "{ROOT}/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expect": "ok",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny relative mail-outbox/a.txt",
+      "path": "mail-outbox/a.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny ./a.txt",
+      "path": "./a.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny dot-dot in path",
+      "path": "{ROOT}/../a.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny double slash",
+      "path": "{ROOT}//a.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny slash-dot-slash",
+      "path": "{ROOT}/./a.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny subdirectory",
+      "path": "{ROOT}/sub/a.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny the root itself",
+      "path": "{ROOT}",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny the root with trailing slash",
+      "path": "{ROOT}/",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny sibling directory with the root as prefix",
+      "path": "{ROOT}-evil/a.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny /tmp/a.txt",
+      "path": "/tmp/a.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny 129 char name",
+      "path": "{ROOT}/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny leading dot",
+      "path": "{ROOT}/.a.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny dot-dot inside the name",
+      "path": "{ROOT}/a..txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny space in the name",
+      "path": "{ROOT}/a b.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny * in the name",
+      "path": "{ROOT}/a*b.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny ? in the name",
+      "path": "{ROOT}/a?b.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny [ in the name",
+      "path": "{ROOT}/a[b.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny ~ in the name",
+      "path": "{ROOT}/a~b.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny $ in the name",
+      "path": "{ROOT}/a$b.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny backtick in the name",
+      "path": "{ROOT}/a`b.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny single quote in the name",
+      "path": "{ROOT}/a'b.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny double quote in the name",
+      "path": "{ROOT}/a\"b.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny backslash in the name",
+      "path": "{ROOT}/a\\b.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny a-acute in the name",
+      "path": "{ROOT}/a\u00e1b.txt",
+      "expect": "deny",
+      "rule": "KA4"
+    }
+  ],
+  "comment_file_contents": [
+    {
+      "name": "ok short text",
+      "expect": "ok",
+      "rule": "KB",
+      "text": "Szia!",
+      "byte_len": 5,
+      "sha256": "92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+      "chars": 5
+    },
+    {
+      "name": "ok Q6 template plus Javasolt valasz block with LFs (3-5 thousand chars)",
+      "expect": "ok",
+      "rule": "KB",
+      "text": "Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense\n\nJavasolt v\u00e1lasz az aj\u00e1nlatk\u00e9r\u0151nek:\n\nKedves \u00dcgyfel\u00fcnk! K\u00f6sz\u00f6nj\u00fck megkeres\u00e9s\u00e9t, \u00e9s \u00f6r\u00f6mmel \u00e9rtes\u00edtj\u00fck, hogy a t\u0171zv\u00e9delmi tervez\u00e9si aj\u00e1nlatk\u00e9r\u00e9s\u00e9t megkaptuk. A k\u00e9rt munka t\u00e1rgya egy h\u00e1romszintes iroda\u00e9p\u00fclet t\u0171zv\u00e9delmi m\u0171szaki le\u00edr\u00e1s\u00e1nak elk\u00e9sz\u00edt\u00e9se, a hozz\u00e1 tartoz\u00f3 menek\u00fcl\u00e9si \u00fatvonalak vizsg\u00e1lat\u00e1val \u00e9s az olt\u00f3berendez\u00e9sek helysz\u00ednrajz\u00e1val egy\u00fctt.\n\nAz aj\u00e1nlat \u00f6ssze\u00e1ll\u00edt\u00e1s\u00e1hoz sz\u00fcks\u00e9g\u00fcnk lenne n\u00e9h\u00e1ny adatra. K\u00e9rj\u00fck, k\u00fcldje meg az \u00e9p\u00edt\u00e9si enged\u00e9lyez\u00e9si tervdokument\u00e1ci\u00f3t, a szintenk\u00e9nti alaprajzokat, valamint a tervezett haszn\u00e1lat r\u00f6vid le\u00edr\u00e1s\u00e1t. Ha az \u00e9p\u00fclet rendelkezik megl\u00e9v\u0151 t\u0171zv\u00e9delmi dokument\u00e1ci\u00f3val, azt is sz\u00edvesen megn\u00e9zz\u00fck, mert ezzel a d\u00edjat \u00e9s a hat\u00e1rid\u0151t pontosabban meg tudjuk adni.\n\nA tervez\u00e9s f\u00e1zisai a k\u00f6vetkez\u0151k lesznek. Az els\u0151 l\u00e9p\u00e9s az adatgy\u0171jt\u00e9s \u00e9s a helysz\u00edni bej\u00e1r\u00e1s, amelynek sor\u00e1n felm\u00e9rj\u00fck az \u00e9p\u00fclet szerkezet\u00e9t, a t\u0171zszakaszok kialak\u00edt\u00e1s\u00e1t \u00e9s a megl\u00e9v\u0151 t\u0171zv\u00e9delmi berendez\u00e9seket. A m\u00e1sodik l\u00e9p\u00e9s a t\u0171zv\u00e9delmi m\u0171szaki le\u00edr\u00e1s \u00e9s a kapcsol\u00f3d\u00f3 sz\u00e1m\u00edt\u00e1sok elk\u00e9sz\u00edt\u00e9se, a harmadik pedig az egyeztet\u00e9s a hat\u00f3s\u00e1ggal \u00e9s a v\u00e9gleges dokument\u00e1ci\u00f3 \u00e1tad\u00e1sa.\n\nA tervezett alapter\u00fclet alapj\u00e1n a munka k\u00f6r\u00fclbel\u00fcl h\u00e1rom-n\u00e9gy h\u00e9t alatt v\u00e9gezhet\u0151 el, felt\u00e9ve, hogy az alaprajzok \u00e9s a haszn\u00e1lati le\u00edr\u00e1s a megrendel\u00e9s napj\u00e1n rendelkez\u00e9s\u00fcnkre \u00e1llnak. A hat\u00e1rid\u0151 a hat\u00f3s\u00e1gi egyeztet\u00e9sek id\u0151ig\u00e9ny\u00e9t\u0151l f\u00fcgg\u0151en m\u00f3dosulhat, err\u0151l mindig id\u0151ben t\u00e1j\u00e9koztatjuk.\n\nAz aj\u00e1nlat tartalmazza a helysz\u00edni bej\u00e1r\u00e1st, a tervdokument\u00e1ci\u00f3t k\u00e9t p\u00e9ld\u00e1nyban, egy alkalommal a hat\u00f3s\u00e1gi hi\u00e1nyp\u00f3tl\u00e1s k\u00f6lts\u00e9g\u00e9t, valamint az \u00e1tad\u00e1s ut\u00e1n egy h\u00f3napig terjed\u0151 d\u00edjmentes szakmai tan\u00e1csad\u00e1st. A kivitelez\u00e9s, a g\u00e9p\u00e9szeti tervez\u00e9s \u00e9s a statikai sz\u00e1m\u00edt\u00e1sok nem r\u00e9szei az aj\u00e1nlatnak, azokat k\u00fcl\u00f6n szak\u00e1gi tervez\u0151k v\u00e9gzik.\n\nA d\u00edjaz\u00e1s k\u00e9t r\u00e9szletben t\u00f6rt\u00e9nik. A szerz\u0151d\u00e9sk\u00f6t\u00e9skor a teljes d\u00edj harmincsz\u00e1zal\u00e9ka esed\u00e9kes, a fennmarad\u00f3 \u00f6sszeget a k\u00e9sz dokument\u00e1ci\u00f3 \u00e1tad\u00e1sakor sz\u00e1ml\u00e1zzuk. A fizet\u00e9si hat\u00e1rid\u0151 mindk\u00e9t sz\u00e1mla eset\u00e9n nyolc nap, banki \u00e1tutal\u00e1ssal. Ha az \u00fcgyf\u00e9l el\u0151re jelzi, hogy a hat\u00f3s\u00e1gi elj\u00e1r\u00e1s elh\u00faz\u00f3dhat, a m\u00e1sodik r\u00e9szlet sz\u00e1ml\u00e1z\u00e1s\u00e1t a hat\u00f3s\u00e1gi j\u00f3v\u00e1hagy\u00e1s napj\u00e1hoz is k\u00f6thetj\u00fck, ennek r\u00e9szleteit a szerz\u0151d\u00e9sben r\u00f6gz\u00edtj\u00fck.\n\nA helysz\u00edni bej\u00e1r\u00e1shoz k\u00e9rj\u00fck, jel\u00f6lj\u00f6n ki egy kapcsolattart\u00f3t, aki az \u00e9p\u00fcletben ismeri a g\u00e9p\u00e9szeti helyis\u00e9geket, a villamos f\u0151eloszt\u00f3t \u00e9s a t\u0171zjelz\u0151 k\u00f6zpont hely\u00e9t. A bej\u00e1r\u00e1s \u00e1ltal\u00e1ban f\u00e9l napot vesz ig\u00e9nybe, \u00e9s a m\u0171k\u00f6d\u0151 irodai munk\u00e1t nem zavarja. Ha az \u00e9p\u00fcletben vend\u00e9gl\u00e1t\u00f3 vagy rakt\u00e1roz\u00e1si funkci\u00f3 is van, azt k\u00fcl\u00f6n szeretn\u00e9nk megn\u00e9zni, mert ezek t\u0171zv\u00e9delmi k\u00f6vetelm\u00e9nyei elt\u00e9rnek az irodai haszn\u00e1latt\u00f3l, \u00e9s a t\u0171zterhel\u00e9si sz\u00e1m\u00edt\u00e1s is m\u00e1s bemen\u0151 adatokat k\u00edv\u00e1n.\n\nAz \u00e1tadott dokumentumokat bizalmasan kezelj\u00fck, \u00e9s kiz\u00e1r\u00f3lag az aj\u00e1nlatk\u00e9r\u0151 megb\u00edz\u00e1s\u00e1nak teljes\u00edt\u00e9s\u00e9hez haszn\u00e1ljuk fel. A tervek \u00e9s a sz\u00e1m\u00edt\u00e1sok szerz\u0151i jogi v\u00e9delem alatt \u00e1llnak, a megrendel\u0151 a kifizet\u00e9st k\u00f6vet\u0151en az \u00e9p\u00fclet enged\u00e9lyez\u00e9s\u00e9hez \u00e9s haszn\u00e1latbav\u00e9tel\u00e9hez szabadon felhaszn\u00e1lhatja \u0151ket.\n\nK\u00e9rj\u00fck, hogy a sz\u00e1ml\u00e1z\u00e1si adatokat is adja meg: a c\u00e9g pontos nev\u00e9t, a sz\u00e9khely\u00e9t \u00e9s az ad\u00f3sz\u00e1m\u00e1t. Ha a megrendel\u0151 nem azonos az aj\u00e1nlatk\u00e9r\u0151vel, k\u00e9rj\u00fck, ezt is jelezze, hogy a szerz\u0151d\u00e9st a megfelel\u0151 n\u00e9ven k\u00e9sz\u00edthess\u00fck el.\n\nHa b\u00e1rmilyen k\u00e9rd\u00e9se van, sz\u00edvesen \u00e1llunk rendelkez\u00e9s\u00e9re telefonon vagy lev\u00e9lben. Az aj\u00e1nlatot a sz\u00fcks\u00e9ges adatok be\u00e9rkez\u00e9se ut\u00e1n k\u00e9t munkanapon bel\u00fcl elk\u00fcldj\u00fck, \u00e9s ha k\u00e9ri, szem\u00e9lyes egyeztet\u00e9sre is lehet\u0151s\u00e9get biztos\u00edtunk irod\u00e1nkban.\n\nK\u00f6sz\u00f6nj\u00fck a bizalm\u00e1t, \u00e9s v\u00e1rjuk sz\u00edves v\u00e1lasz\u00e1t!\n\n\u00dcdv\u00f6zlettel:\nFireeng Kft. t\u0171zv\u00e9delmi tervez\u00e9si csoportja\n\nMegjegyz\u00e9s a koll\u00e9g\u00e1nak: az \u00fcgyf\u00e9l eredeti level\u00e9ben szerepl\u0151 \u00f6sszes adatot ellen\u0151rizd a MiniCRM-ben, \u00e9s a v\u00e1lasz elk\u00fcld\u00e9se el\u0151tt gy\u0151z\u0151dj meg r\u00f3la, hogy a megnevezett projekt m\u00e9g nem szerepel az aj\u00e1nlatok k\u00f6z\u00f6tt. Ha igen, ne k\u00fcldd el a levelet, hanem jelezd Andinak, hogy egyeztessen az \u00fcgyf\u00e9llel.",
+      "byte_len": 4463,
+      "sha256": "982b1d4d1231885a9085e7aa684c05e6bad89bbc455e07ffde35c31288415433",
+      "chars": 3972
+    },
+    {
+      "name": "ok text with TAB",
+      "expect": "ok",
+      "rule": "KB7",
+      "text": "Szia Andi!\tK\u00e9rlek, n\u00e9zd meg.\n\tBeh\u00fazott sor.",
+      "byte_len": 46,
+      "sha256": "ffca27c3ba429c113d7ae824ddf05d647ad04585882653ca44be15d05551b6a9",
+      "chars": 43
+    },
+    {
+      "name": "ok trailing LF is part of the text",
+      "expect": "ok",
+      "rule": "KB9",
+      "text": "Szia Andi!\nK\u00f6sz\u00f6n\u00f6m!\n",
+      "byte_len": 24,
+      "sha256": "e558e4eb51c96a00386a34c43646db8446f2e5c5f214575b4f1f3a46653be221",
+      "chars": 21
+    },
+    {
+      "name": "ok exactly 16384 bytes",
+      "expect": "ok",
+      "rule": "KB3",
+      "prefix_text": "Szia! ",
+      "total_bytes": 16384,
+      "byte_len": 16384,
+      "sha256": "c9cb687cc5f5ec7483d09626414e8c788906d7b6a8a22692ec920bbb0edcb7e1"
+    },
+    {
+      "name": "deny 16385 bytes",
+      "expect": "deny",
+      "rule": "KB4",
+      "prefix_text": "Szia! ",
+      "total_bytes": 16385,
+      "byte_len": 16385,
+      "sha256": "e2a1dca66251d6d254cdacd0a1c0209e6d462cf33fa01777321097e60005f2e9"
+    },
+    {
+      "name": "deny 0 bytes",
+      "expect": "deny",
+      "rule": "KB8",
+      "text": "",
+      "byte_len": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "deny only space, TAB and LF",
+      "expect": "deny",
+      "rule": "KB8",
+      "text": " \t\n \n\t ",
+      "byte_len": 7,
+      "sha256": "6921e165164915aafe51561f293fcc274fb9335c79afaf68027dc69cdd656784"
+    },
+    {
+      "name": "deny NUL",
+      "expect": "deny",
+      "rule": "KB7",
+      "bytes_hex": "537a696121200020416e6469",
+      "byte_len": 12,
+      "sha256": "3c36bf4244c0c20b94e4e21dd06ba46fcd611c5ac06a25ff9a9aa8747621c67f"
+    },
+    {
+      "name": "deny CRLF",
+      "expect": "deny",
+      "rule": "KB7",
+      "bytes_hex": "537a69612120416e64690d0a4dc3a173696b20736f72",
+      "byte_len": 22,
+      "sha256": "66bf07a707c0cf2127fd6d02e2558bb35c81de54c5838c8f7785d54b12f1cc01"
+    },
+    {
+      "name": "deny leading BOM (EF BB BF)",
+      "expect": "deny",
+      "rule": "KB7",
+      "bytes_hex": "efbbbf537a69612120416e6469",
+      "byte_len": 13,
+      "sha256": "56e6e0e4e6062186d3dea28d7e88da3fbc5d9b0e755b780d0df0fd261b3d6bde"
+    },
+    {
+      "name": "deny U+FEFF in the middle",
+      "expect": "deny",
+      "rule": "KB7",
+      "bytes_hex": "537a6961212041efbbbf6e6469",
+      "byte_len": 13,
+      "sha256": "436c6e23dbcada6a6680db74d5ce6d865e3644165aad683035781eb2afc60094"
+    },
+    {
+      "name": "deny U+202E (RLO)",
+      "expect": "deny",
+      "rule": "KB7",
+      "bytes_hex": "537a6961212041e280ae6e6469",
+      "byte_len": 13,
+      "sha256": "9ebf5684060646d427eb1be30d70985b0da403828bdbeff2cbe5a2493133c1fc"
+    },
+    {
+      "name": "deny U+200B (zero width space)",
+      "expect": "deny",
+      "rule": "KB7",
+      "bytes_hex": "537a6961212041e2808b6e6469",
+      "byte_len": 13,
+      "sha256": "9596f2156b49fd117778af905dd1a5e955d0be6f514a473bad986867a15c8dfe"
+    },
+    {
+      "name": "deny U+2028 (line separator)",
+      "expect": "deny",
+      "rule": "KB7",
+      "bytes_hex": "537a6961212041e280a86e6469",
+      "byte_len": 13,
+      "sha256": "07f3d66f2de01bb39584a416de554274d6388414109d3d97d0b78804a27353d9"
+    },
+    {
+      "name": "deny U+0085 (NEL)",
+      "expect": "deny",
+      "rule": "KB7",
+      "bytes_hex": "537a6961212041c2856e6469",
+      "byte_len": 12,
+      "sha256": "37e024333074d92f9f3993039427ff034b5a6323fb287cc8c48df80ab0f2b788"
+    },
+    {
+      "name": "deny U+007F (DEL)",
+      "expect": "deny",
+      "rule": "KB7",
+      "bytes_hex": "537a69612120417f6e6469",
+      "byte_len": 11,
+      "sha256": "65fc3591a2d0f47599ae9622efa6173c60248cdeb3f39c06cc7467a058a8d186"
+    },
+    {
+      "name": "deny invalid byte FF",
+      "expect": "deny",
+      "rule": "KB6",
+      "bytes_hex": "537a69612120ff",
+      "byte_len": 7,
+      "sha256": "e2508da5b2f366dfb5839649f8598a72c9d8446d925cb0c83fa768d105f4867d"
+    },
+    {
+      "name": "deny overlong C0 AF",
+      "expect": "deny",
+      "rule": "KB6",
+      "bytes_hex": "537a69612120c0af",
+      "byte_len": 8,
+      "sha256": "6c6b4f378f6e94d3a929fb4f306845e321fd35d368b8287e32981325fdc5f9d2"
+    },
+    {
+      "name": "deny encoded surrogate ED A0 80",
+      "expect": "deny",
+      "rule": "KB6",
+      "bytes_hex": "537a69612120eda080",
+      "byte_len": 9,
+      "sha256": "9c5eacf8daa623ef5ba47c569f72c2f8a2e62101f7c429c3269c51f509918092"
+    },
+    {
+      "name": "deny above U+10FFFF (F4 90 80 80)",
+      "expect": "deny",
+      "rule": "KB6",
+      "bytes_hex": "537a69612120f4908080",
+      "byte_len": 10,
+      "sha256": "fec5abfb4d1eb105b024b1b65e72f4717fb968e196a928daaeb041ff883366ec"
+    },
+    {
+      "name": "deny truncated sequence C3 at the end",
+      "expect": "deny",
+      "rule": "KB6",
+      "bytes_hex": "537a69612120c3",
+      "byte_len": 7,
+      "sha256": "9b8e521c48b8292f9cce1828e7a4e85b09c3874ba5d6d12b1a34016c4bebcc58"
+    },
+    {
+      "name": "deny truncated sequence E2 82 at the end",
+      "expect": "deny",
+      "rule": "KB6",
+      "bytes_hex": "537a69612120e282",
+      "byte_len": 8,
+      "sha256": "a423cedbe217097dc83847dbb45b3796bddc58b79bb91fdb946341a635cd56fe"
+    }
+  ],
+  "comment_file_kinds": [
+    {
+      "name": "ok regular file",
+      "kind": "regular",
+      "expect": "ok",
+      "rule": "KB3",
+      "setup": "mode 0600 regular file {ROOT}/a.txt with the fixture text, nlink 1"
+    },
+    {
+      "name": "deny symlink to a good file inside the root",
+      "kind": "symlink_inside",
+      "expect": "deny",
+      "rule": "KB2",
+      "setup": "{ROOT}/a.txt is a symlink to the regular file {ROOT}/real.txt (open with O_NOFOLLOW fails, ELOOP)"
+    },
+    {
+      "name": "deny symlink to a file outside the root",
+      "kind": "symlink_outside",
+      "expect": "deny",
+      "rule": "KB2",
+      "setup": "{ROOT}/a.txt is a symlink to a regular file outside the root"
+    },
+    {
+      "name": "deny hardlink (nlink 2)",
+      "kind": "hardlink",
+      "expect": "deny",
+      "rule": "KB3",
+      "setup": "{ROOT}/a.txt and {ROOT}/b.txt are hard links of one file (st_nlink 2)"
+    },
+    {
+      "name": "deny directory in place of the name",
+      "kind": "directory",
+      "expect": "deny",
+      "rule": "KB3",
+      "setup": "{ROOT}/a.txt is a directory"
+    },
+    {
+      "name": "deny FIFO (must not block)",
+      "kind": "fifo",
+      "expect": "deny",
+      "rule": "KB3",
+      "timeout_s": 5,
+      "setup": "{ROOT}/a.txt is a FIFO made with mkfifo by a child process; the gate and the CLI both run under a 5 s timeout and must not hang"
+    },
+    {
+      "name": "deny root is a symlink",
+      "kind": "root_symlink",
+      "expect": "deny",
+      "rule": "KB1",
+      "setup": "the root path is a symlink to a real directory that holds a.txt"
+    },
+    {
+      "name": "deny root mode 0775",
+      "kind": "root_mode_0775",
+      "expect": "deny",
+      "rule": "KB1",
+      "setup": "the root is a real directory with mode 0775 (group writable)"
+    },
+    {
+      "name": "deny root missing",
+      "kind": "root_missing",
+      "expect": "deny",
+      "rule": "KF2",
+      "setup": "the root directory does not exist; the code must not create it"
+    },
+    {
+      "name": "deny root under a symlinked parent",
+      "kind": "root_under_symlink_parent",
+      "expect": "deny",
+      "rule": "KB1",
+      "setup": "a parent of the root is a symlink, so realpath(root) differs from the root string"
+    }
+  ],
+  "comment_file_gate_commands": [
+    {
+      "name": "rules-ok canonical (b)",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "rules-ok",
+      "rule": "KA"
+    },
+    {
+      "name": "rules-ok single-quoted path",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file '{ROOT}/a.txt' --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "rules-ok",
+      "rule": "KA4"
+    },
+    {
+      "name": "rules-ok reordered flags",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --comment-file {ROOT}/a.txt --to kovacs@fireeng.hu --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "expect": "rules-ok",
+      "rule": "KA"
+    },
+    {
+      "name": "deny two comment sources",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' --comment 'Szia!'",
+      "expect": "deny",
+      "rule": "KA1"
+    },
+    {
+      "name": "deny file without hash",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "KA1"
+    },
+    {
+      "name": "deny LF in the (b) command, unquoted",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d\n--orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "KA5"
+    },
+    {
+      "name": "deny LF in the (b) command, quoted in the subject",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'T\u00e1rgy\nm\u00e1sik sor'",
+      "expect": "deny",
+      "rule": "KA5"
+    },
+    {
+      "name": "deny $HOME in the path",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file \"$HOME/x.txt\" --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny tilde path",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file ~/x.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny glob in the path",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/*.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "KA4"
+    },
+    {
+      "name": "deny command substitution in place of the hex",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --comment-sha256 $(shasum -a 256 {ROOT}/a.txt) --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "deny shasum chained before the command",
+      "cmd": "shasum -a 256 {ROOT}/a.txt && npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B2"
+    },
+    {
+      "name": "deny quote concatenation in the path (regex and shlex differ)",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file '{ROOT}/a'b.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "B4"
+    },
+    {
+      "name": "rules-ok double-quoted path",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file \"{ROOT}/a.txt\" --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "rules-ok",
+      "rule": "KA4",
+      "extra": true
+    },
+    {
+      "name": "deny eq-form --comment-file=",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file={ROOT}/a.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "KA2",
+      "extra": true
+    },
+    {
+      "name": "deny eq-form --comment-sha256=",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --comment-sha256=92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "KA2",
+      "extra": true
+    },
+    {
+      "name": "deny uppercase hex",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --comment-sha256 92D1F492EAA9F4B21DF5D20EACB1DD1A67047F5D2B63D0C8EE8142D1E528901D --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "KA3",
+      "extra": true
+    },
+    {
+      "name": "deny path outside the root",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file /tmp/a.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "KA4",
+      "extra": true
+    },
+    {
+      "name": "deny relative path",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file mail-outbox/a.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "KA4",
+      "extra": true
+    },
+    {
+      "name": "deny subdirectory in the path",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/sub/a.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "expect": "deny",
+      "rule": "KA4",
+      "extra": true
+    },
+    {
+      "name": "deny duplicate --comment-sha256",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d",
+      "expect": "deny",
+      "rule": "KA2",
+      "extra": true
+    },
+    {
+      "name": "deny duplicate --comment-file",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --comment-sha256 92d1f492eaa9f4b21df5d20eacb1dd1a67047f5d2b63d0c8ee8142d1e528901d --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.' --comment-file {ROOT}/b.txt",
+      "expect": "deny",
+      "rule": "KA2",
+      "extra": true
+    }
+  ],
+  "comment_file_copy_gate": [
+    {
+      "name": "pass 4000 char accented text with the Javasolt valasz block",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --comment-sha256 982b1d4d1231885a9085e7aa684c05e6bad89bbc455e07ffde35c31288415433 --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "text": "Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense\n\nJavasolt v\u00e1lasz az aj\u00e1nlatk\u00e9r\u0151nek:\n\nKedves \u00dcgyfel\u00fcnk! K\u00f6sz\u00f6nj\u00fck megkeres\u00e9s\u00e9t, \u00e9s \u00f6r\u00f6mmel \u00e9rtes\u00edtj\u00fck, hogy a t\u0171zv\u00e9delmi tervez\u00e9si aj\u00e1nlatk\u00e9r\u00e9s\u00e9t megkaptuk. A k\u00e9rt munka t\u00e1rgya egy h\u00e1romszintes iroda\u00e9p\u00fclet t\u0171zv\u00e9delmi m\u0171szaki le\u00edr\u00e1s\u00e1nak elk\u00e9sz\u00edt\u00e9se, a hozz\u00e1 tartoz\u00f3 menek\u00fcl\u00e9si \u00fatvonalak vizsg\u00e1lat\u00e1val \u00e9s az olt\u00f3berendez\u00e9sek helysz\u00ednrajz\u00e1val egy\u00fctt.\n\nAz aj\u00e1nlat \u00f6ssze\u00e1ll\u00edt\u00e1s\u00e1hoz sz\u00fcks\u00e9g\u00fcnk lenne n\u00e9h\u00e1ny adatra. K\u00e9rj\u00fck, k\u00fcldje meg az \u00e9p\u00edt\u00e9si enged\u00e9lyez\u00e9si tervdokument\u00e1ci\u00f3t, a szintenk\u00e9nti alaprajzokat, valamint a tervezett haszn\u00e1lat r\u00f6vid le\u00edr\u00e1s\u00e1t. Ha az \u00e9p\u00fclet rendelkezik megl\u00e9v\u0151 t\u0171zv\u00e9delmi dokument\u00e1ci\u00f3val, azt is sz\u00edvesen megn\u00e9zz\u00fck, mert ezzel a d\u00edjat \u00e9s a hat\u00e1rid\u0151t pontosabban meg tudjuk adni.\n\nA tervez\u00e9s f\u00e1zisai a k\u00f6vetkez\u0151k lesznek. Az els\u0151 l\u00e9p\u00e9s az adatgy\u0171jt\u00e9s \u00e9s a helysz\u00edni bej\u00e1r\u00e1s, amelynek sor\u00e1n felm\u00e9rj\u00fck az \u00e9p\u00fclet szerkezet\u00e9t, a t\u0171zszakaszok kialak\u00edt\u00e1s\u00e1t \u00e9s a megl\u00e9v\u0151 t\u0171zv\u00e9delmi berendez\u00e9seket. A m\u00e1sodik l\u00e9p\u00e9s a t\u0171zv\u00e9delmi m\u0171szaki le\u00edr\u00e1s \u00e9s a kapcsol\u00f3d\u00f3 sz\u00e1m\u00edt\u00e1sok elk\u00e9sz\u00edt\u00e9se, a harmadik pedig az egyeztet\u00e9s a hat\u00f3s\u00e1ggal \u00e9s a v\u00e9gleges dokument\u00e1ci\u00f3 \u00e1tad\u00e1sa.\n\nA tervezett alapter\u00fclet alapj\u00e1n a munka k\u00f6r\u00fclbel\u00fcl h\u00e1rom-n\u00e9gy h\u00e9t alatt v\u00e9gezhet\u0151 el, felt\u00e9ve, hogy az alaprajzok \u00e9s a haszn\u00e1lati le\u00edr\u00e1s a megrendel\u00e9s napj\u00e1n rendelkez\u00e9s\u00fcnkre \u00e1llnak. A hat\u00e1rid\u0151 a hat\u00f3s\u00e1gi egyeztet\u00e9sek id\u0151ig\u00e9ny\u00e9t\u0151l f\u00fcgg\u0151en m\u00f3dosulhat, err\u0151l mindig id\u0151ben t\u00e1j\u00e9koztatjuk.\n\nAz aj\u00e1nlat tartalmazza a helysz\u00edni bej\u00e1r\u00e1st, a tervdokument\u00e1ci\u00f3t k\u00e9t p\u00e9ld\u00e1nyban, egy alkalommal a hat\u00f3s\u00e1gi hi\u00e1nyp\u00f3tl\u00e1s k\u00f6lts\u00e9g\u00e9t, valamint az \u00e1tad\u00e1s ut\u00e1n egy h\u00f3napig terjed\u0151 d\u00edjmentes szakmai tan\u00e1csad\u00e1st. A kivitelez\u00e9s, a g\u00e9p\u00e9szeti tervez\u00e9s \u00e9s a statikai sz\u00e1m\u00edt\u00e1sok nem r\u00e9szei az aj\u00e1nlatnak, azokat k\u00fcl\u00f6n szak\u00e1gi tervez\u0151k v\u00e9gzik.\n\nA d\u00edjaz\u00e1s k\u00e9t r\u00e9szletben t\u00f6rt\u00e9nik. A szerz\u0151d\u00e9sk\u00f6t\u00e9skor a teljes d\u00edj harmincsz\u00e1zal\u00e9ka esed\u00e9kes, a fennmarad\u00f3 \u00f6sszeget a k\u00e9sz dokument\u00e1ci\u00f3 \u00e1tad\u00e1sakor sz\u00e1ml\u00e1zzuk. A fizet\u00e9si hat\u00e1rid\u0151 mindk\u00e9t sz\u00e1mla eset\u00e9n nyolc nap, banki \u00e1tutal\u00e1ssal. Ha az \u00fcgyf\u00e9l el\u0151re jelzi, hogy a hat\u00f3s\u00e1gi elj\u00e1r\u00e1s elh\u00faz\u00f3dhat, a m\u00e1sodik r\u00e9szlet sz\u00e1ml\u00e1z\u00e1s\u00e1t a hat\u00f3s\u00e1gi j\u00f3v\u00e1hagy\u00e1s napj\u00e1hoz is k\u00f6thetj\u00fck, ennek r\u00e9szleteit a szerz\u0151d\u00e9sben r\u00f6gz\u00edtj\u00fck.\n\nA helysz\u00edni bej\u00e1r\u00e1shoz k\u00e9rj\u00fck, jel\u00f6lj\u00f6n ki egy kapcsolattart\u00f3t, aki az \u00e9p\u00fcletben ismeri a g\u00e9p\u00e9szeti helyis\u00e9geket, a villamos f\u0151eloszt\u00f3t \u00e9s a t\u0171zjelz\u0151 k\u00f6zpont hely\u00e9t. A bej\u00e1r\u00e1s \u00e1ltal\u00e1ban f\u00e9l napot vesz ig\u00e9nybe, \u00e9s a m\u0171k\u00f6d\u0151 irodai munk\u00e1t nem zavarja. Ha az \u00e9p\u00fcletben vend\u00e9gl\u00e1t\u00f3 vagy rakt\u00e1roz\u00e1si funkci\u00f3 is van, azt k\u00fcl\u00f6n szeretn\u00e9nk megn\u00e9zni, mert ezek t\u0171zv\u00e9delmi k\u00f6vetelm\u00e9nyei elt\u00e9rnek az irodai haszn\u00e1latt\u00f3l, \u00e9s a t\u0171zterhel\u00e9si sz\u00e1m\u00edt\u00e1s is m\u00e1s bemen\u0151 adatokat k\u00edv\u00e1n.\n\nAz \u00e1tadott dokumentumokat bizalmasan kezelj\u00fck, \u00e9s kiz\u00e1r\u00f3lag az aj\u00e1nlatk\u00e9r\u0151 megb\u00edz\u00e1s\u00e1nak teljes\u00edt\u00e9s\u00e9hez haszn\u00e1ljuk fel. A tervek \u00e9s a sz\u00e1m\u00edt\u00e1sok szerz\u0151i jogi v\u00e9delem alatt \u00e1llnak, a megrendel\u0151 a kifizet\u00e9st k\u00f6vet\u0151en az \u00e9p\u00fclet enged\u00e9lyez\u00e9s\u00e9hez \u00e9s haszn\u00e1latbav\u00e9tel\u00e9hez szabadon felhaszn\u00e1lhatja \u0151ket.\n\nK\u00e9rj\u00fck, hogy a sz\u00e1ml\u00e1z\u00e1si adatokat is adja meg: a c\u00e9g pontos nev\u00e9t, a sz\u00e9khely\u00e9t \u00e9s az ad\u00f3sz\u00e1m\u00e1t. Ha a megrendel\u0151 nem azonos az aj\u00e1nlatk\u00e9r\u0151vel, k\u00e9rj\u00fck, ezt is jelezze, hogy a szerz\u0151d\u00e9st a megfelel\u0151 n\u00e9ven k\u00e9sz\u00edthess\u00fck el.\n\nHa b\u00e1rmilyen k\u00e9rd\u00e9se van, sz\u00edvesen \u00e1llunk rendelkez\u00e9s\u00e9re telefonon vagy lev\u00e9lben. Az aj\u00e1nlatot a sz\u00fcks\u00e9ges adatok be\u00e9rkez\u00e9se ut\u00e1n k\u00e9t munkanapon bel\u00fcl elk\u00fcldj\u00fck, \u00e9s ha k\u00e9ri, szem\u00e9lyes egyeztet\u00e9sre is lehet\u0151s\u00e9get biztos\u00edtunk irod\u00e1nkban.\n\nK\u00f6sz\u00f6nj\u00fck a bizalm\u00e1t, \u00e9s v\u00e1rjuk sz\u00edves v\u00e1lasz\u00e1t!\n\n\u00dcdv\u00f6zlettel:\nFireeng Kft. t\u0171zv\u00e9delmi tervez\u00e9si csoportja\n\nMegjegyz\u00e9s a koll\u00e9g\u00e1nak: az \u00fcgyf\u00e9l eredeti level\u00e9ben szerepl\u0151 \u00f6sszes adatot ellen\u0151rizd a MiniCRM-ben, \u00e9s a v\u00e1lasz elk\u00fcld\u00e9se el\u0151tt gy\u0151z\u0151dj meg r\u00f3la, hogy a megnevezett projekt m\u00e9g nem szerepel az aj\u00e1nlatok k\u00f6z\u00f6tt. Ha igen, ne k\u00fcldd el a levelet, hanem jelezd Andinak, hogy egyeztessen az \u00fcgyf\u00e9llel.",
+      "expect": "pass",
+      "rule": "KD3"
+    },
+    {
+      "name": "pass em dash in orig-subject with a good file",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --comment-sha256 e223ae5560696bcfe9aaa12f5296262f00c101f7e78984dbaeaf52b2e36cdc56 --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s \u2014 Teszt utca'",
+      "text": "Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense",
+      "expect": "pass",
+      "rule": "KD3"
+    },
+    {
+      "name": "block one accentless paragraph in the file",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --comment-sha256 fc41816d091693bbfc2f55063e48c00ceb5432aedef161d4d5c0f26e7f5f27f7 --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "text": "Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense\n\nJavasolt v\u00e1lasz:\nKerlek, nezd meg ezt a levelet, es intezd el. Gyuri most uton van, ezert tovabbitom neked. Koszonom a segitseget, hamarosan jelentkezem.\n\n\u00dcdv\u00f6zlettel: Brainy",
+      "expect": "block",
+      "rule": "KD3"
+    },
+    {
+      "name": "block em dash in the file",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --comment-sha256 026eca1878f3a86799bb6719420bb39b77292a4089168d784b9c6e90f45f277b --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "text": "Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense\n\nJavasolt v\u00e1lasz:\nK\u00e9rlek, n\u00e9zd meg \u2014 k\u00f6sz\u00f6n\u00f6m!",
+      "expect": "block",
+      "rule": "KD3"
+    },
+    {
+      "name": "block fully accentless file",
+      "cmd": "npx tsx scripts/graph-mail.ts forward --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --to kovacs@fireeng.hu --comment-file {ROOT}/a.txt --comment-sha256 5457e88654d36b8a1caca74495eddb23cc22a01234c80e533c6942b0fccd611f --orig-subject 'Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.'",
+      "text": "Szia Andi! Gyuri most uton van, ezert tovabbitom neked ezt a levelet. Kerlek, nezd meg, es intezd el.",
+      "expect": "block",
+      "rule": "KD1",
+      "extra": true
+    }
+  ],
+  "forward_anchors": [
+    {
+      "name": "inline comment",
+      "source": "inline",
+      "to": "kovacs@fireeng.hu",
+      "id": "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "subject": "Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.",
+      "text": "Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense",
+      "anchor": "cc8a997070c3f8e61c209ca11fd1cc3ddbc6276c2ff616c55a18c261b45a8941"
+    },
+    {
+      "name": "file comment with the same text gives the same anchor",
+      "source": "file",
+      "to": "kovacs@fireeng.hu",
+      "id": "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "subject": "Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.",
+      "text": "Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense",
+      "anchor": "cc8a997070c3f8e61c209ca11fd1cc3ddbc6276c2ff616c55a18c261b45a8941"
+    },
+    {
+      "name": "text without trailing LF",
+      "source": "file",
+      "to": "kovacs@fireeng.hu",
+      "id": "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "subject": "Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.",
+      "text": "Szia Andi!\nK\u00f6sz\u00f6n\u00f6m!",
+      "anchor": "0daa32d2236a25ec2a14ccca308f5e429d9e4ed204af72538161db7a64e116a3"
+    },
+    {
+      "name": "same text with a trailing LF differs",
+      "source": "file",
+      "to": "kovacs@fireeng.hu",
+      "id": "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "subject": "Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.",
+      "text": "Szia Andi!\nK\u00f6sz\u00f6n\u00f6m!\n",
+      "anchor": "c6585c49b78d97befb1f19598e2066e9ed9fc41adc80871bbb37fefc0526597e"
+    },
+    {
+      "name": "4000 char accented text",
+      "source": "file",
+      "to": "kovacs@fireeng.hu",
+      "id": "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "subject": "Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.",
+      "text": "Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense\n\nJavasolt v\u00e1lasz az aj\u00e1nlatk\u00e9r\u0151nek:\n\nKedves \u00dcgyfel\u00fcnk! K\u00f6sz\u00f6nj\u00fck megkeres\u00e9s\u00e9t, \u00e9s \u00f6r\u00f6mmel \u00e9rtes\u00edtj\u00fck, hogy a t\u0171zv\u00e9delmi tervez\u00e9si aj\u00e1nlatk\u00e9r\u00e9s\u00e9t megkaptuk. A k\u00e9rt munka t\u00e1rgya egy h\u00e1romszintes iroda\u00e9p\u00fclet t\u0171zv\u00e9delmi m\u0171szaki le\u00edr\u00e1s\u00e1nak elk\u00e9sz\u00edt\u00e9se, a hozz\u00e1 tartoz\u00f3 menek\u00fcl\u00e9si \u00fatvonalak vizsg\u00e1lat\u00e1val \u00e9s az olt\u00f3berendez\u00e9sek helysz\u00ednrajz\u00e1val egy\u00fctt.\n\nAz aj\u00e1nlat \u00f6ssze\u00e1ll\u00edt\u00e1s\u00e1hoz sz\u00fcks\u00e9g\u00fcnk lenne n\u00e9h\u00e1ny adatra. K\u00e9rj\u00fck, k\u00fcldje meg az \u00e9p\u00edt\u00e9si enged\u00e9lyez\u00e9si tervdokument\u00e1ci\u00f3t, a szintenk\u00e9nti alaprajzokat, valamint a tervezett haszn\u00e1lat r\u00f6vid le\u00edr\u00e1s\u00e1t. Ha az \u00e9p\u00fclet rendelkezik megl\u00e9v\u0151 t\u0171zv\u00e9delmi dokument\u00e1ci\u00f3val, azt is sz\u00edvesen megn\u00e9zz\u00fck, mert ezzel a d\u00edjat \u00e9s a hat\u00e1rid\u0151t pontosabban meg tudjuk adni.\n\nA tervez\u00e9s f\u00e1zisai a k\u00f6vetkez\u0151k lesznek. Az els\u0151 l\u00e9p\u00e9s az adatgy\u0171jt\u00e9s \u00e9s a helysz\u00edni bej\u00e1r\u00e1s, amelynek sor\u00e1n felm\u00e9rj\u00fck az \u00e9p\u00fclet szerkezet\u00e9t, a t\u0171zszakaszok kialak\u00edt\u00e1s\u00e1t \u00e9s a megl\u00e9v\u0151 t\u0171zv\u00e9delmi berendez\u00e9seket. A m\u00e1sodik l\u00e9p\u00e9s a t\u0171zv\u00e9delmi m\u0171szaki le\u00edr\u00e1s \u00e9s a kapcsol\u00f3d\u00f3 sz\u00e1m\u00edt\u00e1sok elk\u00e9sz\u00edt\u00e9se, a harmadik pedig az egyeztet\u00e9s a hat\u00f3s\u00e1ggal \u00e9s a v\u00e9gleges dokument\u00e1ci\u00f3 \u00e1tad\u00e1sa.\n\nA tervezett alapter\u00fclet alapj\u00e1n a munka k\u00f6r\u00fclbel\u00fcl h\u00e1rom-n\u00e9gy h\u00e9t alatt v\u00e9gezhet\u0151 el, felt\u00e9ve, hogy az alaprajzok \u00e9s a haszn\u00e1lati le\u00edr\u00e1s a megrendel\u00e9s napj\u00e1n rendelkez\u00e9s\u00fcnkre \u00e1llnak. A hat\u00e1rid\u0151 a hat\u00f3s\u00e1gi egyeztet\u00e9sek id\u0151ig\u00e9ny\u00e9t\u0151l f\u00fcgg\u0151en m\u00f3dosulhat, err\u0151l mindig id\u0151ben t\u00e1j\u00e9koztatjuk.\n\nAz aj\u00e1nlat tartalmazza a helysz\u00edni bej\u00e1r\u00e1st, a tervdokument\u00e1ci\u00f3t k\u00e9t p\u00e9ld\u00e1nyban, egy alkalommal a hat\u00f3s\u00e1gi hi\u00e1nyp\u00f3tl\u00e1s k\u00f6lts\u00e9g\u00e9t, valamint az \u00e1tad\u00e1s ut\u00e1n egy h\u00f3napig terjed\u0151 d\u00edjmentes szakmai tan\u00e1csad\u00e1st. A kivitelez\u00e9s, a g\u00e9p\u00e9szeti tervez\u00e9s \u00e9s a statikai sz\u00e1m\u00edt\u00e1sok nem r\u00e9szei az aj\u00e1nlatnak, azokat k\u00fcl\u00f6n szak\u00e1gi tervez\u0151k v\u00e9gzik.\n\nA d\u00edjaz\u00e1s k\u00e9t r\u00e9szletben t\u00f6rt\u00e9nik. A szerz\u0151d\u00e9sk\u00f6t\u00e9skor a teljes d\u00edj harmincsz\u00e1zal\u00e9ka esed\u00e9kes, a fennmarad\u00f3 \u00f6sszeget a k\u00e9sz dokument\u00e1ci\u00f3 \u00e1tad\u00e1sakor sz\u00e1ml\u00e1zzuk. A fizet\u00e9si hat\u00e1rid\u0151 mindk\u00e9t sz\u00e1mla eset\u00e9n nyolc nap, banki \u00e1tutal\u00e1ssal. Ha az \u00fcgyf\u00e9l el\u0151re jelzi, hogy a hat\u00f3s\u00e1gi elj\u00e1r\u00e1s elh\u00faz\u00f3dhat, a m\u00e1sodik r\u00e9szlet sz\u00e1ml\u00e1z\u00e1s\u00e1t a hat\u00f3s\u00e1gi j\u00f3v\u00e1hagy\u00e1s napj\u00e1hoz is k\u00f6thetj\u00fck, ennek r\u00e9szleteit a szerz\u0151d\u00e9sben r\u00f6gz\u00edtj\u00fck.\n\nA helysz\u00edni bej\u00e1r\u00e1shoz k\u00e9rj\u00fck, jel\u00f6lj\u00f6n ki egy kapcsolattart\u00f3t, aki az \u00e9p\u00fcletben ismeri a g\u00e9p\u00e9szeti helyis\u00e9geket, a villamos f\u0151eloszt\u00f3t \u00e9s a t\u0171zjelz\u0151 k\u00f6zpont hely\u00e9t. A bej\u00e1r\u00e1s \u00e1ltal\u00e1ban f\u00e9l napot vesz ig\u00e9nybe, \u00e9s a m\u0171k\u00f6d\u0151 irodai munk\u00e1t nem zavarja. Ha az \u00e9p\u00fcletben vend\u00e9gl\u00e1t\u00f3 vagy rakt\u00e1roz\u00e1si funkci\u00f3 is van, azt k\u00fcl\u00f6n szeretn\u00e9nk megn\u00e9zni, mert ezek t\u0171zv\u00e9delmi k\u00f6vetelm\u00e9nyei elt\u00e9rnek az irodai haszn\u00e1latt\u00f3l, \u00e9s a t\u0171zterhel\u00e9si sz\u00e1m\u00edt\u00e1s is m\u00e1s bemen\u0151 adatokat k\u00edv\u00e1n.\n\nAz \u00e1tadott dokumentumokat bizalmasan kezelj\u00fck, \u00e9s kiz\u00e1r\u00f3lag az aj\u00e1nlatk\u00e9r\u0151 megb\u00edz\u00e1s\u00e1nak teljes\u00edt\u00e9s\u00e9hez haszn\u00e1ljuk fel. A tervek \u00e9s a sz\u00e1m\u00edt\u00e1sok szerz\u0151i jogi v\u00e9delem alatt \u00e1llnak, a megrendel\u0151 a kifizet\u00e9st k\u00f6vet\u0151en az \u00e9p\u00fclet enged\u00e9lyez\u00e9s\u00e9hez \u00e9s haszn\u00e1latbav\u00e9tel\u00e9hez szabadon felhaszn\u00e1lhatja \u0151ket.\n\nK\u00e9rj\u00fck, hogy a sz\u00e1ml\u00e1z\u00e1si adatokat is adja meg: a c\u00e9g pontos nev\u00e9t, a sz\u00e9khely\u00e9t \u00e9s az ad\u00f3sz\u00e1m\u00e1t. Ha a megrendel\u0151 nem azonos az aj\u00e1nlatk\u00e9r\u0151vel, k\u00e9rj\u00fck, ezt is jelezze, hogy a szerz\u0151d\u00e9st a megfelel\u0151 n\u00e9ven k\u00e9sz\u00edthess\u00fck el.\n\nHa b\u00e1rmilyen k\u00e9rd\u00e9se van, sz\u00edvesen \u00e1llunk rendelkez\u00e9s\u00e9re telefonon vagy lev\u00e9lben. Az aj\u00e1nlatot a sz\u00fcks\u00e9ges adatok be\u00e9rkez\u00e9se ut\u00e1n k\u00e9t munkanapon bel\u00fcl elk\u00fcldj\u00fck, \u00e9s ha k\u00e9ri, szem\u00e9lyes egyeztet\u00e9sre is lehet\u0151s\u00e9get biztos\u00edtunk irod\u00e1nkban.\n\nK\u00f6sz\u00f6nj\u00fck a bizalm\u00e1t, \u00e9s v\u00e1rjuk sz\u00edves v\u00e1lasz\u00e1t!\n\n\u00dcdv\u00f6zlettel:\nFireeng Kft. t\u0171zv\u00e9delmi tervez\u00e9si csoportja\n\nMegjegyz\u00e9s a koll\u00e9g\u00e1nak: az \u00fcgyf\u00e9l eredeti level\u00e9ben szerepl\u0151 \u00f6sszes adatot ellen\u0151rizd a MiniCRM-ben, \u00e9s a v\u00e1lasz elk\u00fcld\u00e9se el\u0151tt gy\u0151z\u0151dj meg r\u00f3la, hogy a megnevezett projekt m\u00e9g nem szerepel az aj\u00e1nlatok k\u00f6z\u00f6tt. Ha igen, ne k\u00fcldd el a levelet, hanem jelezd Andinak, hogy egyeztessen az \u00fcgyf\u00e9llel.",
+      "anchor": "d71253a742015563b2da56b8a7f305a3fbe6e199790c46d6cf7ca69015be3a44"
+    },
+    {
+      "name": "raw uppercase recipient is hashed as typed",
+      "source": "inline",
+      "to": "Kovacs.Bela@FIREENG.HU",
+      "id": "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "subject": "Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.",
+      "text": "Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense",
+      "anchor": "ae45260ea91c8eb8f74e844cd2e049e7eb3f322eb38e2d5e8d4380ed1347ec0c"
+    },
+    {
+      "name": "accented orig-subject",
+      "source": "inline",
+      "to": "kovacs@fireeng.hu",
+      "id": "AAMkAGFmZXN0MDEyMzQ1Njc4OQ==",
+      "subject": "Aj\u00e1nlatk\u00e9r\u00e9s: \u00c1rv\u00edzt\u0171r\u0151 utca 5.",
+      "text": "Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense",
+      "anchor": "676cc93aae31ae089bda1a89cf35bf372ce7ceddbe7938fb37d6774cc822f1ad"
+    },
+    {
+      "name": "another message id",
+      "source": "inline",
+      "to": "kovacs@fireeng.hu",
+      "id": "AAMkAGFmZXN0MDEyMzQ1Njc4ZZ==",
+      "subject": "Aj\u00e1nlatk\u00e9r\u00e9s: Teszt utca 5.",
+      "text": "Szia Andi! Gyuri most \u00faton van, ez\u00e9rt tov\u00e1bb\u00edtom neked ezt a levelet. K\u00e9rlek, n\u00e9zd meg, \u00e9s int\u00e9zd el. Ha nem hozz\u00e1d tartozik, jelezd Andinak. Hat\u00e1rid\u0151: 2026-10-20. L\u00e9nyeg: Az \u00fcgyf\u00e9l \u00faj aj\u00e1nlatot k\u00e9r. K\u00f6sz\u00f6n\u00f6m! Brainy, Gyuri AI asszisztense",
+      "anchor": "bf0d36a6a264649037e4efae74383d7c4fb56c3cc50f8f964390a1124e837adf"
+    }
+  ]
+}

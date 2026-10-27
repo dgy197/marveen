@@ -41,6 +41,7 @@ import { startAutoRestartRunner } from './web/auto-restart-runner.js'
 import { startModelFallbackRunner } from './web/model-fallback-runner.js'
 import { startKanbanArchiveRunner } from './web/kanban-archive-runner.js'
 import { startContextGuardRunner } from './web/context-guard-runner.js'
+import { startInteractiveKeyGuardRunner } from './web/interactive-key-guard-runner.js'
 import { startContextRestartGateRunner, setMainSweepHook } from './web/context-restart-gate-runner.js'
 import { collectTokenUsage } from './web/token-usage.js'
 import { logger } from './logger.js'
@@ -66,6 +67,8 @@ import { sweepOrphanTaskStates } from './web/agent-taskstate.js'
 import { tryHandleDailyLog } from './web/routes/daily-log.js'
 import { tryHandlePrLedger } from './web/routes/pr-ledger.js'
 import { tryHandleHomoglyphs } from './web/routes/homoglyphs.js'
+import { tryHandleContacts } from './web/routes/contacts.js'
+import { tryHandleMemoryGate } from './web/routes/memory-gate.js'
 import { tryHandleMemories } from './web/routes/memories.js'
 import { tryHandleMigrate } from './web/routes/migrate.js'
 import { tryHandleKanban } from './web/routes/kanban.js'
@@ -91,6 +94,9 @@ import { tryHandleApprovals, startApprovalTimeoutSweeper } from './web/routes/ap
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleCosts, startCostsSyncTask } from './web/routes/costs.js'
+import { tryHandleCreditGate } from './web/routes/credit-gate.js'
+import { startCreditGateRuntime } from './web/credit-gate/runtime.js'
+import { startHeadlessRuntime } from './web/credit-gate/headless/reconcile.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
 import { tryHandleVideoReview } from './web/routes/video-review.js'
 import { tryHandleToolLog } from './web/routes/tool-log.js'
@@ -221,6 +227,8 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleDailyLog(routeCtx)) return
       if (await tryHandlePrLedger(routeCtx)) return
       if (await tryHandleHomoglyphs(routeCtx)) return
+      if (await tryHandleContacts(routeCtx)) return
+      if (await tryHandleMemoryGate(routeCtx)) return
       if (await tryHandleMemories(routeCtx)) return
       if (await tryHandleMigrate(routeCtx)) return
       if (await tryHandleKanban(routeCtx)) return
@@ -251,6 +259,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleDesktopLock(routeCtx)) return
       if (await tryHandleTokenUsage(routeCtx)) return
       if (await tryHandleCosts(routeCtx)) return
+      if (await tryHandleCreditGate(routeCtx)) return
       if (await tryHandleIdeas(routeCtx)) return
       if (await tryHandleVideoReview(routeCtx, WEB_DIR)) return
       if (await tryHandleSpans(routeCtx)) return
@@ -515,6 +524,14 @@ export function startWebServer(port = 3420): http.Server {
   const contextGuardInterval = webOnly ? undefined : startContextGuardRunner()
   if (!webOnly) logger.info('Context-guard runner started (5min poll, 4.5min initial delay)')
 
+  // fec6335f N3c (spec I-04): the runtime interactive-key guard. By name only, it
+  // checks the tmux env, the settings, .env, the rc files, the launchd plists and
+  // the running claude processes for an API-key route, and turns the guard events
+  // the launch paths (channels.sh included) append into an alert. Web-only
+  // instances launch nothing, so they do not run it either.
+  const interactiveKeyGuardInterval = webOnly ? undefined : startInteractiveKeyGuardRunner()
+  if (!webOnly) logger.info('Interactive-key guard runner started (45s first scan, 1min event poll, 10min full scan)')
+
   if (!webOnly) {
     startContextRestartGateRunner()
     logger.info('Context-restart gate runner started (per-agent poll, 3min initial delay)')
@@ -533,6 +550,12 @@ export function startWebServer(port = 3420): http.Server {
   // token estimates stay fresh without requiring a manual dashboard visit.
   // Sweep timed-out pending approvals every minute
   const approvalTimeoutInterval = startApprovalTimeoutSweeper()
+  // Credit gate (card fec6335f): with CREDIT_GATE_MODE missing or `off` (the
+  // default) this only records the mode -- no table, no file, no timer.
+  const creditGateInterval = startCreditGateRuntime({ webOnly })
+  // Headless runs (card fec6335f, N4a): close or re-attach the runs a previous
+  // dashboard left behind. Nothing happens unless the gate runs.
+  const headlessRuntime = startHeadlessRuntime()
 // Desktop-lock TTL sweeper. Independent of the schedule gate on purpose: an
 // abandoned lock must expire (and be reported) even on a day when no
 // desktop-driving round happens to be due.
@@ -752,12 +775,15 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     clearInterval(modelFallbackInterval)
     clearInterval(kanbanArchiveInterval)
     clearInterval(contextGuardInterval)
+    clearInterval(interactiveKeyGuardInterval)
     clearInterval(approvalTimeoutInterval)
     clearInterval(authSessionSweepInterval)
     clearInterval(updateCheckerInterval)
     if (federationPollerInterval) clearInterval(federationPollerInterval)
     if (capabilityRunnerInterval) clearInterval(capabilityRunnerInterval)
     clearInterval(tokenCollectInterval)
+    if (creditGateInterval) clearInterval(creditGateInterval)
+    headlessRuntime?.stop()
     return origClose(cb)
   }
 

@@ -6,6 +6,31 @@ import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
+// Card 053f4e66 B: the shared Bearer ('token') mints a device key only while the
+// install .env opens BEARER_CREDENTIAL_ADMIN_ENABLED=1 (credential-admin.ts).
+// The scope/expiry cases below test what an operator key may be, not that gate,
+// so they run against a throwaway install whose .env has the switch open
+// (setSwitch(true) in beforeEach); one case pins that an operator-scope mint by
+// the token is the gate's too. CLAUDECLAW_ENV_DIR must be set before any app
+// module loads. The owner notification of a token mint is stubbed.
+const ENV = vi.hoisted(() => {
+  const fs = require('node:fs') as typeof import('node:fs')
+  const os = require('node:os') as typeof import('node:os')
+  const path = require('node:path') as typeof import('node:path')
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'op-scope-env-')))
+  process.env.CLAUDECLAW_ENV_DIR = dir
+  for (const k of ['BEARER_CREDENTIAL_ADMIN_ENABLED', 'BEARER_CREDENTIAL_ADMIN_UNTIL', 'BEARER_CREDENTIAL_ADMIN_NONCE']) delete process.env[k]
+  return { file: path.join(dir, '.env') }
+})
+vi.mock('../notify.js', () => ({
+  notifyChannel: vi.fn(async () => {}),
+  notifyTelegram: vi.fn(async () => {}),
+  notifySecurityEvent: vi.fn(async () => {}),
+}))
+// The switch is read from the .env per request, so it can flip between calls.
+function setSwitch(on: boolean): void {
+  writeFileSync(ENV.file, on ? 'BEARER_CREDENTIAL_ADMIN_ENABLED=1\n' : 'BEARER_CREDENTIAL_ADMIN_ENABLED=0\n')
+}
 // The owner-switch file goes to a scratch path, never the checkout's store/.
 const ACCESS_FILE = vi.hoisted(() => {
   const { mkdtempSync } = require('node:fs') as typeof import('node:fs')
@@ -32,7 +57,7 @@ import { tryHandleOperatorAccess } from '../web/routes/operator-access.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 beforeAll(() => { initDatabase(':memory:') })
-beforeEach(() => { _clearDeviceKeyCacheForTest() })
+beforeEach(() => { setSwitch(true); _clearDeviceKeyCacheForTest() })
 
 const ON: OperatorAccess = { ...defaultOperatorAccess(), enabled: true }
 const OFF: OperatorAccess = defaultOperatorAccess()
@@ -148,6 +173,22 @@ function fakeCtx(method: string, path: string, body: unknown, auth: RouteContext
 describe('POST /api/auth/device-keys with a scope', () => {
   const owner = { kind: 'token' } as RouteContext['auth']
 
+  it('the token\'s operator-key mint is the gate: 403 with the switch off (no row), 201 with it on', async () => {
+    setSwitch(false)
+    const before = (getDb().prepare('SELECT COUNT(*) AS c FROM device_keys').get() as { c: number }).c
+    const refused = fakeCtx('POST', '/api/auth/device-keys', { name: 'it-op', scope: 'operator' }, owner)
+    await tryHandleAuth(refused.ctx)
+    expect(refused.out.status).toBe(403)
+    expect(refused.out.body).toMatchObject({ code: 'bearer_credential_admin_off' })
+    expect(refused.out.body).not.toHaveProperty('key')
+    expect((getDb().prepare('SELECT COUNT(*) AS c FROM device_keys').get() as { c: number }).c).toBe(before)
+    setSwitch(true)
+    const ok = fakeCtx('POST', '/api/auth/device-keys', { name: 'it-op', scope: 'operator' }, owner)
+    await tryHandleAuth(ok.ctx)
+    expect(ok.out.status).toBe(201)
+    expect(ok.out.body.scope).toBe('operator')
+  })
+
   it('an operator key defaults to 90 days', async () => {
     const { ctx, out } = fakeCtx('POST', '/api/auth/device-keys', { name: 'it-op', scope: 'operator' }, owner)
     await tryHandleAuth(ctx)
@@ -165,17 +206,25 @@ describe('POST /api/auth/device-keys with a scope', () => {
     }
   })
 
-  it('an operator key lives at most 365 days; a full key keeps its 3650-day ceiling', async () => {
+  it('an operator key lives at most 365 days; over the API a full key does too (card 053f4e66 B, E3)', async () => {
     const ok = fakeCtx('POST', '/api/auth/device-keys', { name: 'it-op', scope: 'operator', expires_in_days: 365 }, owner)
     await tryHandleAuth(ok.ctx)
     expect(ok.out.status).toBe(201)
     const tooLong = fakeCtx('POST', '/api/auth/device-keys', { name: 'it-op', scope: 'operator', expires_in_days: 366 }, owner)
     await tryHandleAuth(tooLong.ctx)
     expect(tooLong.out.status).toBe(400)
-    const full = fakeCtx('POST', '/api/auth/device-keys', { name: 'phone', expires_in_days: 3650 }, owner)
+    const full = fakeCtx('POST', '/api/auth/device-keys', { name: 'phone', expires_in_days: 365 }, owner)
     await tryHandleAuth(full.ctx)
     expect(full.out.status).toBe(201)
+    // The old 3650-day full ceiling is gone: the route refuses it, no row.
+    const before = (getDb().prepare('SELECT COUNT(*) AS c FROM device_keys').get() as { c: number }).c
+    const fullTooLong = fakeCtx('POST', '/api/auth/device-keys', { name: 'phone', expires_in_days: 3650 }, owner)
+    await tryHandleAuth(fullTooLong.ctx)
+    expect(fullTooLong.out.status).toBe(400)
+    expect(fullTooLong.out.body).toEqual({ error: 'Invalid expires_in_days (1-365)' })
+    expect((getDb().prepare('SELECT COUNT(*) AS c FROM device_keys').get() as { c: number }).c).toBe(before)
     expect(() => createDeviceKey('it-op', { scope: 'operator', expiresInDays: 366 })).toThrow(/at most 365 days/)
+    // createDeviceKey itself is unchanged (R1): the ceiling is the route's.
     expect(createDeviceKey('phone', { expiresInDays: 3650 }).scope).toBe('full')
   })
 
