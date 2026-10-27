@@ -216,7 +216,9 @@ describe('the launch-sink inventory', () => {
 interface DirectEntry { file: string; match: string; status: 'n3a' | 'strips-keys'; guard: string[]; note: string }
 export const DIRECT_INVENTORY: DirectEntry[] = [
   {
-    file: 'scripts/morning-briefing.sh', match: 'env -u TELEGRAM_BOT_TOKEN -u SLACK_BOT_TOKEN -u SLACK_APP_TOKEN -u DISCORD_BOT_TOKEN $KEY_UNSET', status: 'n3a',
+    // v1.45.0 (MORNTIMER2197): the call now also drops the subscription tokens, so $KEY_UNSET sits on the
+    // continuation line; the match is that line's tail (unique, and the same text in the raw and the joined line).
+    file: 'scripts/morning-briefing.sh', match: '-u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_AUTH_TOKEN $KEY_UNSET', status: 'n3a',
     guard: ['KEY_UNSET=""', 'if [ "$(interactive_key_policy)" = forbid ]; then KEY_UNSET="-u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN"; fi'],
     note: 'reggeli napindito fallback: exports the whole .env, then claude -p',
   },

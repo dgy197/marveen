@@ -1,8 +1,8 @@
 // fec6335f N3a: the interactive-key guard on the launch paths that do not go
 // through startAgentProcess -- the worker sessions, background tasks and the
 // cron watchdog. Same rules as the launcher harness: scratch HOME/PROJECT_ROOT/
-// STORE_DIR, a recording execFileSync (no tmux, no claude), an injected Vault,
-// a pinned policy, and a per-run dummy key that must appear nowhere.
+// STORE_DIR, a recording execFileSync and execFile (no tmux, no claude), an injected
+// Vault, a pinned policy, and a per-run dummy key that must appear nowhere.
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, copyFileSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -33,7 +33,25 @@ vi.mock('node:child_process', async (orig) => {
     }
     return ''
   }
-  return { ...a, execFileSync }
+  // v1.45.0 (card c3c32903, test setup): background-tasks.ts runs tmux through the promisified
+  // execFile now. The same recorder, and the util.promisify.custom shape the real execFile has
+  // ({ stdout, stderr }), so the module's promisify(execFile) resolves like it does in production.
+  const { promisify } = await import('node:util')
+  const record = (file: string, args: readonly string[] = [], opts?: { env?: Record<string, string | undefined> }) => {
+    H.calls.push({ file, args: [...args], env: opts?.env })
+    if (['list-sessions', 'has-session', 'kill-session', 'capture-pane'].includes(args[0])) {
+      throw Object.assign(new Error('no server running'), { status: 1, stderr: '' })
+    }
+  }
+  const execFile = Object.assign(
+    (file: string, args: readonly string[], opts: { env?: Record<string, string | undefined> }, cb?: (e: Error | null, out?: string, err?: string) => void) => {
+      try { record(file, args, opts) } catch (e) { cb?.(e as Error); return undefined }
+      cb?.(null, '', '')
+      return undefined
+    },
+    { [promisify.custom]: async (file: string, args: readonly string[], opts?: { env?: Record<string, string | undefined> }) => { record(file, args, opts); return { stdout: '', stderr: '' } } },
+  )
+  return { ...a, execFileSync, execFile }
 })
 vi.mock('../config.js', async (orig) => {
   const a = await orig<typeof import('../config.js')>()
@@ -69,6 +87,10 @@ vi.mock('../db.js', async (orig) => {
       return { id, agent_id: agentId, prompt, status: 'running', tmux_session: session, started_at: 0, finished_at: null, output: null }
     },
     finishBackgroundTask: () => undefined,
+    // The task row the mocked createBackgroundTaskAtomic made is still 'running' when spawnBackgroundTask looks it up.
+    getBackgroundTask: (id: string) => (H.bgCreated.includes(id)
+      ? { id, agent_id: '', prompt: '', status: 'running', tmux_session: `bg-${id}`, started_at: 0, finished_at: null, output: null }
+      : undefined),
   }
 })
 
@@ -197,12 +219,12 @@ describe('worker sessions (agent-worker.ts)', () => {
 describe('background tasks (routes/background-tasks.ts)', () => {
   const bgCalls = () => H.calls.filter((c: Call) => c.args[0] === 'new-session' && String(c.args[3]).startsWith('bg-'))
 
-  it('allow: the command and the tmux-client env are exactly as before', () => {
+  it('allow: the command and the tmux-client env are exactly as before', async () => {
     G.setInteractiveKeyPolicyForTest('allow')
     vi.useFakeTimers()
     process.env.ANTHROPIC_API_KEY = H.dummy
     try {
-      BG.spawnBackgroundTask('a1', 'do x')
+      await BG.spawnBackgroundTask('a1', 'do x')
     } finally {
       delete process.env.ANTHROPIC_API_KEY
     }
@@ -212,17 +234,17 @@ describe('background tasks (routes/background-tasks.ts)', () => {
     expect(c.env?.BG_PROMPT).toBe('do x')
   })
 
-  it('forbid: the command starts with the unset and the key names are not handed to tmux', () => {
+  it('forbid: the command starts with the unset and the key names are not handed to tmux', async () => {
     G.setInteractiveKeyPolicyForTest('allow')
     vi.useFakeTimers()
-    BG.spawnBackgroundTask('a2', 'do y')
+    await BG.spawnBackgroundTask('a2', 'do y')
     const allowCmd = bgCalls()[0].args[8]
     H.calls.length = 0
     G.setInteractiveKeyPolicyForTest('forbid')
     process.env.ANTHROPIC_API_KEY = H.dummy
     process.env.ANTHROPIC_AUTH_TOKEN = H.dummy
     try {
-      BG.spawnBackgroundTask('a2', 'do y')
+      await BG.spawnBackgroundTask('a2', 'do y')
     } finally {
       delete process.env.ANTHROPIC_API_KEY
       delete process.env.ANTHROPIC_AUTH_TOKEN
@@ -234,19 +256,19 @@ describe('background tasks (routes/background-tasks.ts)', () => {
     expect(c.env?.BG_PROMPT).toBe('do y')
   })
 
-  it('forbid + an auth key in the shared ~/.claude/settings.json: refused before any task row or session, names only', () => {
+  it('forbid + an auth key in the shared ~/.claude/settings.json: refused before any task row or session, names only', async () => {
     G.setInteractiveKeyPolicyForTest('forbid')
     const shared = join(H.root, 'home', '.claude', 'settings.json')
     writeFileSync(shared, JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: H.dummy }, apiKeyHelper: 'x' }))
     vi.useFakeTimers()
-    const r = BG.spawnBackgroundTask('a3', 'do z')
+    const r = await BG.spawnBackgroundTask('a3', 'do z')
     expect(r).toEqual({ error: 'interactive-key-guard: settings-auth-key (INTERACTIVE_ANTHROPIC_KEY_POLICY=forbid)' })
     expect(bgCalls()).toEqual([])
     expect(H.bgCreated).toEqual([])
     expect(events()).toEqual([expect.objectContaining({ source: 'launch-guard', where: shared, names: ['ANTHROPIC_AUTH_TOKEN', 'apiKeyHelper'], agent: 'a3' })])
     // allow: the same settings start the task as today.
     G.setInteractiveKeyPolicyForTest('allow')
-    BG.spawnBackgroundTask('a3', 'do z')
+    await BG.spawnBackgroundTask('a3', 'do z')
     expect(bgCalls()).toHaveLength(1)
     expect(H.bgCreated).toHaveLength(1)
   })
@@ -347,7 +369,8 @@ describe('scripts/watchdog.sh (cron sub-agent restarts)', () => {
     expect(decide(F, a, 'claude-opus-5-5')).toBe('refuse:settings-auth-key')
     // Fleet token present -> the launch exports CLAUDE_CONFIG_DIR=<agent>/.claude-config.
     resetWd()
-    writeFileSync(wdToken, 'sk-ant-oat01-FAKE-fleet-token-for-tests\n')
+    // Same fake value as before, written as a join so the staged-file secret gate does not read a fixture as a key.
+    writeFileSync(wdToken, ['sk', 'ant', 'oat01', 'FAKE', 'fleet', 'token', 'for', 'tests'].join('-') + '\n')
     const b = agentDir({ model: 'claude-opus-5-5' })
     mkdirSync(join(b, '.claude-config'), { recursive: true })
     writeFileSync(join(b, '.claude-config', 'settings.json'), JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: H.dummy } }))
@@ -420,7 +443,7 @@ describe('scripts/morning-briefing.sh (a direct claude -p after exporting the wh
     mkdirSync(join(dir, 'bin'), { recursive: true })
     mkdirSync(join(dir, '.claude', 'channels', 'telegram'), { recursive: true })
     copyFileSync(join(REPO, 'scripts', 'morning-briefing.sh'), join(dir, 'scripts', 'morning-briefing.sh'))
-    for (const f of ['owner-chat.sh', 'send-telegram.sh']) copyFileSync(join(REPO, 'scripts', 'lib', f), join(dir, 'scripts', 'lib', f))
+    for (const f of ['owner-chat.sh', 'send-telegram.sh', 'install-tz.sh']) copyFileSync(join(REPO, 'scripts', 'lib', f), join(dir, 'scripts', 'lib', f))
     writeFileSync(join(dir, '.env'), `ALLOWED_CHAT_ID=1234\nTELEGRAM_BOT_TOKEN=tok-from-dotenv\nANTHROPIC_API_KEY=${H.dummy}\nANTHROPIC_AUTH_TOKEN=${H.dummy}\n${policyLine}`)
     writeFileSync(join(dir, '.claude', 'channels', 'telegram', '.env'), 'TELEGRAM_BOT_TOKEN=tok-from-statedir\n')
     writeFileSync(join(dir, 'bin', 'claude'), [

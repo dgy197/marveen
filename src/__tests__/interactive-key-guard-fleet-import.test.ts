@@ -36,6 +36,8 @@ vi.mock('../config.js', () => ({
   BRAND_NAME: 'Marveen',
   OWNER_NAME: 'Szabolcs',
   CHANNEL_PROVIDER: 'telegram',
+  // fleet-transfer.ts reads it since v1.45.0 (the voice channel id); the fixed list, as in fleet-transfer.test.ts.
+  RESERVED_AGENT_IDS: ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator'],
 }))
 vi.mock('../web/vault-bindings.js', () => ({ getBindings: () => [] }))
 // readEnvFile: the 053f4e66 apply switch (admin-switch.ts) reads the .env per
