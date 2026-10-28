@@ -220,6 +220,22 @@ describe('the git invocation is fixed and shell-free', () => {
   })
 })
 
+describe('R1-2: non-ASCII file names', () => {
+  it('gitLogArgs turns core.quotepath off, and a real log returns the unquoted UTF-8 name', async () => {
+    const a = gitLogArgs('/some/real/repo')
+    expect(a.slice(0, 5)).toEqual(['-C', '/some/real/repo', '-c', 'core.quotepath=off', 'log'])
+    const r2 = makeRepo([{ at: T0 + 1, msg: 'feat: accents', files: { 'src/árvíztűrő.ts': '1' } }])
+    try {
+      const r = await createGitLogReader().read(realpathSync(r2))
+      if (!r.ok) throw new Error('expected ok')
+      expect(r.commits[0].files).toEqual(['src/árvíztűrő.ts'])
+      expect(matchesAnyGlob(r.commits[0].files[0], ['src/**/*.ts'])).toBe(true)
+    } finally {
+      rmSync(r2, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('10 minute cache', () => {
   it('a second read inside the TTL does not run git; after the TTL it does; errors are not cached', async () => {
     let now = 1_000_000
@@ -298,6 +314,17 @@ describe('pure matchers', () => {
     expect(globToRegExp('scripts/hooks/').test('scripts/hooks/x/y.py')).toBe(true)
     expect(globToRegExp('a.b(c)+[d]').test('a.b(c)+[d]')).toBe(true)
     expect(globToRegExp('a.b').test('aXb')).toBe(false)
+  })
+
+  it('R1-3: "**/" matches zero or more directories', () => {
+    const re = globToRegExp('src/**/*.ts')
+    expect(re.test('src/a.ts')).toBe(true)
+    expect(re.test('src/x/y/a.ts')).toBe(true)
+    expect(re.test('src/x/a.js')).toBe(false)
+    expect(re.test('other/a.ts')).toBe(false)
+    expect(re.test('srcx/a.ts')).toBe(false)
+    expect(globToRegExp('**/a.ts').test('a.ts')).toBe(true)
+    expect(globToRegExp('**/a.ts').test('d/e/a.ts')).toBe(true)
   })
 
   it('cardRefsIn and prNumberOf', () => {

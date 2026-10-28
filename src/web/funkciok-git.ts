@@ -64,7 +64,8 @@ function gitEnv(): NodeJS.ProcessEnv {
 
 /** The fixed argument vector. Exported so a test can pin it. */
 export function gitLogArgs(realRepo: string): string[] {
-  return ['-C', realRepo, 'log', '--no-color', '--no-show-signature', `--max-count=${GIT_MAX_COMMITS}`, '--name-only', GIT_FORMAT]
+  // core.quotepath=off: non-ASCII file names come back as UTF-8, not as quoted octal escapes.
+  return ['-C', realRepo, '-c', 'core.quotepath=off', 'log', '--no-color', '--no-show-signature', `--max-count=${GIT_MAX_COMMITS}`, '--name-only', GIT_FORMAT]
 }
 
 const HASH_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/
@@ -190,7 +191,10 @@ export function globToRegExp(glob: string): RegExp {
     if (c === '*') {
       let j = i
       while (g[j] === '*') j++
-      re += j - i >= 2 ? '.*' : '[^/]*'
+      if (j - i >= 2) {
+        // "**/" is zero or more whole directories; a bare "**" crosses anything.
+        if (g[j] === '/') { re += '(?:.*/)?'; j++ } else re += '.*'
+      } else re += '[^/]*'
       i = j
     } else if (c === '?') {
       re += '[^/]'
