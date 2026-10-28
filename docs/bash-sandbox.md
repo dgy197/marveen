@@ -104,6 +104,23 @@ az ágens nem indul el. A `sandbox.failIfUnavailable` miatt a Claude Code is kil
   letöltött iCloud-fájl olvasása működik, de egy kiürített (csak felhőben lévő) fájlt a sandboxolt
   ügynök nem tud lehozni. Ez nyitott kérdés.
 
+- **A self-pace kapu a védett store-fájl nevét csak akkor ismeri fel, ha ki van írva, vagy a glob a
+  név végén áll** (kártya 3d3cd21a, 2026-10-28, elfogadott kockázat: Brainy). A `cp x store/bash-sandbox-h*`
+  tiltott, a név ELŐTT vagy BELSEJÉBEN álló glob viszont átmegy: `cp x store/*-hosts.json`,
+  `cp x store/bash-sandbox[-]hosts.json`, `cp x store/bash-sandbo?-hosts.json`. Pre-existing, MED, a
+  kijátszáshoz szándékos alak kell. Egy glob-illesztős javítás elkészült (ág `fix/3d3cd21a-glob-protected`,
+  6b539ddd), de nem élesítettük, mert a review-k szerint ezek a formák akkor is átmennének:
+  - `cd` utáni relatív glob: `cd store && cp x *-hosts.json`;
+  - globos vagy futásidőben épített könyvtár: `st*/`, `$S/`, `**/`;
+  - nagybetűs könyvtárnév: `STORE/*-hosts.json` (az APFS nem tesz különbséget kis- és nagybetű között);
+  - zsh-csoport és glob-qualifier: `(a|b)`, `<m-n>`, `*-hosts.json(N)`, `(.)`, illetve bash extglob: `@(...)`;
+  - értelmezőn belüli glob: Python `glob.glob`, Node `globSync`, és a `find store -name ... -exec`;
+  - futásidőben épített név (külön kártya: ad88b20a).
+
+  Ha a javítást újranyitjuk, a nagybetűs alakot a könyvtár azonosítójának (dev+inode) összevetése
+  olcsón zárja. A szabály addig is marad: **NE `cd`-vel a store-ba**, mindig abszolút úttal hivatkozz rá,
+  és a store-fájlokat csak olvasd (cat, grep, jq).
+
 ## PDF sandboxban: POST /api/pdf/render
 
 Törzs: `{"agent": "soma", "html_path": "/abs/riport.html", "pdf_path": "/abs/riport.pdf"}`, Bearer tokennel.
