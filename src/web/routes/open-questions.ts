@@ -3,6 +3,7 @@ import { isKnownAgent } from '../agent-config.js'
 import {
   QUESTION_BODY_MAX_BYTES, createQuestion, isQuestionFilter, listQuestions, validateQuestionInput,
 } from '../open-questions.js'
+import { buildOverview } from '../open-questions-overview.js'
 import type { RouteContext } from './types.js'
 
 // Open questions (S3-N1): the agents' questions for the owner.
@@ -42,6 +43,7 @@ function deniedRead(ctx: RouteContext): number | null {
 
 export async function tryHandleOpenQuestions(ctx: RouteContext): Promise<boolean> {
   const { res, path, method } = ctx
+  if (path === OVERVIEW_PATH) return handleOverview(ctx)
   if (path !== PATH) return false
 
   const allowed = ['GET', 'POST']
@@ -90,5 +92,25 @@ export async function tryHandleOpenQuestions(ctx: RouteContext): Promise<boolean
     case 'unprocessable': json(res, { error: r.error }, 422); break
     default: json(res, { error: r.error }, 429)
   }
+  return true
+}
+
+// ---------------------------------------------------------------------------
+// S3-N3: GET /api/questions/overview -- open questions grouped per agent
+// (agent_running, card_seq, funkcio_slug) plus the pending approvals, shown
+// read-only with allowlisted fields. Same auth as the list GET.
+// ---------------------------------------------------------------------------
+
+const OVERVIEW_PATH = '/api/questions/overview'
+
+function handleOverview(ctx: RouteContext): boolean {
+  const { res, method } = ctx
+  if (method !== 'GET') { methodNotAllowed(res, method, ['GET']); return true }
+  const status = deniedRead(ctx)
+  if (status !== null) {
+    json(res, { error: status === 401 ? 'Unauthorized' : 'Forbidden for this credential' }, status)
+    return true
+  }
+  json(res, buildOverview(Math.floor(nowMs() / 1000)))
   return true
 }
