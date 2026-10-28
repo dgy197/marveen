@@ -13,8 +13,7 @@ import { isHiddenChar } from './funkciok-text.js'
 //   - expiry is LAZY: the stored status stays 'open'; the view reports
 //     'expired' once expires_at <= now. No background job.
 
-/** Bus sender of an owner answer given in the dashboard UI (the answer node uses it; HTTP may never claim it). */
-export const OWNER_UI_SENDER = 'owner-ui'
+export { OWNER_UI_SENDER } from './reserved-senders.js'
 
 export const QUESTION_MAX_CODEPOINTS = 400
 export const QUESTION_BODY_MAX_BYTES = 8 * 1024
