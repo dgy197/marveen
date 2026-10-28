@@ -1,5 +1,6 @@
 import { getDb } from '../db.js'
 import { maskSecrets } from './agent-transcript.js'
+import { isHiddenChar } from './funkciok-text.js'
 
 // Function page S2-A: the append-only decision log of the function pages.
 //
@@ -97,15 +98,12 @@ export function decisionActor(auth: AuthLike): DecisionActor | null {
 
 export type ValidateResult = { ok: true; value: DecisionInput } | { ok: false; error: string }
 
-// Control characters except \n, line/paragraph separators, bidi overrides/isolates, BOM,
-// invisible format characters (zero width, word joiner, Arabic letter mark) and Unicode tag characters.
-// Code points, not a regex literal: the separators would sit unescaped in the source.
+// Control characters except \n, line/paragraph separators, and every Unicode
+// format / default-ignorable character (bidi, zero width, variation selectors,
+// tag characters, ...): the shared check in funkciok-text.ts (S2-B1).
 function hasForbiddenChar(s: string): boolean {
   for (const ch of s) {
-    const c = ch.codePointAt(0) as number
-    if (c <= 0x09 || (c >= 0x0b && c <= 0x1f) || (c >= 0x7f && c <= 0x9f)) return true
-    if (c === 0x2028 || c === 0x2029 || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069) || c === 0xfeff) return true
-    if ((c >= 0xe0000 && c <= 0xe007f) || (c >= 0x200b && c <= 0x200f) || c === 0x061c || (c >= 0x2060 && c <= 0x2064)) return true
+    if (isHiddenChar(ch, true)) return true
   }
   return false
 }

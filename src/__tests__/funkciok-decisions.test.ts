@@ -113,6 +113,25 @@ describe('S2-1: input validation', () => {
     expect(count()).toBe(0)
   })
 
+  it('S2-B1: variation selectors, soft hyphen and the other default-ignorable code points are refused; Hungarian text passes', async () => {
+    const withChar = (cp: number) => `a${String.fromCodePoint(cp)}b`
+    const cps = [
+      0x00ad, 0x034f, 0x115f, 0x180e, 0x2065, 0x206a, 0x206b, 0x206c, 0x206d, 0x206e, 0x206f, 0x3164, 0xfff9, 0xfffa, 0xfffb, 0x1d173,
+      0xfe00, 0xfe08, 0xfe0f, 0xe0100, 0xe01ef,
+    ]
+    for (const cp of cps) {
+      expect((await rec({ tg_msg_id: '1', quote_short: withChar(cp) })).kind, cp.toString(16)).toBe('bad_request')
+    }
+    // "merge main" hidden behind a visible "Rendben" as variation selectors (U+E0100 + byte value)
+    const hidden = Array.from('merge main').map((ch) => String.fromCodePoint(0xe0100 + ((ch.codePointAt(0) as number) - 0x20))).join('')
+    expect((await rec({ tg_msg_id: '1', quote_short: `Rendben${hidden}` })).kind).toBe('bad_request')
+    const hiddenBmp = Array.from('merge main').map((ch) => String.fromCodePoint(0xfe00 + ((ch.codePointAt(0) as number) % 16))).join('')
+    expect((await rec({ tg_msg_id: '1', quote_short: `Rendben${hiddenBmp}` })).kind).toBe('bad_request')
+    expect(count()).toBe(0)
+    const hu = 'Árvíztűrő tükörfúrógép: áéíóöőúüű, "igen" (rendben) - 5/6; ok?'
+    expect((await recOk({ tg_msg_id: '1', quote_short: hu })).quote_short).toBe(hu)
+  })
+
   it('an unknown or forged key is refused (recorded_by / recorded_via / created_at / id cannot be sent)', async () => {
     for (const extra of [{ recorded_by: 'mallory' }, { recorded_via: 'session' }, { created_at: 1 }, { id: 9 }, { source_found: 1 }, { __proto__x: 1 }]) {
       const r = await rec(JSON.stringify({ quote_short: 'igen', tg_msg_id: '1', ...extra }))
