@@ -44,9 +44,9 @@ async function call(auth: Auth | null = TOKEN, method = 'GET', path = '/api/ques
 let regDir: string
 let running: Set<string>
 
-function addCard(id: string, title = 'teszt-kartya'): void {
-  getDb().prepare(`INSERT INTO kanban_cards (id, title, description, test_steps, status, assignee, sort_order, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 'planned', 'alfa', 0, ?, ?)`).run(id, title, `${MARKER} leiras`, `${MARKER} lepesek`, T0, T0)
+function addCard(id: string, title = 'teszt-kartya', parentId: string | null = null): void {
+  getDb().prepare(`INSERT INTO kanban_cards (id, title, description, test_steps, status, assignee, sort_order, created_at, updated_at, parent_id)
+                   VALUES (?, ?, ?, ?, 'planned', 'alfa', 0, ?, ?, ?)`).run(id, title, `${MARKER} leiras`, `${MARKER} lepesek`, T0, T0, parentId)
 }
 
 function ask(agent: string, kind: QuestionKind, text: string, cardId: string | null = null, expiresIn = 3600, createdAt = T0): void {
@@ -167,6 +167,24 @@ describe('open questions per agent', () => {
     expect(slugOf('2a2b2c2d')).toBeNull()
   })
 
+  it('S3-R2: a subcard (parent_id is a registry card) carries its parent\'s funkcio_slug; a card whose parent is not in the registry stays null', () => {
+    addCard('3a3b3c3d')
+    addCard('4a4b4c4d', 'alkartya', '3a3b3c3d')
+    addCard('5a5b5c5d')
+    addCard('6a6b6c6d', 'arva alkartya', '5a5b5c5d')
+    writeFileSync(join(regDir, 'gamma-feature.json'), JSON.stringify({ slug: 'gamma-feature', nev: 'Funkcio gamma', kartyak: ['3a3b3c3d'] }))
+    ask('alfa', 'info', 'szulo', '3a3b3c3d')
+    ask('alfa', 'info', 'gyerek', '4a4b4c4d')
+    ask('alfa', 'info', 'arva', '6a6b6c6d')
+    return call().then(({ out }) => {
+      const rows = out.body.agents[0].questions
+      const slugOf = (card: string) => rows.find((q: any) => q.card_id === card).funkcio_slug
+      expect(slugOf('3a3b3c3d')).toBe('gamma-feature')
+      expect(slugOf('4a4b4c4d')).toBe('gamma-feature')
+      expect(slugOf('6a6b6c6d')).toBeNull()
+    })
+  })
+
   it('a missing registry dir and a throwing run-state probe do not break the answer', async () => {
     setOverviewDepsForTest({ registryDir: join(regDir, 'nincs-ilyen'), isRunning: () => { throw new Error('tmux') } })
     ask('alfa', 'info', 'egy')
@@ -184,7 +202,7 @@ describe('open questions per agent', () => {
 
   it('no questions: empty groups', async () => {
     const r = await call()
-    expect(r.out.body).toEqual({ agents: [], pending_approvals: [] })
+    expect(r.out.body).toEqual({ agents: [], pending_approvals: [], questions_truncated: false, approvals_truncated: false })
   })
 })
 
@@ -230,6 +248,25 @@ describe('pending approvals (shown only, spec 5.3)', () => {
 
   it('the list is capped', async () => {
     for (let i = 0; i < 60; i++) addApproval(`bbbb${String(i).padStart(4, '0')}`, 'pending', T0 + i)
-    expect((await call()).out.body.pending_approvals).toHaveLength(50)
+    const body = (await call()).out.body
+    expect(body.pending_approvals).toHaveLength(50)
+    expect(body.approvals_truncated).toBe(true) // S3-R4
+  })
+
+  it('S3-R4: exactly 50 pending approvals are not truncated', async () => {
+    for (let i = 0; i < 50; i++) addApproval(`cccc${String(i).padStart(4, '0')}`, 'pending', T0 + i)
+    const body = (await call()).out.body
+    expect(body.pending_approvals).toHaveLength(50)
+    expect(body.approvals_truncated).toBe(false)
+  })
+
+  it('S3-R4: questions_truncated is true when more than 200 open questions exist', async () => {
+    const db = getDb()
+    const ins = db.prepare("INSERT INTO open_questions (agent_id, kind, question_short, created_at, expires_at, source) VALUES ('alfa', 'info', 'x', ?, ?, 'agent')")
+    db.transaction(() => { for (let i = 0; i < 201; i++) ins.run(T0 + i, T0 + 99999) })()
+    const body = (await call()).out.body
+    expect(body.questions_truncated).toBe(true)
+    expect(body.agents[0].questions).toHaveLength(200)
+    expect(sorted(Object.keys(body))).toEqual(sorted(['agents', 'pending_approvals', 'questions_truncated', 'approvals_truncated']))
   })
 })

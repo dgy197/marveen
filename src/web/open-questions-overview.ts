@@ -3,7 +3,7 @@ import { STORE_DIR } from '../config.js'
 import { getDb } from '../db.js'
 import { isAgentRunning } from './agent-process.js'
 import { listRegistry } from './funkciok-registry.js'
-import { listQuestions, type QuestionOut } from './open-questions.js'
+import { listQuestionsPage, type QuestionOut } from './open-questions.js'
 
 // Open questions S3-N3: the data behind the "Fejlesztes > Kerdesek" overview.
 //
@@ -47,6 +47,10 @@ export interface OverviewApproval {
 export interface Overview {
   agents: OverviewAgent[]
   pending_approvals: OverviewApproval[]
+  /** The open-question list hit its cap (some questions are not shown). */
+  questions_truncated: boolean
+  /** More pending approvals exist than OVERVIEW_APPROVALS_MAX_ROWS. */
+  approvals_truncated: boolean
 }
 
 export interface OverviewDeps {
@@ -78,9 +82,11 @@ function cardToSlug(registryDir: string): Map<string, string> {
   return map
 }
 
-function cardSeq(cardId: string): number | null {
-  const row = getDb().prepare('SELECT rowid AS seq FROM kanban_cards WHERE id = ?').get(cardId) as { seq: number } | undefined
-  return row ? row.seq : null
+interface CardRef { seq: number | null; parent: string | null }
+
+function cardRef(cardId: string): CardRef {
+  const row = getDb().prepare('SELECT rowid AS seq, parent_id FROM kanban_cards WHERE id = ?').get(cardId) as { seq: number; parent_id: string | null } | undefined
+  return row ? { seq: row.seq, parent: row.parent_id } : { seq: null, parent: null }
 }
 
 interface ApprovalRow {
@@ -91,12 +97,12 @@ interface ApprovalRow {
 }
 
 // Named columns, never `*`: the allowlist is the SELECT list.
-function listPendingApprovals(): OverviewApproval[] {
+function listPendingApprovals(): { list: OverviewApproval[]; truncated: boolean } {
   const rows = getDb()
     .prepare(`SELECT id, agent_id, category, requested_at FROM approvals
-              WHERE status = 'pending' ORDER BY requested_at DESC, id LIMIT ${OVERVIEW_APPROVALS_MAX_ROWS}`)
+              WHERE status = 'pending' ORDER BY requested_at DESC, id LIMIT ${OVERVIEW_APPROVALS_MAX_ROWS + 1}`)
     .all() as ApprovalRow[]
-  return rows.map((r) => ({
+  const list = rows.slice(0, OVERVIEW_APPROVALS_MAX_ROWS).map((r): OverviewApproval => ({
     id: r.id,
     agent_id: r.agent_id,
     category: r.category,
@@ -104,16 +110,20 @@ function listPendingApprovals(): OverviewApproval[] {
     requested_at: r.requested_at,
     link: APPROVAL_LINK,
   }))
+  return { list, truncated: rows.length > OVERVIEW_APPROVALS_MAX_ROWS }
 }
 
 export function buildOverview(nowSec: number, deps: OverviewDeps = defaultOverviewDeps()): Overview {
   const slugs = cardToSlug(deps.registryDir)
   const byAgent = new Map<string, OverviewQuestion[]>()
-  for (const q of listQuestions('open', nowSec)) {
+  const page = listQuestionsPage('open', nowSec)
+  for (const q of page.questions) {
+    // A subcard (parent_id is a registry card) belongs to its parent's function, like the S1 page lists it.
+    const ref = q.card_id === null ? null : cardRef(q.card_id)
     const row: OverviewQuestion = {
       ...q,
-      card_seq: q.card_id === null ? null : cardSeq(q.card_id),
-      funkcio_slug: q.card_id === null ? null : (slugs.get(q.card_id) ?? null),
+      card_seq: ref ? ref.seq : null,
+      funkcio_slug: q.card_id === null || ref === null ? null : (slugs.get(q.card_id) ?? (ref.parent ? slugs.get(ref.parent.toLowerCase()) : undefined) ?? null),
     }
     const list = byAgent.get(q.agent_id)
     if (list) list.push(row)
@@ -124,5 +134,6 @@ export function buildOverview(nowSec: number, deps: OverviewDeps = defaultOvervi
     try { running = deps.isRunning(agent_id) } catch { /* unknown state shows as not running */ }
     return { agent_id, agent_running: running, questions: byAgent.get(agent_id) ?? [] }
   })
-  return { agents, pending_approvals: listPendingApprovals() }
+  const approvals = listPendingApprovals()
+  return { agents, pending_approvals: approvals.list, questions_truncated: page.truncated, approvals_truncated: approvals.truncated }
 }
