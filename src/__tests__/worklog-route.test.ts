@@ -121,6 +121,7 @@ describe('validation', () => {
     // A generated column whose function fails once armed (after the insert): a SELECT-time error that is not "no such ...".
     let armed = false
     getDb().function('wl_boom', { deterministic: true }, (v: unknown) => { if (armed) throw new Error('wl_boom /secret/path'); return v as number })
+    getDb().exec('DROP TABLE IF EXISTS function_decisions')
     getDb().exec('CREATE TABLE function_decisions (id INTEGER PRIMARY KEY, recorded_via TEXT, x INTEGER, created_at INTEGER GENERATED ALWAYS AS (wl_boom(x)) VIRTUAL)')
     getDb().exec("INSERT INTO function_decisions (recorded_via, x) VALUES ('session', 1)")
     armed = true

@@ -50,16 +50,34 @@ function seedFullDay(): void {
   convIn('a1', OWNER, t0 + 4600) // gap 700 > 600 -> a new segment
   convIn('a1', 'OTHER-CHAT', t0 + 20000) // another chat: not the owner
   convIn('a1', OWNER, t0 + 21000, 'out') // outbound: not the owner
-  // Decisions / answered questions (optional tables, created here)
+  // Decisions / answered questions. The real tables (db.ts initDatabase) are used when they exist; the minimal
+  // stand-ins are created only where the slice under test has no such table yet (append-only triggers: INSERT only).
   const db = getDb()
-  db.exec('CREATE TABLE function_decisions (id INTEGER PRIMARY KEY, quote_short TEXT, recorded_via TEXT, created_at INTEGER)')
-  db.exec('CREATE TABLE open_questions (id INTEGER PRIMARY KEY, body TEXT, answered_via TEXT, answered_at INTEGER)')
-  const dec = db.prepare('INSERT INTO function_decisions (quote_short, recorded_via, created_at) VALUES (?, ?, ?)')
-  dec.run(MARK, 'session', t0 + 30000) // owner: 1 minute
-  dec.run(MARK, 'token', t0 + 40000) // an agent's act: not the owner
-  const q = db.prepare('INSERT INTO open_questions (body, answered_via, answered_at) VALUES (?, ?, ?)')
-  q.run(MARK, 'ui', t0 + 50000) // owner: 1 minute
-  q.run(MARK, 'tg', t0 + 52000) // not the dashboard
+  const has = (n: string): boolean => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(n)
+  const realDec = has('function_decisions')
+  if (!realDec) db.exec('CREATE TABLE function_decisions (id INTEGER PRIMARY KEY, quote_short TEXT, recorded_via TEXT, created_at INTEGER)')
+  const realQ = has('open_questions')
+  if (!realQ) db.exec('CREATE TABLE open_questions (id INTEGER PRIMARY KEY, body TEXT, answered_via TEXT, answered_at INTEGER)')
+  const decide = (via: string, ts: number): void => {
+    if (realDec) {
+      db.prepare('INSERT INTO function_decisions (slug, quote_short, tg_msg_id, decided_at, recorded_by, recorded_via, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run('wl-test', MARK, 'm1', ts, 'tester', via, ts)
+    } else {
+      db.prepare('INSERT INTO function_decisions (quote_short, recorded_via, created_at) VALUES (?, ?, ?)').run(MARK, via, ts)
+    }
+  }
+  const answer = (via: string, ts: number): void => {
+    if (realQ) {
+      db.prepare("INSERT INTO open_questions (agent_id, kind, question_short, status, answer_short, answered_via, answered_at, created_at, expires_at, source) VALUES ('a1', 'free', ?, 'answered', 'x', ?, ?, ?, ?, 'agent')")
+        .run(MARK, via, ts, ts - 10, ts + 1000)
+    } else {
+      db.prepare('INSERT INTO open_questions (body, answered_via, answered_at) VALUES (?, ?, ?)').run(MARK, via, ts)
+    }
+  }
+  decide('session', t0 + 30000) // owner: 1 minute
+  decide('token', t0 + 40000) // an agent's act: not the owner
+  answer('ui', t0 + 50000) // owner: 1 minute
+  answer(realQ ? 'telegram' : 'tg', t0 + 52000) // not the dashboard
   // AI: A [7200,7560) (6 min), B [7400,7860) (7 min), union [7200,7860) = 11 min
   token('A', t0 + 7200)
   token('A', t0 + 7260)
@@ -117,6 +135,7 @@ describe('buildWorklogRange: aggregation across the four sources', () => {
   })
 
   it('a table with the wrong columns ("no such column") is no events, not an error', () => {
+    getDb().exec('DROP TABLE IF EXISTS function_decisions')
     getDb().exec('CREATE TABLE function_decisions (id INTEGER PRIMARY KEY)')
     convIn('a1', OWNER, t0 + 100)
     const d = buildWorklogRange(getDb(), DAY, DAY, OPTS).days[0]
@@ -127,6 +146,7 @@ describe('buildWorklogRange: aggregation across the four sources', () => {
     // A generated column whose function fails once armed (after the insert): a SELECT-time error that is not "no such ...".
     let armed = false
     getDb().function('wl_boom', { deterministic: true }, (v: unknown) => { if (armed) throw new Error('wl_boom /secret/path'); return v as number })
+    getDb().exec('DROP TABLE IF EXISTS function_decisions')
     getDb().exec('CREATE TABLE function_decisions (id INTEGER PRIMARY KEY, recorded_via TEXT, x INTEGER, created_at INTEGER GENERATED ALWAYS AS (wl_boom(x)) VIRTUAL)')
     getDb().exec("INSERT INTO function_decisions (recorded_via, x) VALUES ('session', 1)")
     armed = true
