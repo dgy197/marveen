@@ -104,6 +104,15 @@ describe('S2-1: input validation', () => {
     expect(count()).toBe(1)
   })
 
+  it('S2-M2: Unicode tag characters and invisible format characters are refused', async () => {
+    const withChar = (cp: number) => `a${String.fromCodePoint(cp)}b`
+    const cps = [0xe0000, 0xe0041, 0xe007f, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x061c, 0x2060, 0x2064]
+    for (const cp of cps) {
+      expect((await rec({ tg_msg_id: '1', quote_short: withChar(cp) })).kind, cp.toString(16)).toBe('bad_request')
+    }
+    expect(count()).toBe(0)
+  })
+
   it('an unknown or forged key is refused (recorded_by / recorded_via / created_at / id cannot be sent)', async () => {
     for (const extra of [{ recorded_by: 'mallory' }, { recorded_via: 'session' }, { created_at: 1 }, { id: 9 }, { source_found: 1 }, { __proto__x: 1 }]) {
       const r = await rec(JSON.stringify({ quote_short: 'igen', tg_msg_id: '1', ...extra }))
@@ -284,6 +293,43 @@ describe('S2-3: append-only, a correction is a new row', () => {
     await recOk({ quote_short: 'f-es', tg_msg_id: '1' })
     const g = await svc.decisions('g')
     expect(g.kind === 'ok' && g.decisions).toEqual([])
+  })
+})
+
+describe('S2-N1/N2: source-check index and the unique-violation catch', () => {
+  it('S2-N1: the source-check lookup on conversation_log uses an index, not a table scan', () => {
+    const plan = getDb()
+      .prepare("EXPLAIN QUERY PLAN SELECT DISTINCT message_id FROM conversation_log WHERE direction = 'in' AND chat_id = ? AND message_id IN (?, ?)")
+      .all('555', '1', '2') as { detail: string }[]
+    const text = plan.map((r) => r.detail).join('\n')
+    expect(text).toContain('USING')
+    expect(text).toContain('idx_convlog_source_check')
+    expect(text).not.toMatch(/SCAN conversation_log(?! USING)/)
+  })
+
+  // Wraps the db so the INSERT into function_decisions throws a chosen error after the pre-checks passed.
+  function failInsertWith(err: Error & { code?: string }): void {
+    const db = getDb()
+    const realPrepare = db.prepare.bind(db)
+    ;(db as unknown as { prepare: unknown }).prepare = (sql: string) => {
+      if (/INSERT INTO function_decisions/.test(sql)) {
+        return { run: () => { throw err } }
+      }
+      return realPrepare(sql)
+    }
+  }
+
+  it('S2-N2: a UNIQUE(supersedes) error after the pre-check is a 409-class conflict', async () => {
+    const old = await recOk({ quote_short: 'regi', tg_msg_id: '1' })
+    failInsertWith(Object.assign(new Error('UNIQUE constraint failed: function_decisions.supersedes'), { code: 'SQLITE_CONSTRAINT_UNIQUE' }))
+    expect((await rec({ quote_short: 'javitas', tg_msg_id: '2', supersedes: old.id })).kind).toBe('conflict')
+  })
+
+  it('S2-N2: another constraint error is not a conflict (it surfaces)', async () => {
+    failInsertWith(Object.assign(new Error('CHECK constraint failed: quote_short'), { code: 'SQLITE_CONSTRAINT_CHECK' }))
+    await expect(rec({ quote_short: 'x', tg_msg_id: '1' })).rejects.toThrow('CHECK constraint failed')
+    failInsertWith(Object.assign(new Error('UNIQUE constraint failed: something_else.col'), { code: 'SQLITE_CONSTRAINT_UNIQUE' }))
+    await expect(rec({ quote_short: 'x', tg_msg_id: '1' })).rejects.toThrow('something_else')
   })
 })
 

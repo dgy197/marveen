@@ -97,13 +97,15 @@ export function decisionActor(auth: AuthLike): DecisionActor | null {
 
 export type ValidateResult = { ok: true; value: DecisionInput } | { ok: false; error: string }
 
-// Control characters except \n, line/paragraph separators, bidi overrides/isolates, BOM.
+// Control characters except \n, line/paragraph separators, bidi overrides/isolates, BOM,
+// invisible format characters (zero width, word joiner, Arabic letter mark) and Unicode tag characters.
 // Code points, not a regex literal: the separators would sit unescaped in the source.
 function hasForbiddenChar(s: string): boolean {
   for (const ch of s) {
     const c = ch.codePointAt(0) as number
     if (c <= 0x09 || (c >= 0x0b && c <= 0x1f) || (c >= 0x7f && c <= 0x9f)) return true
     if (c === 0x2028 || c === 0x2029 || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069) || c === 0xfeff) return true
+    if ((c >= 0xe0000 && c <= 0xe007f) || (c >= 0x200b && c <= 0x200f) || c === 0x061c || (c >= 0x2060 && c <= 0x2064)) return true
   }
   return false
 }
@@ -130,7 +132,7 @@ export function validateDecisionInput(raw: unknown, nowSec: number): ValidateRes
   const len = Array.from(quote).length
   if (len < 1) return { ok: false, error: 'quote_short is empty' }
   if (len > QUOTE_MAX_CODEPOINTS) return { ok: false, error: `quote_short is longer than ${QUOTE_MAX_CODEPOINTS} characters` }
-  if (hasForbiddenChar(quote)) return { ok: false, error: 'quote_short contains a control or direction-override character' }
+  if (hasForbiddenChar(quote)) return { ok: false, error: 'quote_short contains a control, invisible or direction-override character' }
   // The log cannot be edited or deleted, so a secret must not get in at all.
   if (maskSecrets(quote) !== quote) return { ok: false, error: 'quote_short contains a secret-shaped string' }
 
@@ -276,8 +278,9 @@ export type RecordOutcome =
   | { kind: 'conflict'; error: string }
 
 function isUniqueViolation(err: unknown): boolean {
-  const code = (err as { code?: unknown } | null)?.code
-  return typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT')
+  const e = err as { code?: unknown; message?: unknown } | null
+  // Only UNIQUE(supersedes) can race here; CHECK / FOREIGN KEY / trigger aborts stay 500s.
+  return e?.code === 'SQLITE_CONSTRAINT_UNIQUE' && typeof e.message === 'string' && e.message.includes('function_decisions.supersedes')
 }
 
 /**

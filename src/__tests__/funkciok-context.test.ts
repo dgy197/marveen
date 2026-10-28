@@ -66,7 +66,10 @@ describe('structure', () => {
       expect(i, part).toBeGreaterThan(at)
       at = i
     }
-    expect(md).toContain('| tg:555/1001 | verified | "dontes 1"')
+    expect(md).toContain('| tg:555/1001 | by:agent-b | verified | "dontes 1"')
+    // S2-M3: the header does not claim the quote is the owner's
+    expect(md).toContain('## Utolso 20 dontes (rogzitett idezet, nem bizonyitek)')
+    expect(md).not.toContain('tulajdonostol')
     expect(md).toContain('#1 3333aa01 | in_progress | agent-b | Nyitott kartya')
     expect(md).toContain('marveen abc0001 ')
     expect(md).toContain('marveen: src/__tests__/a.test.ts')
@@ -123,6 +126,20 @@ describe('untrusted strings are data', () => {
       expect(md).not.toMatch(new RegExp(`[${LS}${RLO}\\r]`))
       expect(md).toContain('ʼ')
     }
+  })
+
+  it('S2-M2: frameLine strips tag characters and invisible format characters; S2-M3: recorded_by passes through it', () => {
+    const cps = [0xe0000, 0xe0041, 0xe007f, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x061c, 0x2060, 0x2064]
+    for (const cp of cps) {
+      const out = frameLine(`a${String.fromCodePoint(cp)}b`)
+      expect(out, cp.toString(16)).toBe('a b')
+    }
+    const md = buildContext(basePage({
+      decisions: [decision(1, { recorded_by: `ag${String.fromCodePoint(0xe0041)}${FENCE}\nent` })],
+    }), T0 * 1000)
+    const line = md.split('\n').find((l) => l.includes('| by:')) as string
+    expect(line).toContain('by:ag ʼʼʼ ent')
+    expect(Array.from(line).some((ch) => (ch.codePointAt(0) as number) >= 0xe0000)).toBe(false)
   })
 
   it('frameLine flattens, masks secrets, replaces backticks and clips by code points', () => {

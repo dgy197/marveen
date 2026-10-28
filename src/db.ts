@@ -1764,6 +1764,8 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_function_decisions_slug ON function_decisions(slug, created_at)`)
+  // The decision source check (web/funkciok-decisions.ts foundInboundIds) looks up conversation_log by chat + direction + message id.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_convlog_source_check ON conversation_log(chat_id, direction, message_id)`)
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_function_decisions_supersedes ON function_decisions(supersedes) WHERE supersedes IS NOT NULL`)
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS function_decisions_no_update
