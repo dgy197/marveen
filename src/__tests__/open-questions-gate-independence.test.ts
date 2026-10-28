@@ -43,6 +43,7 @@ const READERS = [
   /^src\/web\/open-questions[^/]*\.ts$/,
   /^src\/web\/routes\/open-questions\.ts$/,
   /^web\/app\.js$/, // the panel (S3-N4)
+  /^src\/web\/worklog\.ts$/, // S4 worklog: answered_via='ui' timestamps as the owner's active time (no text, no authorisation)
 ]
 
 function walk(root: string, top: string): string[] {
