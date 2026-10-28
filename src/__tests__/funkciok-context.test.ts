@@ -100,7 +100,7 @@ describe('structure', () => {
     const empty = buildContext(basePage({ tiltasok: [] }), T0 * 1000)
     expect(empty).toContain('(nincs)')
     const md = buildContext(basePage({ decisions: [decision(1, { tg_chat: null, tg_msg_id: null, msg_id: 77, source_status: 'none' })] }), T0 * 1000)
-    expect(md).toContain('| msg:77 | none |')
+    expect(md).toContain('| msg:77 | by:agent-b | none |')
   })
 })
 
