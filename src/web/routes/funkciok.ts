@@ -17,6 +17,7 @@ import type { RouteContext } from './types.js'
 //                                           that is on THAT function's page (D3)
 //   GET  /api/funkciok/:slug/decisions      (S2-A) the append-only decision log
 //   POST /api/funkciok/:slug/decisions      (S2-A) append one decision; no PUT/PATCH/DELETE
+//   GET  /api/funkciok/:slug/context        (S2-B) markdown context package for a planner agent (max 8000 chars)
 //
 // Auth is the dashboard gate's (web.ts: 401 without a principal, 403 for an
 // operator-scoped key, which reaches /api/operator/* only). The handler repeats
@@ -58,6 +59,7 @@ const LIST_PATH = '/api/funkciok'
 const PAGE_RE = /^\/api\/funkciok\/([^/]+)$/
 const MSG_RE = /^\/api\/funkciok\/([^/]+)\/messages\/([^/]+)$/
 const DECISIONS_RE = /^\/api\/funkciok\/([^/]+)\/decisions$/
+const CONTEXT_RE = /^\/api\/funkciok\/([^/]+)\/context$/
 
 function decodeSlug(raw: string): string | null {
   let s: string
@@ -81,7 +83,8 @@ export async function tryHandleFunkciok(ctx: RouteContext): Promise<boolean> {
   const msgMatch = MSG_RE.exec(path)
   const pageMatch = PAGE_RE.exec(path)
   const decMatch = DECISIONS_RE.exec(path)
-  if (path !== LIST_PATH && !msgMatch && !pageMatch && !decMatch) return false
+  const ctxMatch = CONTEXT_RE.exec(path)
+  if (path !== LIST_PATH && !msgMatch && !pageMatch && !decMatch && !ctxMatch) return false
 
   // The decision log is the only write surface here, and only POST appends.
   const allowed = decMatch ? ['GET', 'POST'] : ['GET']
@@ -96,6 +99,18 @@ export async function tryHandleFunkciok(ctx: RouteContext): Promise<boolean> {
   }
 
   const svc = getService()
+
+  if (ctxMatch) {
+    const slug = decodeSlug(ctxMatch[1])
+    if (!slug) { json(res, { error: 'Not found' }, 404); return true }
+    const r = await svc.context(slug)
+    if (r.kind === 'ok') {
+      res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' })
+      res.end(r.markdown)
+    } else if (r.kind === 'invalid') json(res, { error: 'Invalid registry file', slug: r.slug, reason: r.error }, 422)
+    else json(res, { error: 'Not found' }, 404)
+    return true
+  }
 
   if (decMatch) {
     const slug = decodeSlug(decMatch[1])

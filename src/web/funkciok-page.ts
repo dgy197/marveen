@@ -9,6 +9,7 @@ import {
   DECISION_BODY_MAX_BYTES, listDecisions, pageDecisions, recordDecision, validateDecisionInput,
   type DecisionActor, type DecisionOut,
 } from './funkciok-decisions.js'
+import { buildContext } from './funkciok-context.js'
 import {
   containsToken, matchCommits, matchesAnyGlob, prNumberOf,
   type GitLogReader, type MatchedCommit, type MatchReason,
@@ -391,7 +392,14 @@ export type RecordDecisionResult =
   | { kind: 'not_found' }
   | { kind: 'invalid'; slug: string; error: string }
 
+export type ContextResult =
+  | { kind: 'ok'; markdown: string }
+  | { kind: 'not_found' }
+  | { kind: 'invalid'; slug: string; error: string }
+
 export interface FunkciokService {
+  /** S2-B: the markdown context package, built from the page object only. */
+  context(slug: string): Promise<ContextResult>
   list(): Promise<FunkcioListItem[]>
   page(slug: string): Promise<PageResult>
   message(slug: string, id: number): Promise<MessageResult>
@@ -412,7 +420,7 @@ export function createFunkciokService(deps: FunkciokDeps): FunkciokService {
     return { slug: e.slug, nev: e.funkcio.nev, last_change: lastChangeOf(cards, g.commits), open_cards: countOpen(cards) }
   }
 
-  return {
+  const self: FunkciokService = {
     async list() {
       // Sequential: one git run at a time keeps a cold load from spawning a herd.
       const out: FunkcioListItem[] = []
@@ -471,6 +479,12 @@ export function createFunkciokService(deps: FunkciokDeps): FunkciokService {
       return recordDecision(e.funkcio.slug, v.value, actor, nowSec, ownerChat)
     },
 
+    async context(slug) {
+      const r = await self.page(slug)
+      if (r.kind !== 'ok') return r
+      return { kind: 'ok', markdown: buildContext(r.page, nowMs()) }
+    },
+
     async message(slug, id) {
       const e = getRegistryEntry(deps.registryDir, slug)
       if (!e) return { kind: 'not_found' }
@@ -498,4 +512,5 @@ export function createFunkciokService(deps: FunkciokDeps): FunkciokService {
       }
     },
   }
+  return self
 }
