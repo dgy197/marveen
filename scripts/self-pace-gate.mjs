@@ -203,7 +203,7 @@ export const PROTECTED_STORE_FILES = new Set([
 // approval-bot files need their leading dot, so a source or doc named approval-bot-key-*.md or a
 // glob over src/approval-bot* stays out too.
 const PROTECTED_MENTION_RX =
-  /(?:egress[-_]?vendor[-_]?hosts|config[-_]?overrides|bash[-_]?sandbox[-_]?write[-_]?paths|bash[-_]?sandbox[-_]?hosts|email[-_]?standing[-_]?recipients)\.json|\.approval[-_]?bot[-_]?(?:token|key)\b|(?:egress[-_]?vendor|config[-_]?overrid|bash[-_]?sandbox[-_]?write|bash[-_]?sandbox[-_]?hosts|email[-_]?standing|\.approval[-_]?bot)[\w.-]*[*?[]/i
+  /(?:egress[-_]?vendor[-_]?hosts|config[-_]?overrides|bash[-_]?sandbox[-_]?write[-_]?paths|bash[-_]?sandbox[-_]?hosts|email[-_]?standing[-_]?recipients)\.json|\.approval[-_]?bot[-_]?(?:token|key)\b|(?:egress[-_]?vendor|config[-_]?overrid|bash[-_]?sandbox[-_]?write|bash[-_]?sandbox[-_]?h|email[-_]?standing|\.approval[-_]?bot)[\w.-]*[*?[]/i
 
 // One rule for every protected store object: a segment that mentions it may only be a plain
 // READ, and no output redirect in it may point at it (or at a target built at runtime).

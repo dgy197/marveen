@@ -85,6 +85,12 @@ describe('per-agent hosts from store/bash-sandbox-hosts.json', () => {
     writeFileSync(f, '[]')
     expect(() => sandboxAgentHosts('soma', f)).toThrow(/not a JSON object/)
   })
+  it('drops a name longer than 253 characters, the DNS limit', () => {
+    const long = `${'a'.repeat(60)}.`.repeat(4) + 'com' // 247 chars: kept
+    const tooLong = `${'a'.repeat(60)}.`.repeat(4) + 'abcdefg.com' // 255 chars: dropped
+    writeFileSync(f, JSON.stringify({ agents: { soma: [long, tooLong] } }))
+    expect(sandboxAgentHosts('soma', f)).toEqual([long])
+  })
   it('sync: vendor + own hosts, sorted, no duplicates, and the other agent\'s file has none of them', () => {
     const dir = join(tmpRoot, 'bash-sandbox-hosts-dir')
     const vendor = join(tmpRoot, 'v3.json')

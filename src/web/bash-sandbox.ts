@@ -113,7 +113,7 @@ export function sandboxAgentHosts(name: string, path = SANDBOX_HOSTS_PATH): stri
   const listed = raw?.agents && typeof raw.agents === 'object' ? raw.agents[name] : undefined
   const out = new Set<string>()
   for (const h of Array.isArray(listed) ? listed : []) {
-    if (typeof h === 'string' && VENDOR_HOST.test(h)) out.add(h)
+    if (typeof h === 'string' && h.length <= 253 && VENDOR_HOST.test(h)) out.add(h)
   }
   return [...out].sort()
 }

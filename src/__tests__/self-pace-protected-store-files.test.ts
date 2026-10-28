@@ -89,6 +89,8 @@ describe('Bash is fail-closed on the protected files', () => {
     'cp /tmp/x store/config-overrides.*',
     'cp /tmp/x store/bash-sandbox-write*',
     'cp /tmp/x store/bash-sandbox-hosts*',
+    'cp /tmp/x store/bash-sandbox-host?.json',
+    'cp /tmp/x store/bash-sandbox-h[o]sts.json',
     'cp /tmp/x store/email-standing*',
     'cp /tmp/x store/.approval-bot*',
   ])('a glob that starts on the name is denied: %s', (command) => {
