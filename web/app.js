@@ -19901,16 +19901,22 @@ function wireDevTabs() {
   })
 }
 
+// The single Fejlesztes view switcher: funkciok (default), kerdesek (S3), munkanaplo (S4).
 function setDevView(view) {
   const fun = document.getElementById('devFunkciokView')
   const wl = document.getElementById('devMunkanaploView')
+  const qv = document.getElementById('devKerdesekView')
   if (!fun || !wl) return
-  const isWl = view === 'munkanaplo'
-  fun.hidden = isWl
-  wl.hidden = !isWl
-  document.getElementById('devTabFunkciok')?.classList.toggle('active', !isWl)
-  document.getElementById('devTabMunkanaplo')?.classList.toggle('active', isWl)
-  if (isWl) loadWorklog()
+  const active = view === 'munkanaplo' || view === 'kerdesek' ? view : 'funkciok'
+  devActiveView = active
+  fun.hidden = active !== 'funkciok'
+  wl.hidden = active !== 'munkanaplo'
+  if (qv) qv.hidden = active !== 'kerdesek'
+  document.getElementById('devTabFunkciok')?.classList.toggle('active', active === 'funkciok')
+  document.getElementById('devTabKerdesek')?.classList.toggle('active', active === 'kerdesek')
+  document.getElementById('devTabMunkanaplo')?.classList.toggle('active', active === 'munkanaplo')
+  if (active === 'munkanaplo') loadWorklog()
+  if (active === 'kerdesek') loadDevQuestions()
 }
 
 function wlFmtTime(unix, tz) {
@@ -20601,29 +20607,15 @@ let devQuestionsSeq = 0
 const DEV_ANSWER_MAX = 1000
 const DEV_QUESTION_KINDS = ['info', 'yesno', 'free']
 
+// Kept as the S3 entry point; the switching itself lives in setDevView (the tab
+// clicks are wired once, by wireDevTabs).
 function devSetView(view) {
-  devActiveView = view === 'kerdesek' ? 'kerdesek' : 'funkciok'
-  const isQ = devActiveView === 'kerdesek'
-  const fView = document.getElementById('devFunkciokView')
-  const qView = document.getElementById('devKerdesekView')
-  if (fView) fView.hidden = isQ
-  if (qView) qView.hidden = !isQ
-  document.getElementById('devTabFunkciok')?.classList.toggle('active', !isQ)
-  document.getElementById('devTabKerdesek')?.classList.toggle('active', isQ)
-  if (isQ) loadDevQuestions()
+  setDevView(view)
 }
 
 function devRefreshQuestionsIfActive() {
   if (devActiveView === 'kerdesek') loadDevQuestions()
 }
-
-function wireDevViewTabs() {
-  document.querySelectorAll('#devTabs [data-dev-view]').forEach((b) => {
-    if (b.disabled) return
-    b.addEventListener('click', () => devSetView(b.dataset.devView))
-  })
-}
-wireDevViewTabs()
 
 async function loadDevQuestions() {
   const root = document.getElementById('devKerdesekView')
