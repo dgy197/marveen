@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { initDatabase, getDb } from '../db.js'
 import { maskSecrets } from '../web/agent-transcript.js'
+import { QUESTION_OPEN_GLOBAL_MAX, listQuestionsPage } from '../web/open-questions.js'
 import {
   QUESTION_KEYS, QUESTION_DEFAULT_EXPIRY_S, QUESTION_MAX_CODEPOINTS, QUESTION_MAX_EXPIRY_S, QUESTION_MIN_EXPIRY_S,
   QUESTION_OPEN_PER_AGENT_MAX, createQuestion, listQuestions, validateQuestionInput, type QuestionInput,
@@ -203,10 +204,11 @@ describe('validateQuestionInput (every field)', () => {
     for (const v of [0, -1, 1.5, '3', Number.MAX_SAFE_INTEGER + 2]) expect(err({ ...base, msg_id: v })).toMatch(/msg_id/)
   })
 
-  it('expires_in_s: integer, 300..30 days; 299 and 30 days + 1 s are refused', () => {
+  it('expires_in_s: integer, 300 s..7 days (S3-B3); 299 and 7 days + 1 s are refused, 30 days too', () => {
     const exp = (v: unknown) => { const r = ok({ ...base, expires_in_s: v }); return r.ok ? r.value.expires_in_s : r.error }
     expect(exp(QUESTION_MIN_EXPIRY_S)).toBe(300)
-    expect(exp(QUESTION_MAX_EXPIRY_S)).toBe(30 * 24 * 3600)
+    expect(exp(QUESTION_MAX_EXPIRY_S)).toBe(7 * 24 * 3600)
+    expect(exp(30 * 24 * 3600)).toMatch(/between 300 and/)
     expect(exp(QUESTION_MIN_EXPIRY_S - 1)).toMatch(/between 300 and/)
     expect(exp(QUESTION_MAX_EXPIRY_S + 1)).toMatch(/between 300 and/)
     for (const v of [1.5, '600', NaN, Infinity, 0, -5]) expect(String(exp(v))).toMatch(/expires_in_s/)
@@ -252,6 +254,32 @@ describe('createQuestion and listQuestions', () => {
     expect(r.kind).toBe('too_many')
     expect(count()).toBe(20)
     expect(createQuestion(input({ agent_id: 'beta' }), T0).kind).toBe('ok')
+  })
+
+  it('S3-B3: the global cap of 200 open questions refuses with code global_cap; answered and expired ones free slots', () => {
+    expect(QUESTION_OPEN_GLOBAL_MAX).toBe(200)
+    for (let a = 0; a < 10; a++) {
+      for (let i = 0; i < QUESTION_OPEN_PER_AGENT_MAX; i++) expect(createQuestion(input({ agent_id: `fuell${a}`, question_short: `k${i}` }), T0).kind).toBe('ok')
+    }
+    const r = createQuestion(input({ agent_id: 'beta' }), T0)
+    expect(r).toMatchObject({ kind: 'too_many', code: 'global_cap' })
+    expect(count()).toBe(200)
+    // the per-agent cap is reported as its own code
+    expect(createQuestion(input({ agent_id: 'fuell0' }), T0)).toMatchObject({ kind: 'too_many', code: 'agent_cap' })
+    // a week later every one is expired: slots are free again
+    expect(createQuestion(input({ agent_id: 'beta' }), T0 + QUESTION_DEFAULT_EXPIRY_S + 1).kind).toBe('ok')
+  })
+
+  it('S3-R4: listQuestionsPage reports truncated only when a 201st row exists', () => {
+    const db = getDb()
+    const ins = db.prepare("INSERT INTO open_questions (agent_id, kind, question_short, created_at, expires_at, source) VALUES ('alfa', 'info', 'x', ?, ?, 'agent')")
+    db.transaction(() => { for (let i = 0; i < 200; i++) ins.run(T0 + i, T0 + 5000) })()
+    expect(listQuestionsPage('all', T0 + 1)).toMatchObject({ truncated: false })
+    expect(listQuestionsPage('all', T0 + 1).questions).toHaveLength(200)
+    ins.run(T0 + 300, T0 + 5000)
+    const page = listQuestionsPage('all', T0 + 1)
+    expect(page.truncated).toBe(true)
+    expect(page.questions).toHaveLength(200)
   })
 
   it('answered and expired questions do not count against the cap', () => {

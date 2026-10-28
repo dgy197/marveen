@@ -1,7 +1,7 @@
 import { RequestBodyTooLargeError, json, methodNotAllowed, readBody } from '../http-helpers.js'
 import { isKnownAgent } from '../agent-config.js'
 import {
-  QUESTION_BODY_MAX_BYTES, createQuestion, isQuestionFilter, listQuestions, validateQuestionInput,
+  QUESTION_BODY_MAX_BYTES, createQuestion, isQuestionFilter, listQuestionsPage, validateQuestionInput,
 } from '../open-questions.js'
 import { buildOverview } from '../open-questions-overview.js'
 import { answerQuestion, getQuestionKind, ownerAnswerPrincipal, validateAnswerInput } from '../open-questions-answer.js'
@@ -10,7 +10,7 @@ import type { RouteContext } from './types.js'
 
 // Open questions (S3-N1): the agents' questions for the owner.
 //
-//   GET  /api/questions?status=open|answered|expired|all   list (default open), newest first, max 200
+//   GET  /api/questions?status=open|answered|expired|all   list (default open), newest first, max 200 (+ truncated)
 //   POST /api/questions                                    an AGENT raises a question
 //
 //   POST /api/questions/:id/answer                         the OWNER answers (S3-N2, see handleAnswer)
@@ -21,8 +21,8 @@ import type { RouteContext } from './types.js'
 //   GET : token, device full, session. operator and federation: 403.
 //   POST: the shared token ONLY (it is the agents' credential). device, session,
 //         operator, federation: 403 -- the owner never raises a question.
-// The token's X-Agent-Id claim is self-asserted: it can contradict the body
-// (400), it never authorizes anything.
+// The token's X-Agent-Id claim is self-asserted: it is required and must equal
+// the body's agent_id (400 otherwise), it never authorizes anything.
 
 const PATH = '/api/questions'
 const ANSWER_RE = /^\/api\/questions\/([^/]+)\/answer$/
@@ -46,7 +46,8 @@ function deniedRead(ctx: RouteContext): number | null {
 /**
  * POST /api/questions/:id/answer. Owner only (blueprint section 1): a session,
  * a full device key, or the token WITH a valid session cookie (the browser).
- * The shared token alone is 403 (never 401), also with zero dashboard users.
+ * The shared token alone is 403 (never 401); with zero dashboard users EVERY
+ * principal is 403 owner_login_required (nobody has an owner login yet).
  * A cross-origin browser write never gets here (web.ts runs the origin gate
  * before routing).
  */
@@ -118,7 +119,7 @@ export async function tryHandleOpenQuestions(ctx: RouteContext): Promise<boolean
   if (method === 'GET') {
     const raw = ctx.url.searchParams.get('status') ?? 'open'
     if (!isQuestionFilter(raw)) { json(res, { error: 'status must be open, answered, expired or all' }, 400); return true }
-    json(res, { questions: listQuestions(raw, nowSec) })
+    json(res, listQuestionsPage(raw, nowSec))
     return true
   }
 
@@ -140,14 +141,20 @@ export async function tryHandleOpenQuestions(ctx: RouteContext): Promise<boolean
   const v = validateQuestionInput(raw)
   if (!v.ok) { json(res, { error: v.error }, 400); return true }
   if (!isKnownAgent(v.value.agent_id)) { json(res, { error: 'agent_id is not a known fleet agent' }, 400); return true }
+  // The claim is self-asserted and authorizes nothing, but it is REQUIRED: it is the only
+  // trace of who posted with the shared token, and it must name the agent the question is for.
   const claim = ctx.auth.agent
-  if (claim && claim !== v.value.agent_id) { json(res, { error: 'agent_id differs from the X-Agent-Id claim' }, 400); return true }
+  if (!claim) { json(res, { error: 'X-Agent-Id header is required and must equal agent_id' }, 400); return true }
+  if (claim !== v.value.agent_id) { json(res, { error: 'agent_id differs from the X-Agent-Id claim' }, 400); return true }
 
   const r = createQuestion(v.value, nowSec)
   switch (r.kind) {
     case 'ok': json(res, r.question, 201); break
     case 'unprocessable': json(res, { error: r.error }, 422); break
-    default: json(res, { error: r.error }, 429)
+    default:
+      // No question text in the log: only who and which cap.
+      logger.warn({ agent_id: v.value.agent_id, reason: r.code }, 'open question refused: too many open questions (429)')
+      json(res, { error: r.error, code: r.code }, 429)
   }
   return true
 }

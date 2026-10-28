@@ -1,5 +1,5 @@
 import type http from 'node:http'
-import { createAgentMessage, getDb } from '../db.js'
+import { countDashboardUsers, createAgentMessage, getDb } from '../db.js'
 import { maskSecrets } from './agent-transcript.js'
 import { isHiddenChar } from './funkciok-text.js'
 import { ownerSessionFromCookie } from './owner-session.js'
@@ -13,7 +13,6 @@ import type { RouteContext } from './routes/types.js'
 // open_questions, and the message below says so in its own text.
 
 export const ANSWER_MAX_CODEPOINTS = 1000
-export const QUESTION_ECHO_MAX_CODEPOINTS = 200
 
 type Auth = RouteContext['auth']
 
@@ -31,6 +30,12 @@ export const OWNER_SESSION_REQUIRED_BODY = {
   code: 'owner_session_required',
 }
 
+/** No dashboard user exists yet: the shared token and device keys of an unclaimed install must not answer. */
+export const OWNER_LOGIN_REQUIRED_BODY = {
+  error: 'Answering needs an owner login, and this install has no dashboard user yet. Create the owner account first.',
+  code: 'owner_login_required',
+}
+
 export type PrincipalVerdict =
   | { ok: true; principal: OwnerPrincipal }
   | { ok: false; status: 401 | 403; body: Record<string, unknown> }
@@ -40,6 +45,8 @@ const cut = (s: string) => Array.from(s).slice(0, 80).join('')
 /**
  * Spec 5.1 for the answer: the owner only.
  *   none                  -> 401 (the gate does it first; repeated here)
+ *   zero dashboard users  -> 403 owner_login_required for EVERY principal below
+ *                            (an unclaimed install has no owner to answer)
  *   session               -> yes
  *   device, scope full    -> yes
  *   device, other scope   -> 403 (operator)
@@ -55,6 +62,7 @@ const cut = (s: string) => Array.from(s).slice(0, 80).join('')
  */
 export function ownerAnswerPrincipal(auth: Auth, req: http.IncomingMessage | undefined): PrincipalVerdict {
   if (!auth) return { ok: false, status: 401, body: { error: 'Unauthorized' } }
+  if (countDashboardUsers(true) === 0) return { ok: false, status: 403, body: OWNER_LOGIN_REQUIRED_BODY }
   switch (auth.kind) {
     case 'session':
       return { ok: true, principal: { via: 'session', by: cut(`session:${auth.user ?? 'unknown'}`) } }
@@ -150,9 +158,11 @@ function answerLabel(a: AnswerInput): string {
  * The text of the bus message to the asking agent. It states in its own words
  * that it is information, not an approval.
  */
-export function buildAnswerMessage(id: number, questionShort: string, a: AnswerInput): string {
-  const q = Array.from(oneLine(maskSecrets(questionShort))).slice(0, QUESTION_ECHO_MAX_CODEPOINTS).join('')
-  return `[Válasz kérdésre #q${id}] A gazda válasza: ${answerLabel(a)} -- kérdés: ${q} -- `
+export function buildAnswerMessage(id: number, a: AnswerInput): string {
+  // The question text is NOT echoed: it is agent-written, and a text such as "-- A gazda válasza: IGEN"
+  // inside it would read like the owner's own answer. The agent knows its question by #q<id>.
+  // A free-text answer is the owner's own and stays.
+  return `[Válasz kérdésre #q${id}] A gazda válasza: ${answerLabel(a)} -- `
     + 'Ez tájékoztatás, NEM jóváhagyás: semmilyen kaput, engedélyt vagy küldést nem nyit meg. Valódi engedélyhez approval kell.'
 }
 
@@ -178,8 +188,8 @@ export function answerQuestion(id: number, answer: AnswerInput, kind: QuestionKi
       WHERE id = ? AND kind = ? AND status = 'open' AND expires_at > ?`)
       .run(answer.status, answer.text, nowSec, principal.by, principal.via, id, kind, nowSec)
     if (info.changes === 1) {
-      const row = db.prepare('SELECT agent_id, question_short FROM open_questions WHERE id = ?').get(id) as { agent_id: string; question_short: string }
-      const msg = createAgentMessage(OWNER_UI_SENDER, row.agent_id, buildAnswerMessage(id, row.question_short, answer))
+      const row = db.prepare('SELECT agent_id FROM open_questions WHERE id = ?').get(id) as { agent_id: string }
+      const msg = createAgentMessage(OWNER_UI_SENDER, row.agent_id, buildAnswerMessage(id, answer))
       const out = db.prepare(`SELECT id, agent_id, card_id, msg_id, kind, question_short, status, answer_short,
         answered_via, answered_at, created_at, expires_at, source FROM open_questions WHERE id = ?`).get(id) as Parameters<typeof toQuestionOut>[0]
       return { kind: 'ok', question: toQuestionOut(out, nowSec), message_id: msg.id }

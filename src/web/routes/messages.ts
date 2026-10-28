@@ -277,7 +277,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       return true
     }
     // Owner answers (card d7b2d5c8, S3-N2): an owner's answer to an open question reaches the asking
-    // agent from OWNER_UI_SENDER. Only POST /api/questions/:id/answer writes it, in-process, after its
+    // agent from OWNER_UI_SENDER. Only the owner-answer route writes it, in-process, after its
     // owner-only check; the token every sub-agent holds must not be able to forge "the owner said so".
     // Compared on the router's normalization (sanitizeAgentIdent) and case-insensitively, on every lane.
     if (sanitizeAgentIdent(from).toLowerCase() === OWNER_UI_SENDER) {

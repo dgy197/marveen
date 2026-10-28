@@ -5,7 +5,8 @@ import { Readable } from 'node:stream'
 import { initDatabase, getDb } from '../db.js'
 import { requiresAuth } from '../web/auth-gate.js'
 import { operatorGateDecision } from '../web/operator-gate.js'
-import { QUESTION_KEYS, QUESTION_OPEN_PER_AGENT_MAX } from '../web/open-questions.js'
+import { QUESTION_KEYS, QUESTION_MAX_EXPIRY_S, QUESTION_OPEN_PER_AGENT_MAX, createQuestion } from '../web/open-questions.js'
+import { logger } from '../logger.js'
 import { setQuestionsClockForTest, tryHandleOpenQuestions } from '../web/routes/open-questions.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -109,8 +110,12 @@ describe('auth matrix (spec 5.1)', () => {
     expect((await get('', null)).status).toBe(401)
   })
 
-  it('a token without an X-Agent-Id claim may post for a known agent (the claim attributes, it does not authorize)', async () => {
-    expect((await post(good, TOKEN)).status).toBe(201)
+  it('S3-B2: a token without an X-Agent-Id claim is 400 and nothing is written (the claim is required and must equal agent_id)', async () => {
+    const r = await post(good, TOKEN)
+    expect(r.status).toBe(400)
+    expect(r.body.error).toMatch(/X-Agent-Id/)
+    expect(count()).toBe(0)
+    expect((await post(good, TOKEN_ALFA)).status).toBe(201) // the matching claim passes
   })
 
   it('a claim that differs from the body agent_id is 400', async () => {
@@ -145,7 +150,7 @@ describe('POST validation', () => {
       { ...good, kind: 'maybe' }, { ...good, kind: undefined },
       { ...good, question_short: '' }, { ...good, question_short: 'x'.repeat(401) }, { ...good, question_short: 5 },
       { ...good, card_id: 'XYZ' }, { ...good, msg_id: 0 }, { ...good, msg_id: '3' },
-      { ...good, expires_in_s: 299 }, { ...good, expires_in_s: 30 * 24 * 3600 + 1 }, { ...good, expires_in_s: 1.5 },
+      { ...good, expires_in_s: 299 }, { ...good, expires_in_s: 7 * 24 * 3600 + 1 }, { ...good, expires_in_s: 1.5 },
       { ...good, source: 'extractor' }, { ...good, status: 'yes' }, { ...good, answer_short: 'igen' },
     ]
     for (const b of bad) {
@@ -157,12 +162,14 @@ describe('POST validation', () => {
     expect(count()).toBe(0)
   })
 
-  it('limits: 400 characters pass, 401 do not; expiry 300 s and 30 days pass', async () => {
+  it('limits: 400 characters pass, 401 do not; expiry 300 s and 7 days pass (S3-B3: 30 days no longer)', async () => {
     expect((await post({ ...good, question_short: 'x'.repeat(400) })).status).toBe(201)
     expect((await post({ ...good, question_short: 'x'.repeat(401) })).status).toBe(400)
     expect((await post({ ...good, expires_in_s: 300 })).status).toBe(201)
-    expect((await post({ ...good, expires_in_s: 30 * 24 * 3600 })).status).toBe(201)
-    expect((await post({ ...good, expires_in_s: 30 * 24 * 3600 + 1 })).status).toBe(400)
+    expect(QUESTION_MAX_EXPIRY_S).toBe(7 * 24 * 3600)
+    expect((await post({ ...good, expires_in_s: 7 * 24 * 3600 })).status).toBe(201)
+    expect((await post({ ...good, expires_in_s: 7 * 24 * 3600 + 1 })).status).toBe(400)
+    expect((await post({ ...good, expires_in_s: 30 * 24 * 3600 })).status).toBe(400)
   })
 
   it('hidden characters (ESC, bidi override, BOM, zero width, NUL) are 400', async () => {
@@ -197,8 +204,38 @@ describe('POST validation', () => {
     for (let i = 0; i < QUESTION_OPEN_PER_AGENT_MAX; i++) expect((await post({ ...good, question_short: `k${i}` })).status).toBe(201)
     const r = await post({ ...good, question_short: 'huszonegyedik' })
     expect(r.status).toBe(429)
+    expect(r.body.code).toBe('agent_cap')
     expect(count()).toBe(20)
     expect((await post({ ...good, agent_id: 'beta' }, { kind: 'token', agent: 'beta' })).status).toBe(201)
+  })
+
+  it('S3-B3: the 201st open question in total is 429 global_cap; every 429 is logged with agent id and reason, never the text', async () => {
+    for (let a = 0; a < 10; a++) {
+      for (let i = 0; i < QUESTION_OPEN_PER_AGENT_MAX; i++) {
+        expect(createQuestion({ agent_id: `fuell${a}`, kind: 'info', question_short: `k${i}`, card_id: null, msg_id: null, expires_in_s: 3600 }, T0).kind).toBe('ok')
+      }
+    }
+    expect(count()).toBe(200)
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    try {
+      const r = await post({ ...good, question_short: 'TITKOS-SZOVEG-NEM-KERUL-A-LOGBA' })
+      expect(r.status).toBe(429)
+      expect(r.body.code).toBe('global_cap')
+      expect(count()).toBe(200)
+      const calls = warn.mock.calls.filter((c) => String(c[1]).includes('open question refused'))
+      expect(calls).toHaveLength(1)
+      expect(calls[0][0]).toEqual({ agent_id: 'alfa', reason: 'global_cap' })
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('TITKOS-SZOVEG')
+    } finally { warn.mockRestore() }
+  })
+
+  it('S3-B3: an answered question frees a slot of the global cap', async () => {
+    for (let a = 0; a < 10; a++) {
+      for (let i = 0; i < QUESTION_OPEN_PER_AGENT_MAX; i++) createQuestion({ agent_id: `fuell${a}`, kind: 'info', question_short: `k${i}`, card_id: null, msg_id: null, expires_in_s: 3600 }, T0)
+    }
+    expect((await post(good)).status).toBe(429)
+    getDb().prepare("UPDATE open_questions SET status = 'ack', answered_via = 'ui', answered_at = ?, answered_by = 'x', answered_principal = 'session' WHERE id = 1").run(T0)
+    expect((await post(good)).status).toBe(201)
   })
 
   it('body size: over 8 KB by Content-Length is 413 (not read); over 8 KB streamed without a length is 413; 8 KB exactly is read', async () => {
@@ -267,10 +304,24 @@ describe('GET: filters, lazy expiry, allowlist', () => {
     const r = await get('?status=all')
     expect(r.body.questions).toHaveLength(3)
     for (const q of r.body.questions) expect(sorted(Object.keys(q))).toEqual(sorted(QUESTION_KEYS))
-    expect(sorted(Object.keys(r.body))).toEqual(['questions'])
+    expect(sorted(Object.keys(r.body))).toEqual(['questions', 'truncated'])
+    expect(r.body.truncated).toBe(false)
     const text = JSON.stringify(r.body)
     expect(text).not.toContain(MARKER)
     expect(text).not.toMatch(/answered_by|answered_principal/)
+  })
+
+  it('S3-R4: truncated is true exactly when more rows matched than the 200 returned', async () => {
+    const db = getDb()
+    const ins = db.prepare("INSERT INTO open_questions (agent_id, kind, question_short, created_at, expires_at, source) VALUES ('alfa', 'info', 'x', ?, ?, 'agent')")
+    db.transaction(() => { for (let i = 0; i < 200; i++) ins.run(T0 - 1000 + i, T0 + 5000) })()
+    let r = await get('?status=all')
+    expect(r.body.questions).toHaveLength(200)
+    expect(r.body.truncated).toBe(false) // exactly 200 matched: nothing cut
+    ins.run(T0 - 1, T0 + 5000)
+    r = await get('?status=all')
+    expect(r.body.questions).toHaveLength(200)
+    expect(r.body.truncated).toBe(true)
   })
 
   it('a POSTed question shows up in the GET, with the agent breakdown intact', async () => {

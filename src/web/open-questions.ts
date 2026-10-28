@@ -21,7 +21,9 @@ export const QUESTION_LIST_MAX_ROWS = 200
 export const QUESTION_OPEN_PER_AGENT_MAX = 20
 export const QUESTION_DEFAULT_EXPIRY_S = 7 * 24 * 3600
 export const QUESTION_MIN_EXPIRY_S = 300
-export const QUESTION_MAX_EXPIRY_S = 30 * 24 * 3600
+export const QUESTION_MAX_EXPIRY_S = 7 * 24 * 3600
+/** All agents together: the table is append-only, so a runaway poster must hit a ceiling. */
+export const QUESTION_OPEN_GLOBAL_MAX = 200
 
 export const QUESTION_KEYS = [
   'id', 'agent_id', 'card_id', 'msg_id', 'kind', 'question_short', 'status',
@@ -167,17 +169,28 @@ export function isQuestionFilter(v: string): v is QuestionFilter {
   return v === 'open' || v === 'answered' || v === 'expired' || v === 'all'
 }
 
+export interface QuestionPage {
+  questions: QuestionOut[]
+  /** More rows matched than QUESTION_LIST_MAX_ROWS: the list is cut. */
+  truncated: boolean
+}
+
 /** Newest first, at most QUESTION_LIST_MAX_ROWS. `open` and `expired` apply the lazy expiry. */
 export function listQuestions(filter: QuestionFilter, nowSec: number): QuestionOut[] {
+  return listQuestionsPage(filter, nowSec).questions
+}
+
+/** Same rows as listQuestions, plus whether the cap cut the list (one extra row is read to know). */
+export function listQuestionsPage(filter: QuestionFilter, nowSec: number): QuestionPage {
   let where = ''
   const params: number[] = []
   if (filter === 'open') { where = "WHERE status = 'open' AND expires_at > ?"; params.push(nowSec) }
   else if (filter === 'expired') { where = "WHERE (status = 'open' AND expires_at <= ?) OR status = 'expired'"; params.push(nowSec) }
   else if (filter === 'answered') where = "WHERE status IN ('ack','yes','no','answered')"
   const rows = getDb()
-    .prepare(`${SELECT_ROWS} ${where} ORDER BY created_at DESC, id DESC LIMIT ${QUESTION_LIST_MAX_ROWS}`)
+    .prepare(`${SELECT_ROWS} ${where} ORDER BY created_at DESC, id DESC LIMIT ${QUESTION_LIST_MAX_ROWS + 1}`)
     .all(...params) as QuestionRow[]
-  return rows.map((r) => toQuestionOut(r, nowSec))
+  return { questions: rows.slice(0, QUESTION_LIST_MAX_ROWS).map((r) => toQuestionOut(r, nowSec)), truncated: rows.length > QUESTION_LIST_MAX_ROWS }
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +200,8 @@ export function listQuestions(filter: QuestionFilter, nowSec: number): QuestionO
 export type CreateOutcome =
   | { kind: 'ok'; question: QuestionOut }
   | { kind: 'unprocessable'; error: string }
-  | { kind: 'too_many'; error: string }
+  /** code: which cap refused (agent_cap or global_cap); the route logs it on every 429. */
+  | { kind: 'too_many'; error: string; code: 'agent_cap' | 'global_cap' }
 
 /**
  * Appends one agent question. The existence checks, the per-agent cap and the
@@ -206,7 +220,11 @@ export function createQuestion(input: QuestionInput, nowSec: number): CreateOutc
     const open = db.prepare("SELECT COUNT(*) AS n FROM open_questions WHERE agent_id = ? AND status = 'open' AND expires_at > ?")
       .get(input.agent_id, nowSec) as { n: number }
     if (open.n >= QUESTION_OPEN_PER_AGENT_MAX) {
-      return { kind: 'too_many', error: `At most ${QUESTION_OPEN_PER_AGENT_MAX} open questions per agent` }
+      return { kind: 'too_many', error: `At most ${QUESTION_OPEN_PER_AGENT_MAX} open questions per agent`, code: 'agent_cap' }
+    }
+    const all = db.prepare("SELECT COUNT(*) AS n FROM open_questions WHERE status = 'open' AND expires_at > ?").get(nowSec) as { n: number }
+    if (all.n >= QUESTION_OPEN_GLOBAL_MAX) {
+      return { kind: 'too_many', error: `At most ${QUESTION_OPEN_GLOBAL_MAX} open questions in total`, code: 'global_cap' }
     }
     const info = db.prepare(`INSERT INTO open_questions (agent_id, card_id, msg_id, kind, question_short, status, created_at, expires_at, source)
       VALUES (?, ?, ?, ?, ?, 'open', ?, ?, 'agent')`).run(

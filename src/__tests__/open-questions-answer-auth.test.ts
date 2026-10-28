@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import http from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { Readable } from 'node:stream'
 import { initDatabase, getDb, createDashboardUser } from '../db.js'
 import { createSession, revokeSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
@@ -70,12 +72,12 @@ beforeEach(() => {
 afterEach(() => { setQuestionsClockForTest(null); vi.useRealTimers() })
 
 describe('refused principals: 403 / 401, nothing recorded, no message', () => {
-  it('the bare shared token is 403 owner_session_required (never 401), with zero dashboard users', async () => {
+  it('the bare shared token is 403 (never 401), with zero dashboard users owner_login_required', async () => {
     const id = ask()
     for (const auth of [TOKEN, TOKEN_ALFA]) {
       const r = await answer(id, auth)
       expect(r.status).toBe(403)
-      expect(r.body.code).toBe('owner_session_required')
+      expect(r.body.code).toBe('owner_login_required')
     }
     expect(row(id).status).toBe('open')
     expect(msgCount()).toBe(0)
@@ -86,6 +88,7 @@ describe('refused principals: 403 / 401, nothing recorded, no message', () => {
     const id = ask()
     const r = await answer(id, TOKEN_ALFA, undefined, { answer: 'yes' }, { 'x-agent-id': 'alfa' })
     expect(r.status).toBe(403)
+    expect(r.body.code).toBe('owner_session_required')
     expect(row(id).status).toBe('open')
     expect(msgCount()).toBe(0)
   })
@@ -128,6 +131,7 @@ describe('refused principals: 403 / 401, nothing recorded, no message', () => {
   })
 
   it('a device whose scope is missing is refused (fail closed)', async () => {
+    sessionCookie()
     const id = ask()
     expect((await answer(id, { kind: 'device', device: 'teszt-telefon', deviceId: 1 })).status).toBe(403)
     expect(msgCount()).toBe(0)
@@ -135,6 +139,36 @@ describe('refused principals: 403 / 401, nothing recorded, no message', () => {
 
   it('a refused caller learns nothing about the id: unknown id is 403 for the token, not 404', async () => {
     expect((await answer(424242, TOKEN)).status).toBe(403)
+  })
+})
+
+describe('S3-B1: an install with zero dashboard users has no owner to answer', () => {
+  it('EVERY principal is 403 owner_login_required: full device key, session, token (with or without a cookie), nothing recorded', async () => {
+    const id = ask()
+    for (const auth of [DEVICE_FULL, SESSION, TOKEN, TOKEN_ALFA]) {
+      const r = await answer(id, auth, 'mv_session=nincs-ilyen-session')
+      expect(r.status, auth?.kind).toBe(403)
+      expect(r.body.code).toBe('owner_login_required')
+    }
+    expect(row(id).status).toBe('open')
+    expect(msgCount()).toBe(0)
+  })
+
+  it('the predicate: zero users refuses all three accepted kinds, no principal stays 401', () => {
+    const req = { headers: {} } as any
+    for (const auth of [SESSION, DEVICE_FULL, TOKEN]) {
+      expect(ownerAnswerPrincipal(auth, req)).toMatchObject({ ok: false, status: 403, body: { code: 'owner_login_required' } })
+    }
+    expect(ownerAnswerPrincipal(undefined, req)).toMatchObject({ ok: false, status: 401 })
+  })
+
+  it('NEGATIVE CONTROL: the first dashboard user opens the same session and device principals (200)', async () => {
+    const id = ask()
+    expect((await answer(id, DEVICE_FULL)).body.code).toBe('owner_login_required')
+    sessionCookie()
+    expect((await answer(id, SESSION)).status).toBe(200)
+    const id2 = ask()
+    expect((await answer(id2, DEVICE_FULL)).status).toBe(200)
   })
 })
 
@@ -157,13 +191,15 @@ describe('accepted principals', () => {
     expect((await answer(id, TOKEN, `a=1; mv_operator=x; mv_session=${cookie}; b=2`)).status).toBe(200)
   })
 
-  it('a session principal alone is accepted', async () => {
+  it('a session principal alone is accepted (S3-B1: one dashboard user exists -> 200)', async () => {
+    sessionCookie()
     const id = ask()
     expect((await answer(id, SESSION)).status).toBe(200)
     expect(row(id).answered_principal).toBe('session')
   })
 
   it('a device key with scope full is accepted, recorded as device:<name>', async () => {
+    sessionCookie()
     const id = ask()
     expect((await answer(id, DEVICE_FULL)).status).toBe(200)
     const db = row(id)
@@ -174,6 +210,7 @@ describe('accepted principals', () => {
   })
 
   it('the predicate itself, case by case', () => {
+    sessionCookie()
     const req = (cookie?: string) => ({ headers: cookie ? { cookie } : {} }) as any
     expect(ownerAnswerPrincipal(undefined, req())).toMatchObject({ ok: false, status: 401 })
     expect(ownerAnswerPrincipal(TOKEN, req())).toMatchObject({ ok: false, status: 403 })
@@ -185,19 +222,58 @@ describe('accepted principals', () => {
 })
 
 describe('cross-origin write (spec 5.2)', () => {
-  it('a foreign Origin with a valid session cookie is refused before routing and auth', () => {
+  function httpPost(port: number, path: string, headers: Record<string, string>, body: string): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+      const req = http.request({
+        host: '127.0.0.1', port, path, method: 'POST',
+        headers: { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(body)), ...headers },
+      }, (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (c) => chunks.push(c))
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }))
+      })
+      req.on('error', reject)
+      req.end(body)
+    })
+  }
+
+  it('S3-R6: a foreign Origin with a valid session cookie is 403 from the REAL request handler; the same request without Origin is answered', async () => {
+    const saved = { webOnly: process.env.WEB_ONLY, token: process.env.DASHBOARD_TOKEN }
+    process.env.WEB_ONLY = 'true' // no background services in this process
+    process.env.DASHBOARD_TOKEN = 'test-token-not-a-secret'
+    const probe = http.createServer()
+    await new Promise<void>((r) => probe.listen(0, '127.0.0.1', r))
+    const port = (probe.address() as AddressInfo).port
+    await new Promise<void>((r) => probe.close(() => r()))
+    const { startWebServer } = await import('../web.js')
+    const server = startWebServer(port)
+    try {
+      await new Promise<void>((r) => { if (server.listening) r(); else server.once('listening', () => r()) })
+      const cookie = sessionCookie()
+      const id = ask()
+      const path = `/api/questions/${id}/answer`
+      const body = JSON.stringify({ answer: 'yes' })
+      const foreign = await httpPost(port, path, { cookie: `mv_session=${cookie}`, origin: 'https://evil.example' }, body)
+      expect(foreign.status).toBe(403)
+      expect(JSON.parse(foreign.body).error).toBe('Origin not allowed')
+      expect(row(id).status).toBe('open')
+      expect(msgCount()).toBe(0)
+      // control: the same request without a foreign Origin gets through the gate and is recorded
+      const same = await httpPost(port, path, { cookie: `mv_session=${cookie}` }, body)
+      expect(same.status).toBe(200)
+      expect(row(id).status).toBe('yes')
+      expect(row(id).answered_principal).toBe('session')
+    } finally {
+      await new Promise<void>((r) => { server.close(() => r()); server.closeAllConnections?.() })
+      if (saved.webOnly === undefined) delete process.env.WEB_ONLY; else process.env.WEB_ONLY = saved.webOnly
+      if (saved.token === undefined) delete process.env.DASHBOARD_TOKEN; else process.env.DASHBOARD_TOKEN = saved.token
+    }
+  }, 60_000)
+
+  it('the origin predicate itself', () => {
     const allowed = new Set(['http://localhost:3420'])
     expect(isBlockedCrossOriginWrite('POST', 'https://evil.example', 'localhost:3420', undefined, allowed)).toBe(true)
     expect(isBlockedCrossOriginWrite('POST', 'http://localhost:3420', 'localhost:3420', undefined, allowed)).toBe(false)
-    // Source pin: in web.ts the origin gate answers 403 before the principal is resolved and before the
-    // route chain reaches tryHandleOpenQuestions, so the session cookie is never looked at.
-    const web = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
-    const code = web.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
-    const gate = code.indexOf('if (isBlockedCrossOriginWrite(')
-    expect(gate).toBeGreaterThan(-1)
-    expect(gate).toBeLessThan(code.indexOf('resolveAuth(req, url, path, method'))
-    expect(gate).toBeLessThan(code.indexOf('if (await tryHandleOpenQuestions(routeCtx)) return'))
-    expect(code.slice(gate, gate + 700)).toMatch(/writeHead\(403/)
   })
 
   it('the dashboard gate: the answer path needs auth and an operator key is denied there', () => {
@@ -247,6 +323,7 @@ describe('the owner-ui sender is reserved on the bus', () => {
 
 describe('a question authorizes nothing (spec 5.3)', () => {
   it('answering touches only open_questions and one agent message: no approval, no other table', async () => {
+    sessionCookie()
     const db = getDb()
     const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[]).map((t) => t.name)
     const counts = () => Object.fromEntries(tables.map((t) => [t, (db.prepare(`SELECT COUNT(*) AS n FROM "${t}"`).get() as { n: number }).n]))
