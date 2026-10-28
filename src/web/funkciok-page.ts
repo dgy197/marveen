@@ -144,7 +144,13 @@ interface EventRow { from_status: string | null; to_status: string; actor: strin
 
 const CARD_SELECT = 'SELECT rowid AS seq, id, title, status, assignee, parent_id, created_at, updated_at, archived_at FROM kanban_cards'
 
-function loadCards(kartyak: readonly string[]): { cards: CardOut[]; missing: string[]; seqs: Set<number> } {
+interface LoadedCards { cards: CardOut[]; missing: string[]; seqs: Set<number>; ids: string[] }
+
+/**
+ * Registry cards plus their subcards. `seqs` and `ids` cover BOTH: a message or
+ * commit that names a subcard belongs to the function (spec 6/S1 steps 2-3).
+ */
+function loadCards(kartyak: readonly string[]): LoadedCards {
   const db = getDb()
   const byId = db.prepare(`${CARD_SELECT} WHERE id = ? COLLATE NOCASE`)
   const children = db.prepare(`${CARD_SELECT} WHERE parent_id = ? COLLATE NOCASE ORDER BY created_at ASC, rowid ASC`)
@@ -160,12 +166,13 @@ function loadCards(kartyak: readonly string[]): { cards: CardOut[]; missing: str
     seqs.add(row.seq)
     if (!seen.has(row.id)) { seen.add(row.id); rows.push(row) }
     for (const child of children.all(row.id) as CardRow[]) {
+      seqs.add(child.seq)
       if (!seen.has(child.id)) { seen.add(child.id); rows.push(child) }
     }
   }
 
   const cards = rows.map((r): CardOut => serializeCard(r, events.all(r.id) as EventRow[]))
-  return { cards, missing, seqs }
+  return { cards, missing, seqs, ids: rows.map((r) => r.id.toLowerCase()) }
 }
 
 function serializeCard(r: CardRow, ev: EventRow[]): CardOut {
@@ -235,8 +242,8 @@ export function messageReason(content: string, ctx: MessageMatchCtx): 'card' | '
 
 const MSG_COLS = 'id, from_agent, to_agent, status, content, result, created_at, completed_at'
 
-function matchContext(fn: Funkcio, seqs: ReadonlySet<number>): MessageMatchCtx {
-  return { seqs, hex: fn.kartyak, tags: fn.tagek }
+function matchContext(fn: Funkcio, loaded: Pick<LoadedCards, 'seqs' | 'ids'>): MessageMatchCtx {
+  return { seqs: loaded.seqs, hex: [...new Set([...fn.kartyak, ...loaded.ids])], tags: fn.tagek }
 }
 
 function loadMessages(ctx: MessageMatchCtx): MessageRowOut[] {
@@ -280,9 +287,9 @@ interface GitBlocks {
   tests: TestOut[]
 }
 
-async function gatherGit(deps: FunkciokDeps, fn: Funkcio): Promise<GitBlocks> {
+async function gatherGit(deps: FunkciokDeps, fn: Funkcio, cardIds: readonly string[]): Promise<GitBlocks> {
   const allowed = deps.getAllowedRepos()
-  const cards = new Set(fn.kartyak)
+  const cards = new Set([...fn.kartyak, ...cardIds])
   const repos: RepoOut[] = []
   const commits: CommitOut[] = []
   const tests: TestOut[] = []
@@ -362,8 +369,8 @@ export interface FunkciokService {
 export function createFunkciokService(deps: FunkciokDeps): FunkciokService {
   async function listItem(e: RegistryEntry): Promise<FunkcioListItem> {
     if (!e.ok) return { slug: e.slug, nev: null, last_change: null, open_cards: null, error: e.error }
-    const { cards } = loadCards(e.funkcio.kartyak)
-    const g = await gatherGit(deps, e.funkcio)
+    const { cards, ids } = loadCards(e.funkcio.kartyak)
+    const g = await gatherGit(deps, e.funkcio, ids)
     return { slug: e.slug, nev: e.funkcio.nev, last_change: lastChangeOf(cards, g.commits), open_cards: countOpen(cards) }
   }
 
@@ -380,8 +387,9 @@ export function createFunkciokService(deps: FunkciokDeps): FunkciokService {
       if (!e) return { kind: 'not_found' }
       if (!e.ok) return { kind: 'invalid', slug: e.slug, error: e.error }
       const fn = e.funkcio
-      const { cards, missing, seqs } = loadCards(fn.kartyak)
-      const g = await gatherGit(deps, fn)
+      const loaded = loadCards(fn.kartyak)
+      const { cards, missing } = loaded
+      const g = await gatherGit(deps, fn, loaded.ids)
       return {
         kind: 'ok',
         page: {
@@ -394,7 +402,7 @@ export function createFunkciokService(deps: FunkciokDeps): FunkciokService {
           commits_total: g.commitsTotal,
           cards,
           cards_missing: missing,
-          messages: loadMessages(matchContext(fn, seqs)),
+          messages: loadMessages(matchContext(fn, loaded)),
           commits: g.commits,
           tests: g.tests,
           repos: g.repos,
@@ -411,10 +419,11 @@ export function createFunkciokService(deps: FunkciokDeps): FunkciokService {
       const fn = e.funkcio
       const row = getDb().prepare(`SELECT ${MSG_COLS} FROM agent_messages WHERE id = ?`).get(id) as MsgRow | undefined
       if (!row) return { kind: 'not_found' }
-      const { seqs } = loadCards(fn.kartyak)
-      // A message that does not belong to THIS function's page is a 404, the
-      // same as a missing one: the endpoint is not a general message reader.
-      if (!messageReason(row.content, matchContext(fn, seqs))) return { kind: 'not_found' }
+      // A message that is not a ROW of THIS function's page (same selection:
+      // newest MESSAGE_MAX_ROWS matches) is a 404, the same as a missing one:
+      // the endpoint is not a general message reader.
+      const onPage = loadMessages(matchContext(fn, loadCards(fn.kartyak)))
+      if (!onPage.some((m) => m.id === id)) return { kind: 'not_found' }
       return {
         kind: 'ok',
         message: {

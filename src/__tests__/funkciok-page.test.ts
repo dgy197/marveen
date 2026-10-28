@@ -281,6 +281,49 @@ describe('S1-3: the inter-agent message block', () => {
   })
 })
 
+describe('R1-1: subcards count as the function\'s cards', () => {
+  it('a message naming a subcard by #seq or hex8, and a commit naming it, are on the page; an unknown #seq is not', async () => {
+    const subRepo = makeRepo([
+      { at: T0 + 10, msg: 'feat: sub work (card c1c1c1c1, S1)', files: { 'src/s.ts': '1' } },
+      { at: T0 + 20, msg: 'feat: foreign (card d0d0d0d0)', files: { 'src/t.ts': '1' } },
+    ])
+    try {
+      allowed.add(realpathSync(subRepo))
+      writeRegistry('f', { repok: [{ nev: 'sub', ut: subRepo, pathGlobok: [], tesztGlobok: [] }] })
+      const bySeq = insertMessage(`sub done #${seq.child}`)
+      const byHex = insertMessage('legacy line c1c1c1c1 done')
+      const miss = insertMessage('PR #987654 merged')
+      const r = await svc.page('f')
+      if (r.kind !== 'ok') throw new Error('expected ok')
+      const ids = r.page.messages.map((m) => m.id)
+      expect(ids).toContain(bySeq)
+      expect(ids).toContain(byHex)
+      expect(ids).not.toContain(miss)
+      expect(r.page.messages.find((m) => m.id === bySeq)!.reason).toBe('card')
+      expect(r.page.commits.map((c) => c.reason)).toEqual(['card'])
+      expect(r.page.commits).toHaveLength(1)
+      expect((await svc.message('f', bySeq)).kind).toBe('ok')
+    } finally {
+      rmSync(subRepo, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('R1-4: the D3 endpoint serves only rows of the page', () => {
+  it('201 matching messages: the oldest is on no page row, so 404; a listed one is 200', async () => {
+    writeRegistry('f')
+    const ids: number[] = []
+    for (let i = 0; i < MESSAGE_MAX_ROWS + 1; i++) ids.push(insertMessage(`bulk #${seq.A} n${i}`))
+    const r = await svc.page('f')
+    if (r.kind !== 'ok') throw new Error('expected ok')
+    expect(r.page.messages).toHaveLength(MESSAGE_MAX_ROWS)
+    expect(r.page.messages.map((m) => m.id)).not.toContain(ids[0])
+    expect((await svc.message('f', ids[0])).kind).toBe('not_found')
+    expect((await svc.message('f', ids[ids.length - 1])).kind).toBe('ok')
+    expect((await svc.message('f', ids[1])).kind).toBe('ok')
+  })
+})
+
 describe('S1-4: allowlisted keys and the marker in every source table', () => {
   it('response keys are EXACTLY the allowlists, at every level', async () => {
     writeRegistry('f')
