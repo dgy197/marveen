@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { PROJECT_ROOT, STORE_DIR } from '../../config.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { RequestBodyTooLargeError, json, methodNotAllowed, readBody } from '../http-helpers.js'
+import { upgradeTokenToSession } from '../owner-session.js'
 import { DECISION_BODY_MAX_BYTES, decisionActor } from '../funkciok-decisions.js'
 import { createGitLogReader } from '../funkciok-git.js'
 import { createFunkciokService, type FunkciokService } from '../funkciok-page.js'
@@ -127,7 +128,9 @@ export async function tryHandleFunkciok(ctx: RouteContext): Promise<boolean> {
     // POST. Spec 5.1: token (attributed to X-Agent-Id), device full and session
     // write; operator and federation were refused above. A cross-origin browser
     // write never gets here (web.ts: isBlockedCrossOriginWrite, before routing).
-    const actor = decisionActor(ctx.auth)
+    // A browser write carries the token AND the session cookie; the gate sees the token first. A valid
+    // owner session cookie makes it a session write (recorded_via=session, S2-M1); the token alone stays a token.
+    const actor = decisionActor(upgradeTokenToSession(ctx.auth, ctx.req))
     if (!actor) { json(res, { error: 'Forbidden for this credential' }, 403); return true }
     const declared = Number(ctx.req.headers?.['content-length'])
     if (Number.isFinite(declared) && declared > DECISION_BODY_MAX_BYTES) { json(res, { error: 'body_too_large' }, 413); return true }
