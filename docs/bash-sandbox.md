@@ -35,6 +35,12 @@ Minden más hoszt kérdés nélkül tiltva van, nyers sockettel és proxy-megker
    ```json
    {"agents": {"soma": ["~/Library/Mobile Documents/com~apple~CloudDocs/!seo/SEO Projects"]}}
    ```
+   Ha az ágensnek a vendor-listán kívül még egy-egy pontos hosztra is szüksége van, a gazda azt a
+   `store/bash-sandbox-hosts.json` fájlba veszi fel; ezek CSAK az adott ágens sandbox-fájljába kerülnek
+   a vendor-lista mellé (wildcard nincs, a bash-egress-parser hookra nem hat):
+   ```json
+   {"agents": {"soma": ["api.example.com"]}}
+   ```
 3. Az ágens újraindítása. A dashboard minden indításkor megírja a
    `store/bash-sandbox/<azonosító>.settings.json` fájlt, és `--settings` kapcsolóval adja át.
    A `watchdog.sh` újraindítása ugyanezt a fájlt adja át, ha létezik.

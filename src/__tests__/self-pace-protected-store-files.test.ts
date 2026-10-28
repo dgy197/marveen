@@ -3,6 +3,7 @@
 //   egress-vendor-hosts.json      -- the hosts bash-egress-parser lets curl/wget reach
 //   config-overrides.json         -- dashboard settings, BASH_SANDBOX_AGENTS among them
 //   bash-sandbox-write-paths.json -- where a sandboxed agent may write (#2149)
+//   bash-sandbox-hosts.json       -- extra hosts a sandboxed agent may reach (card 008260b9)
 //   email-standing-recipients.json -- addresses a letter may go to without an approval
 //   .approval-bot-token, .approval-bot-key -- the owner's approval bot and its signing key (#2160)
 // Their legitimate writers are the owner and the main agent (and the dashboard process for
@@ -15,8 +16,8 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 
-const FILES = ['egress-vendor-hosts.json', 'config-overrides.json', 'bash-sandbox-write-paths.json', 'email-standing-recipients.json',
-  '.approval-bot-token', '.approval-bot-key']
+const FILES = ['egress-vendor-hosts.json', 'config-overrides.json', 'bash-sandbox-write-paths.json', 'bash-sandbox-hosts.json',
+  'email-standing-recipients.json', '.approval-bot-token', '.approval-bot-key']
 
 let root: string
 let store: string
@@ -87,6 +88,7 @@ describe('Bash is fail-closed on the protected files', () => {
     'cp /tmp/x store/egress-vendor*',
     'cp /tmp/x store/config-overrides.*',
     'cp /tmp/x store/bash-sandbox-write*',
+    'cp /tmp/x store/bash-sandbox-hosts*',
     'cp /tmp/x store/email-standing*',
     'cp /tmp/x store/.approval-bot*',
   ])('a glob that starts on the name is denied: %s', (command) => {

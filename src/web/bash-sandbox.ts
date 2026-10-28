@@ -25,8 +25,9 @@
 // came back from an allowed host in 2 of 13 sandboxed runs (cause unknown).
 //
 // The file lives under store/, outside every agent directory, and is rewritten on each start, so
-// what the agent sees is always derived from the owner's two sources: the BASH_SANDBOX_AGENTS
-// switch and store/egress-vendor-hosts.json (+ store/bash-sandbox-write-paths.json).
+// what the agent sees is always derived from the owner's sources: the BASH_SANDBOX_AGENTS
+// switch and store/egress-vendor-hosts.json (+ store/bash-sandbox-write-paths.json and the per-agent
+// store/bash-sandbox-hosts.json).
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { isAbsolute, join, normalize } from 'node:path'
 import { homedir } from 'node:os'
@@ -38,6 +39,7 @@ import { agentDir } from './agent-config.js'
 export const BASH_SANDBOX_DIR = join(STORE_DIR, 'bash-sandbox')
 export const VENDOR_HOSTS_PATH = join(STORE_DIR, 'egress-vendor-hosts.json')
 export const SANDBOX_WRITE_PATHS_PATH = join(STORE_DIR, 'bash-sandbox-write-paths.json')
+export const SANDBOX_HOSTS_PATH = join(STORE_DIR, 'bash-sandbox-hosts.json')
 
 // The shape bash-egress-parser.mjs accepts for a vendor entry: a plain DNS name, no wildcard, IP,
 // port or userinfo. The same file feeds both gates, so it is read the same way here.
@@ -101,6 +103,21 @@ export function sandboxWritePaths(name: string, path = SANDBOX_WRITE_PATHS_PATH,
   return [...out]
 }
 
+// The extra hosts the owner lists for ONE agent in store/bash-sandbox-hosts.json
+// ({"agents": {"soma": ["api.example.com"]}}). They reach only that agent's --settings file, never the
+// vendor list or the bash-egress-parser hook. Exact DNS names only (the VENDOR_HOST shape): no wildcard.
+// A missing file is an empty list; a corrupt one throws.
+export function sandboxAgentHosts(name: string, path = SANDBOX_HOSTS_PATH): string[] {
+  const raw = readJson(path) as { agents?: Record<string, unknown> } | null
+  if (raw !== null && (typeof raw !== 'object' || Array.isArray(raw))) throw new Error(`bash-sandbox: ${path} is not a JSON object`)
+  const listed = raw?.agents && typeof raw.agents === 'object' ? raw.agents[name] : undefined
+  const out = new Set<string>()
+  for (const h of Array.isArray(listed) ? listed : []) {
+    if (typeof h === 'string' && VENDOR_HOST.test(h)) out.add(h)
+  }
+  return [...out].sort()
+}
+
 export function buildBashSandboxSettings(allowedDomains: string[], allowWrite: string[]): object {
   return {
     sandbox: {
@@ -126,14 +143,14 @@ export function buildBashSandboxSettings(allowedDomains: string[], allowWrite: s
 // a change could only take effect on a restart that reuses the file -- watchdog.sh does. What this
 // does NOT stop: any process outside the sandbox running as the same user (another, unsandboxed
 // agent's Bash, a hook, an MCP server) can chmod the directory back.
-export function syncBashSandboxSettings(name: string, opts: { dir?: string; vendorPath?: string; writePathsPath?: string; enabled?: boolean } = {}): string | null {
+export function syncBashSandboxSettings(name: string, opts: { dir?: string; vendorPath?: string; writePathsPath?: string; agentHostsPath?: string; enabled?: boolean } = {}): string | null {
   const dir = opts.dir ?? BASH_SANDBOX_DIR
   const enabled = opts.enabled ?? bashSandboxEnabledFor(name)
   // A name the switch could never list (the main agent, a legacy spelling) has no file to remove.
   if (!enabled && (!AGENT_ID.test(name) || !existsSync(bashSandboxSettingsPath(name, dir)))) return null
   const file = bashSandboxSettingsPath(name, dir)
   // Built before the directory is opened: a corrupt owner file throws with nothing touched.
-  const data = enabled ? JSON.stringify(buildBashSandboxSettings(sandboxAllowedDomains(opts.vendorPath), sandboxWritePaths(name, opts.writePathsPath)), null, 2) + '\n' : null
+  const data = enabled ? JSON.stringify(buildBashSandboxSettings([...new Set([...sandboxAllowedDomains(opts.vendorPath), ...sandboxAgentHosts(name, opts.agentHostsPath)])].sort(), sandboxWritePaths(name, opts.writePathsPath)), null, 2) + '\n' : null
   mkdirSync(dir, { recursive: true })
   chmodSync(dir, 0o755)
   try {

@@ -21,7 +21,7 @@ vi.mock('../settings-store.js', () => ({ getEffectiveSettingValue: (k: string) =
 vi.mock('../web/agent-config.js', () => ({ agentDir: (n: string) => join(tmpRoot, 'agents', n) }))
 
 const {
-  parseSandboxAgents, bashSandboxEnabledFor, sandboxAllowedDomains, sandboxWritePaths,
+  parseSandboxAgents, bashSandboxEnabledFor, sandboxAllowedDomains, sandboxWritePaths, sandboxAgentHosts,
   buildBashSandboxSettings, syncBashSandboxSettings, bashSandboxSettingsPath,
 } = await import('../web/bash-sandbox.js')
 
@@ -67,6 +67,40 @@ describe('allowWrite', () => {
     expect(sandboxWritePaths('soma', f, '/Users/u')).toEqual([
       join(tmpRoot, 'agents', 'soma'), '/Users/u/worktrees/soma', '/Users/u/Library/x/ai-reports', '/abs/out',
     ])
+  })
+})
+
+describe('per-agent hosts from store/bash-sandbox-hosts.json', () => {
+  const f = join(tmpRoot, 'agent-hosts.json')
+  it('only the named agent gets its hosts; wrong-shaped entries are dropped', () => {
+    writeFileSync(f, JSON.stringify({ agents: { soma: ['api.example.com', '*.x.com', '1.2.3.4', 'a.b.io:443', 7, 'api.example.com'], neo: ['neo.example.org'] } }))
+    expect(sandboxAgentHosts('soma', f)).toEqual(['api.example.com'])
+    expect(sandboxAgentHosts('neo', f)).toEqual(['neo.example.org'])
+    expect(sandboxAgentHosts('trinity', f)).toEqual([])
+  })
+  it('a missing file is an empty list; a corrupt or non-object file throws', () => {
+    expect(sandboxAgentHosts('soma', join(tmpRoot, 'nope.json'))).toEqual([])
+    writeFileSync(f, '{not json')
+    expect(() => sandboxAgentHosts('soma', f)).toThrow()
+    writeFileSync(f, '[]')
+    expect(() => sandboxAgentHosts('soma', f)).toThrow(/not a JSON object/)
+  })
+  it('sync: vendor + own hosts, sorted, no duplicates, and the other agent\'s file has none of them', () => {
+    const dir = join(tmpRoot, 'bash-sandbox-hosts-dir')
+    const vendor = join(tmpRoot, 'v3.json')
+    const none = join(tmpRoot, 'none.json')
+    writeFileSync(vendor, JSON.stringify({ hosts: ['api.example.com'], domains: ['dentalsalon.hu'] }))
+    writeFileSync(f, JSON.stringify({ agents: { soma: ['zeta.example.net', 'api.example.com'] } }))
+    const a = syncBashSandboxSettings('soma', { dir, vendorPath: vendor, writePathsPath: none, agentHostsPath: f, enabled: true }) as string
+    const b = syncBashSandboxSettings('neo', { dir, vendorPath: vendor, writePathsPath: none, agentHostsPath: f, enabled: true }) as string
+    expect(JSON.parse(readFileSync(a, 'utf-8')).sandbox.network.allowedDomains).toEqual(['*.dentalsalon.hu', 'api.example.com', 'dentalsalon.hu', 'zeta.example.net'])
+    expect(JSON.parse(readFileSync(b, 'utf-8')).sandbox.network.allowedDomains).toEqual(['*.dentalsalon.hu', 'api.example.com', 'dentalsalon.hu'])
+  })
+  it('sync: a corrupt hosts file throws and nothing is written', () => {
+    const dir = join(tmpRoot, 'bash-sandbox-hosts-corrupt')
+    writeFileSync(f, '{')
+    expect(() => syncBashSandboxSettings('soma', { dir, vendorPath: join(tmpRoot, 'none.json'), agentHostsPath: f, enabled: true })).toThrow()
+    expect(existsSync(dir)).toBe(false)
   })
 })
 

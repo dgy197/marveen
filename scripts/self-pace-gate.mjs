@@ -193,6 +193,7 @@ export const PROTECTED_STORE_FILES = new Set([
   'egress-vendor-hosts.json',
   'config-overrides.json',
   'bash-sandbox-write-paths.json',
+  'bash-sandbox-hosts.json',
   'email-standing-recipients.json',
   '.approval-bot-token',
   '.approval-bot-key',
@@ -202,7 +203,7 @@ export const PROTECTED_STORE_FILES = new Set([
 // approval-bot files need their leading dot, so a source or doc named approval-bot-key-*.md or a
 // glob over src/approval-bot* stays out too.
 const PROTECTED_MENTION_RX =
-  /(?:egress[-_]?vendor[-_]?hosts|config[-_]?overrides|bash[-_]?sandbox[-_]?write[-_]?paths|email[-_]?standing[-_]?recipients)\.json|\.approval[-_]?bot[-_]?(?:token|key)\b|(?:egress[-_]?vendor|config[-_]?overrid|bash[-_]?sandbox[-_]?write|email[-_]?standing|\.approval[-_]?bot)[\w.-]*[*?[]/i
+  /(?:egress[-_]?vendor[-_]?hosts|config[-_]?overrides|bash[-_]?sandbox[-_]?write[-_]?paths|bash[-_]?sandbox[-_]?hosts|email[-_]?standing[-_]?recipients)\.json|\.approval[-_]?bot[-_]?(?:token|key)\b|(?:egress[-_]?vendor|config[-_]?overrid|bash[-_]?sandbox[-_]?write|bash[-_]?sandbox[-_]?hosts|email[-_]?standing|\.approval[-_]?bot)[\w.-]*[*?[]/i
 
 // One rule for every protected store object: a segment that mentions it may only be a plain
 // READ, and no output redirect in it may point at it (or at a target built at runtime).
@@ -1768,7 +1769,7 @@ const ALLOWLIST_GATE_MSG =
 
 const PROTECTED_STORE_GATE_MSG =
   'Vedett store-fajl TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
-  'store/egress-vendor-hosts.json, store/config-overrides.json, store/bash-sandbox-write-paths.json, ' +
+  'store/egress-vendor-hosts.json, store/config-overrides.json, store/bash-sandbox-write-paths.json, store/bash-sandbox-hosts.json, ' +
   'store/email-standing-recipients.json, store/.approval-bot-token es store/.approval-bot-key ' +
   'fajlt: mindegyik RAD vonatkozo kapu beallitasa. ' +
   'Ha valtoztatas kell, kerd a fo agenst (inter-agent uzenet: mit es miert); o a gazda ' +
