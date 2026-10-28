@@ -1734,6 +1734,52 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
 
+  // --- Function decisions (card d7b2d5c8, S2) ---
+  // Append-only decision log of the dashboard's function pages ("Fejlesztes >
+  // Funkciok"). The owner's words are quoted (max 280 characters, enforced here as
+  // well as in the writer) with a source. A correction is a NEW row whose
+  // `supersedes` names the corrected row; UNIQUE(supersedes) lets a row be
+  // corrected once, whoever wins a race. UPDATE and DELETE abort at DB level.
+  // recorded_via keeps WHO class wrote it (the work log counts only owner
+  // sessions/devices, never the shared token); source_found/source_checked_at
+  // keep the conversation_log check made at write time, so a later retention
+  // purge does not turn a verified source into "not found".
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS function_decisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT NOT NULL,
+      quote_short TEXT NOT NULL CHECK (length(quote_short) BETWEEN 1 AND 280),
+      tg_chat TEXT,
+      tg_msg_id TEXT,
+      msg_id INTEGER,
+      card_id TEXT,
+      decided_at INTEGER NOT NULL,
+      recorded_by TEXT NOT NULL,
+      recorded_via TEXT NOT NULL CHECK (recorded_via IN ('token','device','session')),
+      supersedes INTEGER REFERENCES function_decisions(id),
+      source_checked_at INTEGER,
+      source_found INTEGER CHECK (source_found IN (0,1)),
+      created_at INTEGER NOT NULL,
+      CHECK (tg_msg_id IS NOT NULL OR msg_id IS NOT NULL)
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_function_decisions_slug ON function_decisions(slug, created_at)`)
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_function_decisions_supersedes ON function_decisions(supersedes) WHERE supersedes IS NOT NULL`)
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS function_decisions_no_update
+    BEFORE UPDATE ON function_decisions
+    BEGIN
+      SELECT RAISE(ABORT, 'function_decisions is append-only');
+    END
+  `)
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS function_decisions_no_delete
+    BEFORE DELETE ON function_decisions
+    BEGIN
+      SELECT RAISE(ABORT, 'function_decisions is append-only');
+    END
+  `)
+
   // --- Dashboard browser login (OPTIONAL; the bearer token stays primary) ---
   // Zero rows here = exactly the token-only behavior. A row is created only when
   // the operator opts in (Settings card or the dashboard-user CLI). No seeded
