@@ -4,6 +4,11 @@ import {
   checkRepoPath, getRegistryEntry, listRegistry,
   type Funkcio, type RegistryEntry,
 } from './funkciok-registry.js'
+import { resolveOwnerChatId } from '../owner-chat.js'
+import {
+  DECISION_BODY_MAX_BYTES, listDecisions, pageDecisions, recordDecision, validateDecisionInput,
+  type DecisionActor, type DecisionOut,
+} from './funkciok-decisions.js'
 import {
   containsToken, matchCommits, matchesAnyGlob, prNumberOf,
   type GitLogReader, type MatchedCommit, type MatchReason,
@@ -28,7 +33,7 @@ const SUBJECT_MAX_CHARS = 300
 export const LIST_ITEM_KEYS = ['slug', 'nev', 'last_change', 'open_cards', 'error'] as const
 export const PAGE_KEYS = [
   'slug', 'nev', 'leiras', 'last_change', 'open_cards', 'commits_without_card', 'commits_total',
-  'cards', 'cards_missing', 'messages', 'commits', 'tests', 'repos', 'tiltasok', 'specUtak',
+  'cards', 'cards_missing', 'messages', 'commits', 'tests', 'repos', 'tiltasok', 'specUtak', 'decisions',
 ] as const
 export const CARD_KEYS = ['seq', 'id', 'title', 'status', 'assignee', 'parent_id', 'created_at', 'last_status_at', 'archived', 'events'] as const
 export const CARD_EVENT_KEYS = ['from_status', 'to_status', 'actor', 'created_at'] as const
@@ -99,12 +104,18 @@ export interface FunkcioPage {
   repos: RepoOut[]
   tiltasok: string[]
   specUtak: string[]
+  /** S2: the decisions nothing corrected, newest first (the newer row replaces the corrected one). */
+  decisions: DecisionOut[]
 }
 
 export interface FunkciokDeps {
   registryDir: string
   getAllowedRepos: () => Set<string>
   git: GitLogReader
+  /** The owner's chat id (decision source check). Default: resolveOwnerChatId(). Called only when a decision names a Telegram message. */
+  ownerChat?: () => string | null
+  /** Clock for decision timestamps, ms. Default Date.now. */
+  now?: () => number
 }
 
 // ---------------------------------------------------------------------------
@@ -367,13 +378,33 @@ export type MessageResult =
   | { kind: 'not_found' }
   | { kind: 'invalid'; slug: string; error: string }
 
+export type DecisionsResult =
+  | { kind: 'ok'; decisions: DecisionOut[] }
+  | { kind: 'not_found' }
+  | { kind: 'invalid'; slug: string; error: string }
+
+export type RecordDecisionResult =
+  | { kind: 'ok'; decision: DecisionOut }
+  | { kind: 'bad_request'; error: string }
+  | { kind: 'unprocessable'; error: string }
+  | { kind: 'conflict'; error: string }
+  | { kind: 'not_found' }
+  | { kind: 'invalid'; slug: string; error: string }
+
 export interface FunkciokService {
   list(): Promise<FunkcioListItem[]>
   page(slug: string): Promise<PageResult>
   message(slug: string, id: number): Promise<MessageResult>
+  /** S2: every decision row of the function, corrected ones included. */
+  decisions(slug: string): Promise<DecisionsResult>
+  /** S2: append one decision. `rawBody` is the request text; the slug is checked before the body is parsed. */
+  recordDecision(slug: string, rawBody: string, actor: DecisionActor): Promise<RecordDecisionResult>
 }
 
 export function createFunkciokService(deps: FunkciokDeps): FunkciokService {
+  const ownerChat = deps.ownerChat ?? (() => resolveOwnerChatId())
+  const nowMs = deps.now ?? Date.now
+
   async function listItem(e: RegistryEntry): Promise<FunkcioListItem> {
     if (!e.ok) return { slug: e.slug, nev: null, last_change: null, open_cards: null, error: e.error }
     const { cards, ids } = loadCards(e.funkcio.kartyak)
@@ -415,8 +446,29 @@ export function createFunkciokService(deps: FunkciokDeps): FunkciokService {
           repos: g.repos,
           tiltasok: fn.tiltasok,
           specUtak: fn.specUtak,
+          decisions: pageDecisions(fn.slug, ownerChat),
         },
       }
+    },
+
+    async decisions(slug) {
+      const e = getRegistryEntry(deps.registryDir, slug)
+      if (!e) return { kind: 'not_found' }
+      if (!e.ok) return { kind: 'invalid', slug: e.slug, error: e.error }
+      return { kind: 'ok', decisions: listDecisions(e.funkcio.slug, ownerChat) }
+    },
+
+    async recordDecision(slug, rawBody, actor) {
+      const e = getRegistryEntry(deps.registryDir, slug)
+      if (!e) return { kind: 'not_found' }
+      if (!e.ok) return { kind: 'invalid', slug: e.slug, error: e.error }
+      if (Buffer.byteLength(rawBody, 'utf8') > DECISION_BODY_MAX_BYTES) return { kind: 'bad_request', error: 'Body too large' }
+      let parsed: unknown
+      try { parsed = JSON.parse(rawBody) } catch { return { kind: 'bad_request', error: 'Invalid JSON' } }
+      const nowSec = Math.floor(nowMs() / 1000)
+      const v = validateDecisionInput(parsed, nowSec)
+      if (!v.ok) return { kind: 'bad_request', error: v.error }
+      return recordDecision(e.funkcio.slug, v.value, actor, nowSec, ownerChat)
     },
 
     async message(slug, id) {

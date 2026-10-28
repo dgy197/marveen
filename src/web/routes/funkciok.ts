@@ -1,7 +1,8 @@
 import { join } from 'node:path'
 import { PROJECT_ROOT, STORE_DIR } from '../../config.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
-import { json, methodNotAllowed } from '../http-helpers.js'
+import { RequestBodyTooLargeError, json, methodNotAllowed, readBody } from '../http-helpers.js'
+import { DECISION_BODY_MAX_BYTES, decisionActor } from '../funkciok-decisions.js'
 import { createGitLogReader } from '../funkciok-git.js'
 import { createFunkciokService, type FunkciokService } from '../funkciok-page.js'
 import { SLUG_RE, resolveAllowedRepos } from '../funkciok-registry.js'
@@ -14,6 +15,8 @@ import type { RouteContext } from './types.js'
 //   GET /api/funkciok/:slug                 the assembled page
 //   GET /api/funkciok/:slug/messages/:id    full text of one inter-agent message
 //                                           that is on THAT function's page (D3)
+//   GET  /api/funkciok/:slug/decisions      (S2-A) the append-only decision log
+//   POST /api/funkciok/:slug/decisions      (S2-A) append one decision; no PUT/PATCH/DELETE
 //
 // Auth is the dashboard gate's (web.ts: 401 without a principal, 403 for an
 // operator-scoped key, which reaches /api/operator/* only). The handler repeats
@@ -54,6 +57,7 @@ export function setFunkciokServiceForTest(s: FunkciokService | null): void {
 const LIST_PATH = '/api/funkciok'
 const PAGE_RE = /^\/api\/funkciok\/([^/]+)$/
 const MSG_RE = /^\/api\/funkciok\/([^/]+)\/messages\/([^/]+)$/
+const DECISIONS_RE = /^\/api\/funkciok\/([^/]+)\/decisions$/
 
 function decodeSlug(raw: string): string | null {
   let s: string
@@ -76,10 +80,13 @@ export async function tryHandleFunkciok(ctx: RouteContext): Promise<boolean> {
 
   const msgMatch = MSG_RE.exec(path)
   const pageMatch = PAGE_RE.exec(path)
-  if (path !== LIST_PATH && !msgMatch && !pageMatch) return false
+  const decMatch = DECISIONS_RE.exec(path)
+  if (path !== LIST_PATH && !msgMatch && !pageMatch && !decMatch) return false
 
-  if (method !== 'GET') {
-    methodNotAllowed(res, method, ['GET'])
+  // The decision log is the only write surface here, and only POST appends.
+  const allowed = decMatch ? ['GET', 'POST'] : ['GET']
+  if (!allowed.includes(method)) {
+    methodNotAllowed(res, method, allowed)
     return true
   }
   const status = denied(ctx)
@@ -89,6 +96,45 @@ export async function tryHandleFunkciok(ctx: RouteContext): Promise<boolean> {
   }
 
   const svc = getService()
+
+  if (decMatch) {
+    const slug = decodeSlug(decMatch[1])
+    if (!slug) { json(res, { error: 'Not found' }, 404); return true }
+
+    if (method === 'GET') {
+      const r = await svc.decisions(slug)
+      if (r.kind === 'ok') json(res, { decisions: r.decisions })
+      else if (r.kind === 'invalid') json(res, { error: 'Invalid registry file', slug: r.slug, reason: r.error }, 422)
+      else json(res, { error: 'Not found' }, 404)
+      return true
+    }
+
+    // POST. Spec 5.1: token (attributed to X-Agent-Id), device full and session
+    // write; operator and federation were refused above. A cross-origin browser
+    // write never gets here (web.ts: isBlockedCrossOriginWrite, before routing).
+    const actor = decisionActor(ctx.auth)
+    if (!actor) { json(res, { error: 'Forbidden for this credential' }, 403); return true }
+    const declared = Number(ctx.req.headers?.['content-length'])
+    if (Number.isFinite(declared) && declared > DECISION_BODY_MAX_BYTES) { json(res, { error: 'body_too_large' }, 413); return true }
+    let text: string
+    try {
+      text = (await readBody(ctx.req, { maxBytes: DECISION_BODY_MAX_BYTES })).toString('utf8')
+    } catch (err) {
+      if (err instanceof RequestBodyTooLargeError) { json(res, { error: 'body_too_large' }, 413); return true }
+      json(res, { error: 'Bad request' }, 400)
+      return true
+    }
+    const r = await svc.recordDecision(slug, text, actor)
+    switch (r.kind) {
+      case 'ok': json(res, r.decision, 201); break
+      case 'bad_request': json(res, { error: r.error }, 400); break
+      case 'unprocessable': json(res, { error: r.error }, 422); break
+      case 'conflict': json(res, { error: r.error }, 409); break
+      case 'invalid': json(res, { error: 'Invalid registry file', slug: r.slug, reason: r.error }, 422); break
+      default: json(res, { error: 'Not found' }, 404)
+    }
+    return true
+  }
 
   if (path === LIST_PATH) {
     json(res, { funkciok: await svc.list() })
