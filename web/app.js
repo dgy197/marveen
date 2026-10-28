@@ -379,6 +379,7 @@ function switchPage(pageId) {
   if (pageId === 'status') loadStatus()
   if (pageId === 'recall') loadRecallPage()
   if (pageId === 'bgTasks') loadBgTasksPage()
+  if (pageId === 'dev') loadDevPage()
   if (pageId === 'vault') loadVaultPage()
   if (pageId === 'approvals') loadApprovalsPage()
   if (pageId === 'settings') loadSettings()
@@ -509,6 +510,7 @@ const NAV_I18N = {
   agents: 'nav.agents', activity: 'nav.activity', team: 'nav.team',
   messages: 'nav.messages', tasks: 'nav.tasks', memories: 'nav.memories',
   recall: 'nav.recall', naplo: 'nav.recall', bgTasks: 'nav.bgTasks',
+  dev: 'nav.dev',
   skills: 'nav.skills', connectors: 'nav.connectors', migrate: 'nav.migrate',
   approvals: 'nav.approvals',
   docs: 'nav.docs', research: 'nav.research', status: 'nav.status',
@@ -542,6 +544,7 @@ const PAGE_HEADER_I18N = {
   memoriesPage:   { title: 'memories.page_title',    sub: 'memories.page_subtitle' },
   recallPage:     { title: 'recall.page_title',      sub: 'recall.page_subtitle' },
   bgTasksPage:    { title: 'bgTasks.page_title',     sub: 'bgTasks.page_subtitle' },
+  devPage:        { title: 'dev.page_title',         sub: 'dev.page_subtitle' },
   connectorsPage: { title: 'connectors.page_title',  sub: 'connectors.page_subtitle' },
   migratePage:    { title: 'migrate.page_title',     sub: 'migrate.page_subtitle' },
   docsPage:       { title: 'docs.page_title',        sub: 'docs.page_subtitle' },
@@ -19875,6 +19878,278 @@ function wireFederationPage() {
   document.getElementById('fedPeerModalClose')?.addEventListener('click', () => closeModal(document.getElementById('fedPeerModalOverlay')))
   const overlay = document.getElementById('fedPeerModalOverlay')
   overlay?.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay) })
+}
+
+// ============================================================
+// === Fejlesztes > Funkciok (card d7b2d5c8, S1) ===
+// Read-only. Every server string reaches the DOM through textContent only
+// (devEl), never through innerHTML; slugs are encodeURIComponent'ed.
+// ============================================================
+
+let devSelectedSlug = null
+let devDetailSeq = 0
+const DEV_MESSAGE_MAX_ROWS = 200
+
+function devEl(tag, cls, text) {
+  const el = document.createElement(tag)
+  if (cls) el.className = cls
+  if (text !== undefined && text !== null) el.textContent = String(text)
+  return el
+}
+
+function devTime(unix) {
+  if (!unix) return t('dev.never')
+  return new Date(unix * 1000).toLocaleString('hu-HU', { dateStyle: 'short', timeStyle: 'short' })
+}
+
+function devRepoError(code) {
+  const key = 'dev.repo.err.' + code
+  const txt = t(key)
+  return txt === key ? String(code) : txt
+}
+
+async function loadDevPage() {
+  const list = document.getElementById('devFunkciokList')
+  if (!list) return
+  list.replaceChildren(devEl('div', 'dev-empty', t('dev.detail.loading')))
+  let items = null
+  try {
+    const res = await fetch('/api/funkciok')
+    if (!res.ok) throw new Error(String(res.status))
+    const data = await res.json()
+    items = Array.isArray(data && data.funkciok) ? data.funkciok : []
+  } catch (err) {
+    list.replaceChildren(devEl('div', 'dev-error', t('dev.detail.error', { status: String((err && err.message) || err) })))
+    return
+  }
+  renderDevList(items)
+  const detail = document.getElementById('devFunkcioDetail')
+  if (detail && !detail.hasChildNodes()) detail.replaceChildren(devEl('div', 'dev-empty', t('dev.detail.pick')))
+  if (devSelectedSlug && items.some((i) => i.slug === devSelectedSlug)) selectDevFunkcio(devSelectedSlug)
+}
+
+function renderDevList(items) {
+  const list = document.getElementById('devFunkciokList')
+  list.replaceChildren()
+  if (items.length === 0) {
+    list.appendChild(devEl('div', 'dev-empty', t('dev.list.empty')))
+    return
+  }
+  items.forEach((item) => {
+    const btn = devEl('button', 'dev-list-item')
+    btn.type = 'button'
+    btn.dataset.slug = String(item.slug)
+    if (item.slug === devSelectedSlug) btn.classList.add('active')
+    const name = devEl('div', 'dev-list-name', item.nev || item.slug)
+    if (item.error) name.appendChild(devEl('span', 'dev-badge', t('dev.list.error_badge')))
+    btn.appendChild(name)
+    if (item.error) {
+      btn.appendChild(devEl('div', 'dev-list-meta', item.error))
+    } else {
+      btn.appendChild(devEl('div', 'dev-list-meta', t('dev.list.meta', {
+        last: devTime(item.last_change),
+        open: item.open_cards === null || item.open_cards === undefined ? '-' : item.open_cards,
+      })))
+    }
+    btn.addEventListener('click', () => selectDevFunkcio(item.slug))
+    list.appendChild(btn)
+  })
+}
+
+async function selectDevFunkcio(slug) {
+  devSelectedSlug = slug
+  document.querySelectorAll('#devFunkciokList .dev-list-item').forEach((b) => {
+    b.classList.toggle('active', b.dataset.slug === slug)
+  })
+  const detail = document.getElementById('devFunkcioDetail')
+  const seq = ++devDetailSeq
+  detail.replaceChildren(devEl('div', 'dev-empty', t('dev.detail.loading')))
+  try {
+    const res = await fetch('/api/funkciok/' + encodeURIComponent(slug))
+    if (seq !== devDetailSeq) return
+    if (res.status === 422) {
+      const body = await res.json().catch(() => ({}))
+      if (seq !== devDetailSeq) return
+      detail.replaceChildren(devEl('div', 'dev-error', t('dev.detail.invalid', { reason: String((body && body.reason) || '') })))
+      return
+    }
+    if (!res.ok) {
+      detail.replaceChildren(devEl('div', 'dev-error', t('dev.detail.error', { status: String(res.status) })))
+      return
+    }
+    const page = await res.json()
+    if (seq !== devDetailSeq) return
+    renderDevDetail(detail, page)
+  } catch (err) {
+    if (seq !== devDetailSeq) return
+    detail.replaceChildren(devEl('div', 'dev-error', t('dev.detail.error', { status: String((err && err.message) || err) })))
+  }
+}
+
+function devBlock(titleKey, count) {
+  const section = devEl('section', 'dev-block')
+  const h = devEl('h3', null, t(titleKey))
+  if (count !== null && count !== undefined) h.appendChild(devEl('span', 'dev-block-count', '(' + count + ')'))
+  section.appendChild(h)
+  return section
+}
+
+function devEmpty(section) {
+  section.appendChild(devEl('div', 'dev-empty', t('dev.never')))
+}
+
+function devRepoErrors(section, repos) {
+  let any = false
+  ;(repos || []).forEach((r) => {
+    if (!r || !r.error) return
+    any = true
+    section.appendChild(devEl('div', 'dev-error', r.nev + ': ' + devRepoError(r.error)))
+  })
+  return any
+}
+
+function renderDevDetail(root, page) {
+  root.replaceChildren()
+  root.appendChild(devEl('h2', null, page.nev))
+  if (page.leiras) root.appendChild(devEl('div', 'dev-detail-meta', page.leiras))
+  root.appendChild(devEl('div', 'dev-detail-meta', t('dev.last_change') + ': ' + devTime(page.last_change)))
+  root.appendChild(devEl('div', 'dev-detail-meta', t('dev.commits_without_card') + ': ' + page.commits_without_card))
+
+  // --- Kartyak ---
+  const cards = page.cards || []
+  const bCards = devBlock('dev.block.cards', cards.length)
+  if (page.cards_missing && page.cards_missing.length > 0) {
+    bCards.appendChild(devEl('div', 'dev-error', t('dev.cards.missing', { ids: page.cards_missing.join(', ') })))
+  }
+  if (cards.length === 0) devEmpty(bCards)
+  cards.forEach((c) => {
+    const row = devEl('div', 'dev-row')
+    const head = devEl('div', 'dev-row-head')
+    head.appendChild(devEl('strong', null, '#' + c.seq))
+    head.appendChild(devEl('span', 'dev-mono', c.id))
+    head.appendChild(devEl('span', null, c.title))
+    head.appendChild(devEl('span', 'dev-chip', c.status))
+    if (c.parent_id) head.appendChild(devEl('span', 'dev-chip', t('dev.cards.child')))
+    row.appendChild(head)
+    row.appendChild(devEl('div', 'dev-row-sub', t('dev.col.assignee') + ': ' + (c.assignee || '-') + ' | ' + devTime(c.created_at)))
+    if (c.events && c.events.length > 0) {
+      const ul = devEl('ul', 'dev-timeline')
+      c.events.forEach((e) => {
+        ul.appendChild(devEl('li', null, devTime(e.created_at) + ' ' + (e.from_status || '-') + ' -> ' + e.to_status + (e.actor ? ' (' + e.actor + ')' : '')))
+      })
+      row.appendChild(ul)
+    }
+    bCards.appendChild(row)
+  })
+  root.appendChild(bCards)
+
+  // --- Promptok es valaszok ---
+  const msgs = page.messages || []
+  const bMsgs = devBlock('dev.block.messages', msgs.length)
+  if (msgs.length === 0) devEmpty(bMsgs)
+  else {
+    bMsgs.appendChild(devEl('div', 'dev-note', t('dev.msg.click_hint')))
+    if (msgs.length >= DEV_MESSAGE_MAX_ROWS) bMsgs.appendChild(devEl('div', 'dev-note', t('dev.msg.truncated', { max: DEV_MESSAGE_MAX_ROWS })))
+  }
+  msgs.forEach((m) => {
+    const wrap = devEl('div', 'dev-row dev-msg-row')
+    wrap.tabIndex = 0
+    wrap.setAttribute('role', 'button')
+    wrap.dataset.msgId = String(m.id)
+    const head = devEl('div', 'dev-row-head')
+    head.appendChild(devEl('strong', null, '#' + m.id))
+    head.appendChild(devEl('span', null, m.from_agent + ' -> ' + m.to_agent))
+    head.appendChild(devEl('span', 'dev-row-sub', devTime(m.created_at)))
+    head.appendChild(devEl('span', 'dev-chip', m.status))
+    wrap.appendChild(head)
+    wrap.appendChild(devEl('div', 'dev-row-sub', m.content_excerpt))
+    if (m.result_excerpt) wrap.appendChild(devEl('div', 'dev-row-sub', m.result_excerpt))
+    const full = devEl('div', 'dev-msg-full')
+    full.hidden = true
+    wrap.appendChild(full)
+    const toggle = () => toggleDevMessage(page.slug, m.id, full)
+    wrap.addEventListener('click', (ev) => { if (full.contains(ev.target)) return; toggle() })
+    wrap.addEventListener('keydown', (ev) => {
+      if (ev.target === wrap && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); toggle() }
+    })
+    bMsgs.appendChild(wrap)
+  })
+  root.appendChild(bMsgs)
+
+  // --- Commitok ---
+  const commits = page.commits || []
+  const bCommits = devBlock('dev.block.commits', page.commits_total !== undefined ? page.commits_total : commits.length)
+  const commitErr = devRepoErrors(bCommits, page.repos)
+  if (commits.length === 0 && !commitErr) devEmpty(bCommits)
+  if (page.commits_total > commits.length) {
+    bCommits.appendChild(devEl('div', 'dev-note', t('dev.commits.total', { shown: commits.length, total: page.commits_total })))
+  }
+  commits.forEach((c) => {
+    const row = devEl('div', 'dev-row')
+    const head = devEl('div', 'dev-row-head')
+    head.appendChild(devEl('span', 'dev-chip', c.repo))
+    head.appendChild(devEl('span', 'dev-mono', c.hash))
+    head.appendChild(devEl('span', 'dev-row-sub', devTime(c.date)))
+    head.appendChild(devEl('span', 'dev-chip', t('dev.reason.' + c.reason)))
+    if (c.pr) head.appendChild(devEl('span', 'dev-mono', 'PR #' + c.pr))
+    row.appendChild(head)
+    row.appendChild(devEl('div', null, c.subject))
+    bCommits.appendChild(row)
+  })
+  root.appendChild(bCommits)
+
+  // --- Tesztek ---
+  const tests = page.tests || []
+  const bTests = devBlock('dev.block.tests', tests.length)
+  const testErr = devRepoErrors(bTests, page.repos)
+  if (tests.length === 0 && !testErr) devEmpty(bTests)
+  tests.forEach((x) => {
+    const row = devEl('div', 'dev-row')
+    const head = devEl('div', 'dev-row-head')
+    head.appendChild(devEl('span', 'dev-chip', x.repo))
+    head.appendChild(devEl('span', 'dev-mono', x.path))
+    row.appendChild(head)
+    row.appendChild(devEl('div', 'dev-row-sub', t('dev.col.last_commit') + ': ' + x.last_commit + ' | ' + devTime(x.last_date)))
+    bTests.appendChild(row)
+  })
+  root.appendChild(bTests)
+
+  // --- Tiltasok (+ spec utak, plain paths only) ---
+  const tilt = page.tiltasok || []
+  const specs = page.specUtak || []
+  const bTilt = devBlock('dev.block.prohibitions', tilt.length)
+  if (tilt.length === 0) devEmpty(bTilt)
+  tilt.forEach((x) => bTilt.appendChild(devEl('div', 'dev-row', x)))
+  if (specs.length > 0) {
+    bTilt.appendChild(devEl('div', 'dev-note', t('dev.block.specs')))
+    specs.forEach((p) => bTilt.appendChild(devEl('div', 'dev-row dev-mono', p)))
+  }
+  root.appendChild(bTilt)
+}
+
+async function toggleDevMessage(slug, id, full) {
+  if (!full.hidden) { full.hidden = true; return }
+  full.hidden = false
+  if (full.dataset.loaded === '1') return
+  full.replaceChildren(devEl('div', 'dev-note', t('dev.msg.loading_full')))
+  try {
+    const res = await fetch('/api/funkciok/' + encodeURIComponent(slug) + '/messages/' + encodeURIComponent(String(Number(id))))
+    if (!res.ok) {
+      full.replaceChildren(devEl('div', 'dev-error', t('dev.msg.full_error', { status: String(res.status) })))
+      return
+    }
+    const msg = await res.json()
+    full.replaceChildren()
+    full.appendChild(devEl('strong', null, t('dev.msg.content')))
+    full.appendChild(devEl('pre', null, msg.content))
+    if (msg.result !== null && msg.result !== undefined) {
+      full.appendChild(devEl('strong', null, t('dev.msg.result')))
+      full.appendChild(devEl('pre', null, msg.result))
+    }
+    full.dataset.loaded = '1'
+  } catch (err) {
+    full.replaceChildren(devEl('div', 'dev-error', t('dev.msg.full_error', { status: String((err && err.message) || err) })))
+  }
 }
 
 ;(() => {

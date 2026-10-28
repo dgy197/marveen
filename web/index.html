@@ -90,6 +90,10 @@
         <span class="sb-label">Jóváhagyások</span>
         <span class="approvals-pending-badge sb-badge" id="approvalsPendingBadge" hidden></span>
       </a>
+      <a href="#" class="sb-link" data-page="dev">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        <span class="sb-label" data-i18n="nav.dev">Fejlesztés</span>
+      </a>
       <div class="sb-group" data-group="team">
         <button type="button" class="sb-group-header" aria-expanded="false" aria-controls="sbGroupTeam">
           <span class="sb-group-label" data-i18n="nav.group.team">CSAPAT</span>
@@ -809,6 +813,27 @@
       </div>
       <div class="recall-summary" id="recallSummary"></div>
       <div class="recall-timeline" id="recallTimeline"></div>
+    </div>
+
+    <!-- === Fejlesztes (Development) Page: Funkciok sub-view (card d7b2d5c8, S1) === -->
+    <div class="page" id="devPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1 data-i18n="dev.page_title">Fejlesztés</h1>
+            <p class="subtitle" data-i18n="dev.page_subtitle">Funkciónként egy helyen: kártyák, üzenetek, commitok, tesztek és tiltások</p>
+          </div>
+        </div>
+      </div>
+      <div class="dev-tabs" id="devTabs">
+        <button type="button" class="view-btn active" id="devTabFunkciok" data-dev-view="funkciok" data-i18n="dev.tab.funkciok">Funkciók</button>
+        <button type="button" class="view-btn" id="devTabKerdesek" data-dev-view="kerdesek" disabled aria-disabled="true"><span data-i18n="dev.tab.kerdesek">Kérdések</span> <small data-i18n="dev.soon">hamarosan</small></button>
+        <button type="button" class="view-btn" id="devTabMunkanaplo" data-dev-view="munkanaplo" disabled aria-disabled="true"><span data-i18n="dev.tab.munkanaplo">Munkanapló</span> <small data-i18n="dev.soon">hamarosan</small></button>
+      </div>
+      <div class="dev-layout" id="devFunkciokView">
+        <div class="dev-list" id="devFunkciokList"></div>
+        <div class="dev-detail" id="devFunkcioDetail"></div>
+      </div>
     </div>
 
     <!-- === Background Tasks Page === -->
