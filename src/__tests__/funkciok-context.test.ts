@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { initDatabase, getDb } from '../db.js'
 import {
-  CONTEXT_COMMITS, CONTEXT_DECISIONS, CONTEXT_MAX_CHARS, DATA_NOTICE, TRUNCATED_MARK, buildContext, frameLine,
+  CONTEXT_COMMITS, CONTEXT_DECISIONS, CONTEXT_MAX_CHARS, DATA_NOTICE, TRUNCATED_MARK, buildContext, frameLine, sourceLabel,
 } from '../web/funkciok-context.js'
 import { createFunkciokService, type FunkcioPage, type FunkciokService } from '../web/funkciok-page.js'
 import type { DecisionActor, DecisionOut } from '../web/funkciok-decisions.js'
@@ -365,5 +365,14 @@ describe('HTTP surface', () => {
       expect(await tryHandleFunkciok(r.ctx)).toBe(true)
       expect(r.out.status, method).toBe(405)
     }
+  })
+})
+
+describe('B6: sourceLabel', () => {
+  it('never says verified in the context package', () => {
+    expect(sourceLabel('verified')).toBe('msg_exists')
+    expect(sourceLabel('verified_at_record')).toBe('msg_existed_at_record')
+    expect(sourceLabel('not_found')).toBe('not_found')
+    expect(DATA_NOTICE).toContain('msg_existed_at_record')
   })
 })
