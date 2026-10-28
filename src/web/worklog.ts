@@ -39,12 +39,14 @@ export const DAY_KEYS = [
   'ai_by_agent', 'prompts_owner', 'prompts_agent', 'sources',
 ] as const
 export const DETAIL_KEYS = [
-  'date', 'tz', 'day_start', 'day_end', 'me', 'ai', 'ai_by_agent', 'prompts', 'sources',
+  'date', 'tz', 'day_start', 'day_end', 'me', 'ai', 'ai_by_agent', 'prompts', 'truncated', 'sources',
 ] as const
 export const RANGE_KEYS = ['tz', 'from', 'to', 'days'] as const
 export const PROMPT_KEYS = ['ts', 'kind', 'agent', 'from_agent', 'to_agent'] as const
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+const MIN_YEAR = 2000
+const MAX_YEAR = 2100
 
 export interface WorklogOptions {
   tz: string
@@ -93,12 +95,16 @@ export interface WorklogDetail {
   ai: Interval[]
   ai_by_agent: Array<{ agent: string; segments: number }>
   prompts: WorklogPrompt[]
+  /** True when the day has more than MAX_PROMPTS prompts and the list is cut (chronological, first ones kept). */
+  truncated: boolean
   sources: DaySources
 }
 
-/** True for a real calendar date `YYYY-MM-DD`. */
+/** True for a real calendar date `YYYY-MM-DD`, years 2000..2100 only. */
 export function isValidDate(s: string): boolean {
   if (!DATE_RE.test(s)) return false
+  const year = Number(s.slice(0, 4))
+  if (year < MIN_YEAR || year > MAX_YEAR) return false
   const t = Date.parse(`${s}T00:00:00Z`)
   return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === s
 }
@@ -112,13 +118,14 @@ function tableExists(db: Database.Database, name: string): boolean {
   return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)
 }
 
-/** A SELECT on an optional table: a missing table or column is "no events", not an error. */
+/** A SELECT on an optional table: a missing table or column is "no events"; any other error propagates. */
 function optionalTimes(db: Database.Database, table: string, sql: string, ...args: number[]): number[] {
   if (!tableExists(db, table)) return []
   try {
     return (db.prepare(sql).all(...args) as Array<{ t: number }>).map(r => r.t)
-  } catch {
-    return []
+  } catch (err) {
+    if (err instanceof Error && /no such (table|column)/i.test(err.message)) return []
+    throw err
   }
 }
 
@@ -264,14 +271,16 @@ export function buildWorklogDay(db: Database.Database, date: string, opts: Workl
   const me = summarizeDay(m.me, date, opts.tz)
   const ai = summarizeDay(m.aiUnion, date, opts.tz)
 
-  const prompts: WorklogPrompt[] = [
+  const allPrompts: WorklogPrompt[] = [
     ...raw.ownerPrompts
       .filter(p => p.ts >= b.start && p.ts < b.end)
       .map(p => ({ ts: p.ts, kind: 'owner' as const, agent: p.agent, from_agent: null, to_agent: p.agent })),
     ...raw.agentPrompts
       .filter(p => p.ts >= b.start && p.ts < b.end)
       .map(p => ({ ts: p.ts, kind: 'agent' as const, agent: p.from, from_agent: p.from, to_agent: p.to })),
-  ].sort((a, b2) => a.ts - b2.ts).slice(0, MAX_PROMPTS)
+  ].sort((a, b2) => a.ts - b2.ts)
+  const truncated = allPrompts.length > MAX_PROMPTS
+  const prompts = truncated ? allPrompts.slice(0, MAX_PROMPTS) : allPrompts
 
   return {
     date,
@@ -284,6 +293,7 @@ export function buildWorklogDay(db: Database.Database, date: string, opts: Workl
       .map(p => ({ agent: p.agent, segments: summarizeDay(p.segs, date, opts.tz).segments }))
       .filter(a => a.segments > 0),
     prompts,
+    truncated,
     sources: sourcesFor(raw, b.end),
   }
 }

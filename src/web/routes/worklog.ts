@@ -64,6 +64,18 @@ export async function tryHandleWorklog(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  try {
+    return handle(ctx, dayMatch)
+  } catch (err) {
+    // Generic body: no stack, path or SQL text reaches the client.
+    console.error('[worklog] request failed:', err instanceof Error ? err.name : 'error')
+    json(res, { error: 'Internal error' }, 500)
+    return true
+  }
+}
+
+function handle(ctx: RouteContext, dayMatch: RegExpExecArray | null): boolean {
+  const { res } = ctx
   const opts = options()
 
   if (dayMatch) {

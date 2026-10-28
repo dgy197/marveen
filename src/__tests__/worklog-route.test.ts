@@ -109,6 +109,30 @@ describe('validation', () => {
     expect(ok.out.body.days).toHaveLength(92)
   })
 
+  it.each(['1999-12-31', '2101-01-01'])('year outside 2000..2100: range from=%s and detail -> 400 (S4-N2)', async (d) => {
+    for (const p of [`/api/worklog?from=${d}&to=${d}`, `/api/worklog/${d}`]) {
+      const r = call(p)
+      expect(await tryHandleWorklog(r.ctx)).toBe(true)
+      expect(r.out.status).toBe(400)
+    }
+  })
+
+  it('an unexpected SQL error answers 500 with a generic body: no stack, path or SQL text (S4-M4)', async () => {
+    // A generated column whose function fails once armed (after the insert): a SELECT-time error that is not "no such ...".
+    let armed = false
+    getDb().function('wl_boom', { deterministic: true }, (v: unknown) => { if (armed) throw new Error('wl_boom /secret/path'); return v as number })
+    getDb().exec('CREATE TABLE function_decisions (id INTEGER PRIMARY KEY, recorded_via TEXT, x INTEGER, created_at INTEGER GENERATED ALWAYS AS (wl_boom(x)) VIRTUAL)')
+    getDb().exec("INSERT INTO function_decisions (recorded_via, x) VALUES ('session', 1)")
+    armed = true
+    for (const p of [`/api/worklog?from=${DAY}&to=${DAY}`, `/api/worklog/${DAY}`]) {
+      const r = call(p)
+      expect(await tryHandleWorklog(r.ctx)).toBe(true)
+      expect(r.out.status).toBe(500)
+      expect(r.out.body).toEqual({ error: 'Internal error' })
+      expect(JSON.stringify(r.out.body)).not.toMatch(/wl_boom|secret|SELECT|function_decisions|\/|stack/i)
+    }
+  })
+
   it.each(['2026-13-01', '2026-02-30', 'abc', '20261020', '2026-10-2', '%E0%A4%A', '..%2F..'])('detail date %s -> 400', async (d) => {
     const r = call(`/api/worklog/${d}`)
     expect(await tryHandleWorklog(r.ctx)).toBe(true)

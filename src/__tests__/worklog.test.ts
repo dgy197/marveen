@@ -8,6 +8,7 @@ import {
   RANGE_KEYS,
   buildWorklogDay,
   buildWorklogRange,
+  isValidDate,
   type WorklogOptions,
 } from '../web/worklog.js'
 
@@ -115,9 +116,22 @@ describe('buildWorklogRange: aggregation across the four sources', () => {
     expect(d.me_minutes).toBe(1)
   })
 
-  it('a table with the wrong columns does not break the day either', () => {
+  it('a table with the wrong columns ("no such column") is no events, not an error', () => {
     getDb().exec('CREATE TABLE function_decisions (id INTEGER PRIMARY KEY)')
-    expect(() => buildWorklogRange(getDb(), DAY, DAY, OPTS)).not.toThrow()
+    convIn('a1', OWNER, t0 + 100)
+    const d = buildWorklogRange(getDb(), DAY, DAY, OPTS).days[0]
+    expect(d.me_minutes).toBe(1)
+  })
+
+  it('any other SQL error in an optional table propagates (S4-M4)', () => {
+    // A generated column whose function fails once armed (after the insert): a SELECT-time error that is not "no such ...".
+    let armed = false
+    getDb().function('wl_boom', { deterministic: true }, (v: unknown) => { if (armed) throw new Error('wl_boom /secret/path'); return v as number })
+    getDb().exec('CREATE TABLE function_decisions (id INTEGER PRIMARY KEY, recorded_via TEXT, x INTEGER, created_at INTEGER GENERATED ALWAYS AS (wl_boom(x)) VIRTUAL)')
+    getDb().exec("INSERT INTO function_decisions (recorded_via, x) VALUES ('session', 1)")
+    armed = true
+    expect(() => buildWorklogRange(getDb(), DAY, DAY, OPTS)).toThrow(/wl_boom/)
+    expect(() => buildWorklogDay(getDb(), DAY, OPTS)).toThrow(/wl_boom/)
   })
 
   it('no owner chat configured: no chat events, the rest still counts', () => {
@@ -174,6 +188,8 @@ describe('S4-3 / 5.4: no text ever reaches a response', () => {
 
     const d = buildWorklogDay(getDb(), DAY, OPTS)
     expect(Object.keys(d)).toEqual([...DETAIL_KEYS])
+    expect([...DETAIL_KEYS]).toEqual(['date', 'tz', 'day_start', 'day_end', 'me', 'ai', 'ai_by_agent', 'prompts', 'truncated', 'sources'])
+    expect(d.truncated).toBe(false)
     expect(Object.keys(d.prompts[0])).toEqual([...PROMPT_KEYS])
     expect(Object.keys(d.me[0])).toEqual(['start', 'end'])
     expect(Object.keys(d.ai_by_agent[0])).toEqual(['agent', 'segments'])
@@ -220,18 +236,38 @@ describe('buildWorklogDay', () => {
     expect(d.prompts[1]).toEqual({ ts: t0 + 3600, kind: 'owner', agent: 'a1', from_agent: null, to_agent: 'a1' })
   })
 
-  it('caps the prompt list at 2000 rows', () => {
+  it('caps the prompt list at 2000 rows, keeps the first ones in order and flags truncated (S4-M3)', () => {
     const ins = getDb().prepare('INSERT INTO agent_messages (from_agent, to_agent, content, created_at) VALUES (?, ?, ?, ?)')
     getDb().transaction(() => { for (let i = 0; i < 2100; i++) ins.run('a1', 'a2', 'x', t0 + i) })()
-    expect(buildWorklogDay(getDb(), DAY, OPTS).prompts).toHaveLength(2000)
+    const d = buildWorklogDay(getDb(), DAY, OPTS)
+    expect(d.prompts).toHaveLength(2000)
+    expect(d.truncated).toBe(true)
+    expect(d.prompts[0].ts).toBe(t0)
+    expect(d.prompts[1999].ts).toBe(t0 + 1999)
+    expect(d.prompts.map(p => p.ts)).toEqual([...d.prompts.map(p => p.ts)].sort((a, b) => a - b))
+  })
+
+  it('exactly 2000 prompts is not truncated', () => {
+    const ins = getDb().prepare('INSERT INTO agent_messages (from_agent, to_agent, content, created_at) VALUES (?, ?, ?, ?)')
+    getDb().transaction(() => { for (let i = 0; i < 2000; i++) ins.run('a1', 'a2', 'x', t0 + i) })()
+    const d = buildWorklogDay(getDb(), DAY, OPTS)
+    expect(d.prompts).toHaveLength(2000)
+    expect(d.truncated).toBe(false)
+  })
+
+  it('isValidDate accepts 2000..2100 only (S4-N2)', () => {
+    for (const ok of ['2000-01-01', '2026-10-20', '2100-12-31']) expect(isValidDate(ok)).toBe(true)
+    for (const bad of ['1999-12-31', '2101-01-01', '0000-01-01', '9999-12-31']) expect(isValidDate(bad)).toBe(false)
   })
 })
 
 describe('S4-4: volume', () => {
-  it('30 days x 5 agents x 2000 events/day answers well under 2 s', () => {
+  it('30 days x 5 agents x 2000 token/tool events + 200 messages/day answers well under 2 s', () => {
     const db = getDb()
     const insT = db.prepare('INSERT INTO token_usage (agent, session_id, timestamp) VALUES (?, ?, ?)')
     const insL = db.prepare('INSERT INTO tool_call_log (session_id, tool_name, created_at, agent_id) VALUES (?, ?, ?, ?)')
+    const insM = db.prepare('INSERT INTO agent_messages (from_agent, to_agent, content, created_at) VALUES (?, ?, ?, ?)')
+    const insC = db.prepare('INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, created_at) VALUES (?, ?, ?, ?, ?, ?)')
     const from = '2026-09-21'
     const base = localDayBounds(from, TZ).start
     db.transaction(() => {
@@ -241,6 +277,10 @@ describe('S4-4: volume', () => {
             const ts = base + day * 86400 + i * 80 + a * 7
             insT.run(`agent${a}`, 's', ts)
             insL.run('s', 'Bash', ts + 3, `agent${a}`)
+            if (i % 5 === 0) {
+              insM.run(`agent${a}`, `agent${(a + 1) % 5}`, 'x', ts + 5)
+              insC.run(`agent${a}`, i % 2 ? OWNER : 'OTHER-CHAT', 'in', `v${day}-${a}-${i}`, 'x', ts + 6)
+            }
           }
         }
       }
@@ -249,6 +289,8 @@ describe('S4-4: volume', () => {
     const r = buildWorklogRange(db, from, '2026-10-20', OPTS)
     const ms = Date.now() - started
     expect(r.days).toHaveLength(30)
+    expect(r.days[0].prompts_agent).toBeGreaterThan(0)
+    expect(r.days[0].prompts_owner).toBeGreaterThan(0)
     expect(ms).toBeLessThan(2000)
   }, 60_000)
 })
