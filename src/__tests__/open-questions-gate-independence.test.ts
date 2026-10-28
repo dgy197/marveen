@@ -10,7 +10,10 @@ import { fileURLToPath } from 'node:url'
 //
 // Two layers, both file scans (no network, no DB):
 //
-//  (a) GATE SET, by a stated rule: every file under scripts/ and src/ (tests,
+//  The scanned roots are src/, scripts/, web/, plugins/ and vendor/ (node_modules
+//  skipped); the term is the table name OR the route path api/questions.
+//
+//  (a) GATE SET, by a stated rule: every file under scripts/, src/, plugins/ and vendor/ (tests,
 //      fixtures and node_modules excluded) whose BASENAME matches
 //      /gate|approv|authoriz|consume|credit/i. None may mention the table.
 //      The set must be non-empty and must contain the two gates the spec names
@@ -25,10 +28,13 @@ import { fileURLToPath } from 'node:url'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 const GATE_NAME = /gate|approv|authoriz|consume|credit/i
-const TERM = /open[_ -]?questions/i
+const TERM = /open[_ -]?questions|api\/questions/i
 const SKIP_DIRS = new Set(['node_modules', '__tests__', 'fixtures', 'dist', '.git'])
 const TEXT_EXT = /\.(ts|mts|cts|js|mjs|cjs|py|sh|json)$/
 const MAX_BYTES = 3 * 1024 * 1024
+
+const ROOTS = ['src', 'scripts', 'web', 'plugins', 'vendor']
+const GATE_ROOTS = ['scripts', 'src', 'plugins', 'vendor']
 
 // Readers of open_questions (posix paths relative to the repo root).
 const READERS = [
@@ -59,15 +65,19 @@ function walk(root: string, top: string): string[] {
 
 function gateFiles(root: string): string[] {
   const base = (p: string) => p.slice(p.lastIndexOf('/') + 1)
-  return [...walk(root, 'scripts'), ...walk(root, 'src')].filter((p) => GATE_NAME.test(base(p)))
+  return GATE_ROOTS.flatMap((r) => walk(root, r)).filter((p) => GATE_NAME.test(base(p)))
 }
 
 function mentions(root: string, files: string[]): string[] {
   return files.filter((p) => TERM.test(readFileSync(join(root, p), 'utf8')))
 }
 
+function allSources(root: string): string[] {
+  return ROOTS.flatMap((r) => walk(root, r))
+}
+
 function unlistedReaders(root: string): string[] {
-  const all = [...walk(root, 'src'), ...walk(root, 'scripts'), ...walk(root, 'web')]
+  const all = allSources(root)
   return mentions(root, all).filter((p) => !READERS.some((re) => re.test(p)))
 }
 
@@ -89,7 +99,8 @@ describe('gate set (a)', () => {
 describe('reader allowlist (b)', () => {
   it('only the listed files mention open_questions (and the listed files exist and do)', () => {
     expect(unlistedReaders(ROOT)).toEqual([])
-    const all = [...walk(ROOT, 'src'), ...walk(ROOT, 'scripts'), ...walk(ROOT, 'web')]
+    const all = allSources(ROOT)
+    expect(all.length).toBeGreaterThan(100)
     const hits = mentions(ROOT, all)
     expect(hits).toContain('src/db.ts')
     expect(hits).toContain('src/web/open-questions.ts')
@@ -114,12 +125,19 @@ describe('the scan itself is not vacuous', () => {
       writeFileSync(join(tmp, 'scripts', 'hooks', 'fake-approval-gate.py'), "q = 'SELECT * FROM open_questions'\n")
       writeFileSync(join(tmp, 'scripts', 'hooks', 'clean-gate.py'), "print('ok')\n")
       writeFileSync(join(tmp, 'src', 'web', 'sneaky.ts'), "import './open-questions.js'\n")
+      mkdirSync(join(tmp, 'plugins', 'x'), { recursive: true })
+      mkdirSync(join(tmp, 'vendor', 'y'), { recursive: true })
+      mkdirSync(join(tmp, 'plugins', 'node_modules', 'z'), { recursive: true })
+      writeFileSync(join(tmp, 'plugins', 'x', 'caller.js'), "fetch('/api/questions')\n")
+      writeFileSync(join(tmp, 'vendor', 'y', 'approval-gate.js'), "fetch('/api/questions')\n")
+      writeFileSync(join(tmp, 'plugins', 'node_modules', 'z', 'skipped.js'), "fetch('/api/questions')\n")
       writeFileSync(join(tmp, 'src', 'web', 'open-questions.ts'), '// the table\n')
 
       const gates = gateFiles(tmp)
-      expect(gates.sort()).toEqual(['scripts/hooks/clean-gate.py', 'scripts/hooks/fake-approval-gate.py'])
-      expect(mentions(tmp, gates)).toEqual(['scripts/hooks/fake-approval-gate.py'])
-      expect(unlistedReaders(tmp).sort()).toEqual(['scripts/hooks/fake-approval-gate.py', 'src/web/sneaky.ts'])
+      expect(gates.sort()).toEqual(['scripts/hooks/clean-gate.py', 'scripts/hooks/fake-approval-gate.py', 'vendor/y/approval-gate.js'])
+      expect(mentions(tmp, gates).sort()).toEqual(['scripts/hooks/fake-approval-gate.py', 'vendor/y/approval-gate.js'])
+      // plugins/ and vendor/ are scanned, the route path counts as a mention, node_modules is skipped
+      expect(unlistedReaders(tmp).sort()).toEqual(['plugins/x/caller.js', 'scripts/hooks/fake-approval-gate.py', 'src/web/sneaky.ts', 'vendor/y/approval-gate.js'])
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
