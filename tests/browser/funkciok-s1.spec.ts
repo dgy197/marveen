@@ -72,13 +72,14 @@ async function open(page: Page, lang: 'hu' | 'en' = 'hu') {
 }
 
 test.describe('S1-8 Fejlesztes > Funkciok', () => {
-  test('tab opens: three sub-views, Kerdesek disabled with the "hamarosan" label, 4 functions listed', async ({ page }) => {
+  test('tab opens: three sub-views, Kerdesek (S3) and Munkanaplo (S4) enabled, 4 functions listed', async ({ page }) => {
     const { errors } = await open(page)
     await expect(page.locator('#devPage')).toBeVisible()
     await expect(page.locator('#devTabFunkciok')).toBeEnabled()
-    await expect(page.locator('#devTabKerdesek')).toBeDisabled()
+    await expect(page.locator('#devTabKerdesek')).toBeEnabled()
+    await expect(page.locator('#devTabKerdesek')).not.toContainText('hamarosan')
     await expect(page.locator('#devTabMunkanaplo')).toBeEnabled()
-    await expect(page.locator('#devTabKerdesek')).toContainText('hamarosan')
+    await expect(page.locator('#devTabMunkanaplo')).not.toContainText('hamarosan')
     await expect(page.locator('#devFunkciokList .dev-list-item')).toHaveCount(4)
     // the invalid registry entry carries its error flag
     await expect(page.locator('#devFunkciokList .dev-list-item[data-slug="rossz-fajl"] .dev-badge')).toBeVisible()

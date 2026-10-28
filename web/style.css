@@ -8443,6 +8443,20 @@ body {
 @media (max-width: 768px) {
   .dev-layout { grid-template-columns: minmax(0, 1fr); }
 }
+.dev-layout[hidden], .dev-questions[hidden] { display: none; }
+
+/* === Fejlesztes > Kerdesek (S3) === */
+.dev-questions { min-width: 0; }
+.dev-q-bar { display: flex; justify-content: flex-end; }
+.dev-q-group > h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.dev-q-group > h3 .dev-badge { margin-left: 0; }
+.dev-q-text { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dev-q-controls { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin-top: 6px; min-width: 0; }
+.dev-q-controls textarea { flex: 1 1 100%; width: 100%; box-sizing: border-box; font-size: 14px; }
+.dev-q-controls .dev-q-counter { flex: 1 1 100%; }
+.dev-q-result { font-size: 13px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.dev-link { color: var(--accent); text-decoration: underline; cursor: pointer; }
+.dev-q-approvals-link { display: inline-block; margin-top: 8px; font-size: 13px; }
 
 /* === Fejlesztes > Dontesek (S2) === */
 .dev-dec-block {

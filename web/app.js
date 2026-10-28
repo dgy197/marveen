@@ -379,7 +379,7 @@ function switchPage(pageId) {
   if (pageId === 'status') loadStatus()
   if (pageId === 'recall') loadRecallPage()
   if (pageId === 'bgTasks') loadBgTasksPage()
-  if (pageId === 'dev') loadDevPage()
+  if (pageId === 'dev') { loadDevPage(); devRefreshQuestionsIfActive() }
   if (pageId === 'vault') loadVaultPage()
   if (pageId === 'approvals') loadApprovalsPage()
   if (pageId === 'settings') loadSettings()
@@ -20583,6 +20583,247 @@ function devDecisionForm(slug, list) {
     }
   })
   return form
+}
+
+// ============================================================
+// === Fejlesztes > Kerdesek (S3) ===
+// Every server string reaches the DOM through textContent only (devEl); the
+// only links are built from constants ('#approvals', '#dev'), never from data.
+// The answer is a POST with credentials: 'same-origin', so the session cookie
+// travels next to the Bearer token the fetch wrapper adds. The wrapper is NOT
+// changed: the server answers a token without a session with 403
+// owner_session_required (never 401), so the stored token is not dropped, and
+// this code never touches localStorage.
+// ============================================================
+
+let devActiveView = 'funkciok'
+let devQuestionsSeq = 0
+const DEV_ANSWER_MAX = 1000
+const DEV_QUESTION_KINDS = ['info', 'yesno', 'free']
+
+function devSetView(view) {
+  devActiveView = view === 'kerdesek' ? 'kerdesek' : 'funkciok'
+  const isQ = devActiveView === 'kerdesek'
+  const fView = document.getElementById('devFunkciokView')
+  const qView = document.getElementById('devKerdesekView')
+  if (fView) fView.hidden = isQ
+  if (qView) qView.hidden = !isQ
+  document.getElementById('devTabFunkciok')?.classList.toggle('active', !isQ)
+  document.getElementById('devTabKerdesek')?.classList.toggle('active', isQ)
+  if (isQ) loadDevQuestions()
+}
+
+function devRefreshQuestionsIfActive() {
+  if (devActiveView === 'kerdesek') loadDevQuestions()
+}
+
+;(() => {
+  document.querySelectorAll('#devTabs [data-dev-view]').forEach((b) => {
+    if (b.disabled) return
+    b.addEventListener('click', () => devSetView(b.dataset.devView))
+  })
+})()
+
+async function loadDevQuestions() {
+  const root = document.getElementById('devKerdesekView')
+  if (!root) return
+  const seq = ++devQuestionsSeq
+  root.replaceChildren(devEl('div', 'dev-empty', t('dev.detail.loading')))
+  let data = null
+  try {
+    const res = await fetch('/api/questions/overview', { credentials: 'same-origin' })
+    if (!res.ok) throw new Error(String(res.status))
+    data = await res.json()
+  } catch (err) {
+    if (seq !== devQuestionsSeq) return
+    root.replaceChildren(devEl('div', 'dev-error', t('dev.q.load_error', { status: String((err && err.message) || err) })))
+    return
+  }
+  if (seq !== devQuestionsSeq) return
+  renderDevQuestions(root, data || {})
+}
+
+function renderDevQuestions(root, data) {
+  root.replaceChildren()
+  const bar = devEl('div', 'dev-q-bar')
+  const refresh = devEl('button', 'btn btn-secondary btn-compact dev-q-refresh', t('dev.q.refresh'))
+  refresh.type = 'button'
+  refresh.addEventListener('click', loadDevQuestions)
+  bar.appendChild(refresh)
+  root.appendChild(bar)
+
+  const agents = Array.isArray(data.agents) ? data.agents : []
+  if (agents.length === 0) root.appendChild(devEl('div', 'dev-empty dev-q-empty', t('dev.q.empty')))
+  agents.forEach((g) => {
+    const qs = Array.isArray(g.questions) ? g.questions : []
+    const block = devEl('div', 'dev-block dev-q-group')
+    block.dataset.agent = String(g.agent_id)
+    const h = devEl('h3', null, String(g.agent_id))
+    h.appendChild(devEl('span', 'dev-block-count', t('dev.q.agent_count', { count: String(qs.length) })))
+    h.appendChild(devEl('span', g.agent_running ? 'dev-chip dev-q-run' : 'dev-badge dev-q-run', t(g.agent_running ? 'dev.q.running' : 'dev.q.not_running')))
+    block.appendChild(h)
+    qs.forEach((q) => block.appendChild(devQuestionRow(q)))
+    root.appendChild(block)
+  })
+  root.appendChild(devApprovalsBlock(Array.isArray(data.pending_approvals) ? data.pending_approvals : []))
+}
+
+// Read-only: no decision control of any kind (spec 5.3).
+function devApprovalsBlock(list) {
+  const block = devEl('div', 'dev-block dev-q-approvals')
+  const h = devEl('h3', null, t('dev.q.approvals.title'))
+  h.appendChild(devEl('span', 'dev-block-count', String(list.length)))
+  block.appendChild(h)
+  block.appendChild(devEl('div', 'dev-note', t('dev.q.approvals.note')))
+  if (list.length === 0) block.appendChild(devEl('div', 'dev-empty', t('dev.q.approvals.empty')))
+  list.forEach((a) => {
+    const row = devEl('div', 'dev-row dev-q-approval')
+    const head = devEl('div', 'dev-row-head')
+    head.appendChild(devEl('strong', null, String(a.category)))
+    head.appendChild(devEl('span', null, String(a.agent_id)))
+    head.appendChild(devEl('span', 'dev-chip', a.status === 'pending' ? t('dev.q.approvals.pending') : String(a.status)))
+    head.appendChild(devEl('span', 'dev-row-sub', t('dev.q.approvals.requested', { when: devTime(a.requested_at) })))
+    row.appendChild(head)
+    block.appendChild(row)
+  })
+  const link = devEl('a', 'dev-link dev-q-approvals-link', t('dev.q.approvals.open_link'))
+  link.setAttribute('href', '#approvals')
+  block.appendChild(link)
+  return block
+}
+
+function devQuestionRow(q) {
+  const row = devEl('div', 'dev-row dev-q-row')
+  row.dataset.qid = String(Number(q.id))
+  const head = devEl('div', 'dev-row-head')
+  const kindKey = 'dev.q.kind.' + q.kind
+  head.appendChild(devEl('span', 'dev-chip dev-q-kind', DEV_QUESTION_KINDS.includes(q.kind) ? t(kindKey) : String(q.kind)))
+  const label = q.card_seq !== null && q.card_seq !== undefined ? '#' + q.card_seq : null
+  if (label && q.funkcio_slug) {
+    const a = devEl('a', 'dev-link dev-q-card', label)
+    a.setAttribute('href', '#dev')
+    a.addEventListener('click', (ev) => {
+      ev.preventDefault()
+      devSetView('funkciok')
+      selectDevFunkcio(String(q.funkcio_slug))
+    })
+    head.appendChild(a)
+  } else if (label) {
+    head.appendChild(devEl('span', 'dev-q-card', label))
+  } else if (q.card_id) {
+    head.appendChild(devEl('span', 'dev-mono dev-q-card', String(q.card_id)))
+  }
+  row.appendChild(head)
+  row.appendChild(devEl('div', 'dev-q-text', q.question_short))
+  row.appendChild(devEl('div', 'dev-row-sub', t('dev.q.created', { when: devTime(q.created_at) }) + ' | ' + t('dev.q.expires', { when: devTime(q.expires_at) })))
+
+  const controls = devEl('div', 'dev-q-controls')
+  const msg = devEl('div', 'dev-error dev-q-msg')
+  msg.setAttribute('role', 'alert')
+  msg.hidden = true
+  if (q.status === 'open') devQuestionControls(q, controls, row, msg)
+  else controls.appendChild(devEl('div', 'dev-q-result', devQuestionResultText(q)))
+  row.appendChild(controls)
+  row.appendChild(msg)
+  return row
+}
+
+function devQuestionResultText(q) {
+  if (q.status === 'ack') return t('dev.q.result.ack')
+  if (q.status === 'yes') return t('dev.q.result.yes')
+  if (q.status === 'no') return t('dev.q.result.no')
+  if (q.status === 'answered') return t('dev.q.result.answered', { text: String(q.answer_short || '') })
+  if (q.status === 'expired') return t('dev.q.result.expired')
+  return t('dev.q.result.generic')
+}
+
+function devQuestionControls(q, controls, row, msg) {
+  const buttons = []
+  const send = (body) => devSendAnswer(q, body, row, controls, msg, buttons)
+  const mk = (cls, key, body) => {
+    const b = devEl('button', cls, t(key))
+    b.type = 'button'
+    b.addEventListener('click', () => send(body))
+    buttons.push(b)
+    controls.appendChild(b)
+  }
+  if (q.kind === 'info') {
+    mk('btn btn-primary dev-q-ack', 'dev.q.ack', { answer: 'ack' })
+  } else if (q.kind === 'yesno') {
+    mk('btn btn-primary dev-q-yes', 'dev.q.yes', { answer: 'yes' })
+    mk('btn btn-secondary dev-q-no', 'dev.q.no', { answer: 'no' })
+  } else if (q.kind === 'free') {
+    const area = devEl('textarea', 'input dev-q-text-input')
+    area.rows = 3
+    area.setAttribute('aria-label', t('dev.q.text_label', { max: String(DEV_ANSWER_MAX) }))
+    const counter = devEl('div', 'dev-dec-counter dev-q-counter')
+    const submit = devEl('button', 'btn btn-primary dev-q-send', t('dev.q.send'))
+    submit.type = 'button'
+    buttons.push(submit)
+    const refreshCounter = () => {
+      const n = devDecCodepoints(area.value.trim())
+      counter.textContent = n + '/' + DEV_ANSWER_MAX
+      counter.classList.toggle('over', n > DEV_ANSWER_MAX)
+      submit.disabled = n < 1 || n > DEV_ANSWER_MAX
+    }
+    area.addEventListener('input', refreshCounter)
+    submit.addEventListener('click', () => {
+      const text = area.value.trim()
+      const n = devDecCodepoints(text)
+      if (n < 1 || n > DEV_ANSWER_MAX) { refreshCounter(); return }
+      send({ answer: 'text', text })
+    })
+    controls.appendChild(area)
+    controls.appendChild(counter)
+    controls.appendChild(submit)
+    controls.devRefreshCounter = refreshCounter
+    refreshCounter()
+    area.addEventListener('input', () => { msg.hidden = true })
+  }
+}
+
+// Translated per status code; the raw server text is never shown. 403 splits on
+// the code: owner_session_required is the login hint, any other 403 the generic one.
+function devQuestionErrorText(status, data) {
+  if (status === 403) return t(data && data.code === 'owner_session_required' ? 'dev.q.err.session' : 'dev.q.err.403')
+  if ([400, 401, 404, 409, 410, 413].includes(status)) return t('dev.q.err.' + status)
+  return t('dev.q.err.other', { status: String(status) })
+}
+
+async function devSendAnswer(q, body, row, controls, msg, buttons) {
+  buttons.forEach((b) => { b.disabled = true })
+  msg.hidden = true
+  const reenable = () => {
+    buttons.forEach((b) => { b.disabled = false })
+    if (typeof controls.devRefreshCounter === 'function') controls.devRefreshCounter()
+  }
+  try {
+    const res = await fetch('/api/questions/' + encodeURIComponent(String(Number(q.id))) + '/answer', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (res.ok) {
+      controls.replaceChildren(devEl('div', 'dev-q-result', devQuestionResultText(data || {})))
+      row.classList.add('dev-q-done')
+      return
+    }
+    msg.textContent = devQuestionErrorText(res.status, data)
+    msg.hidden = false
+    if (res.status === 404 || res.status === 409 || res.status === 410) {
+      // The row is settled for good: no controls left to retry with.
+      controls.replaceChildren()
+      row.classList.add('dev-q-done')
+    } else {
+      reenable()
+    }
+  } catch (err) {
+    msg.textContent = t('dev.q.err.other', { status: String((err && err.message) || err) })
+    msg.hidden = false
+    reenable()
+  }
 }
 
 ;(() => {
