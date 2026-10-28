@@ -14,6 +14,7 @@ import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
+import { OWNER_UI_SENDER } from '../open-questions.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent, readAgentPullDelivery } from '../agent-config.js'
 import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, VOICE_CHANNEL_ID_INVALID, VOICE_CHANNEL_DISABLED_BY, DEFAULT_VOICE_CHANNEL_ID, SYSTEM_SENDER_IDS, parseSystemSenderIds, MESSAGE_URGENT_DEVICE_IDS, parseDeviceKeyIds } from '../../config.js'
@@ -273,6 +274,15 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (sanitizeAgentIdent(from) === SYSTEM_DIRECTIVE_SENDER) {
       logger.warn({ from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none' }, 'Rejected /api/messages POST forging the system directive sender')
       json(res, { error: `from '${SYSTEM_DIRECTIVE_SENDER}' is reserved for in-process system directives and can never be POSTed` }, 403)
+      return true
+    }
+    // Owner answers (card d7b2d5c8, S3-N2): an owner's answer to an open question reaches the asking
+    // agent from OWNER_UI_SENDER. Only POST /api/questions/:id/answer writes it, in-process, after its
+    // owner-only check; the token every sub-agent holds must not be able to forge "the owner said so".
+    // Compared on the router's normalization (sanitizeAgentIdent) and case-insensitively, on every lane.
+    if (sanitizeAgentIdent(from).toLowerCase() === OWNER_UI_SENDER) {
+      logger.warn({ from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none' }, 'Rejected /api/messages POST forging the owner-ui sender')
+      json(res, { error: `from '${OWNER_UI_SENDER}' is reserved for the dashboard owner answer and can never be POSTed` }, 403)
       return true
     }
     // Voice channel (HANGCSATORNA918): the VOICE_CHANNEL_AGENT_ID also earns

@@ -69,8 +69,8 @@ beforeEach(() => {
 afterEach(() => { setQuestionsClockForTest(null) })
 
 describe('routing', () => {
-  it('only /api/questions exactly; other paths (incl. the later answer path) fall through', async () => {
-    for (const p of ['/api/questions/', '/api/questions/1', '/api/questions/1/answer', '/api/questionsx', '/api/question', '/api/other']) {
+  it('only /api/questions and /api/questions/:id/answer; other paths fall through', async () => {
+    for (const p of ['/api/questions/', '/api/questions/1', '/api/questions/1/answer/', '/api/questions/1/answers', '/api/questionsx', '/api/question', '/api/other']) {
       expect(await tryHandleOpenQuestions(call(p).ctx)).toBe(false)
     }
   })
