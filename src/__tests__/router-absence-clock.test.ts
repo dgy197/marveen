@@ -170,6 +170,16 @@ describe('71263d15 (A): the absence clock decides, not the message age', () => {
     expect(noticesTo('orin').some((c) => String(c[2]).includes('id 401'))).toBe(true)
   })
 
+  it('S3-R1: an owner-ui answer to an absent agent fails after the window, and NO notice is created for owner-ui', async () => {
+    queue(row(403, 'dia', 'owner-ui', T0))
+    present.set('agent-dia', false)
+    await tickAt(T0)
+    await tickAt(T0 + 61 * MIN)
+    expect(failedIds()).toContain(403)
+    expect(noticesTo('owner-ui')).toHaveLength(0)
+    expect(noticesTo('orin').some((c) => String(c[2]).includes('id 403'))).toBe(true) // the main agent still hears of it
+  })
+
   it('both notices name where the FULL text is: GET /api/messages/<id>', async () => {
     // The preview stops at 220 characters. A sender that wants to re-send a long
     // handoff needs the whole text, and the GET endpoint already serves it.
@@ -273,6 +283,8 @@ describe('71263d15 (A): who may get a sender notice, and what it says', () => {
     expect(shouldNotifySenderOfFailure(COORDINATOR_AGENT_ID, 'orin')).toBe(false)
     expect(shouldNotifySenderOfFailure(VOICE_CHANNEL_AGENT_ID, 'orin')).toBe(false)
     expect(shouldNotifySenderOfFailure('', 'orin')).toBe(false)
+    expect(shouldNotifySenderOfFailure('owner-ui', 'orin')).toBe(false) // S3-R1: the dashboard's answer sender has no inbox
+    expect(shouldNotifySenderOfFailure('owner-uix', 'orin')).toBe(true) // negative control: only the exact reserved name
     expect(shouldNotifySenderOfFailure('geri', 'orin')).toBe(true)
   })
 

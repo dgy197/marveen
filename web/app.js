@@ -20663,20 +20663,25 @@ function renderDevQuestions(root, data) {
     h.appendChild(devEl('span', 'dev-block-count', t('dev.q.agent_count', { count: String(qs.length) })))
     h.appendChild(devEl('span', g.agent_running ? 'dev-chip dev-q-run' : 'dev-badge dev-q-run', t(g.agent_running ? 'dev.q.running' : 'dev.q.not_running')))
     block.appendChild(h)
-    qs.forEach((q) => block.appendChild(devQuestionRow(q)))
+    qs.forEach((q) => block.appendChild(devQuestionRow(q, g.agent_running === true)))
     root.appendChild(block)
   })
-  root.appendChild(devApprovalsBlock(Array.isArray(data.pending_approvals) ? data.pending_approvals : []))
+  if (data.questions_truncated === true) {
+    const total = agents.reduce((n, g) => n + (Array.isArray(g.questions) ? g.questions.length : 0), 0)
+    root.appendChild(devEl('div', 'dev-note dev-q-trunc', t('dev.q.truncated_questions', { max: String(total) })))
+  }
+  root.appendChild(devApprovalsBlock(Array.isArray(data.pending_approvals) ? data.pending_approvals : [], data.approvals_truncated === true))
 }
 
 // Read-only: no decision control of any kind (spec 5.3).
-function devApprovalsBlock(list) {
+function devApprovalsBlock(list, truncated) {
   const block = devEl('div', 'dev-block dev-q-approvals')
   const h = devEl('h3', null, t('dev.q.approvals.title'))
   h.appendChild(devEl('span', 'dev-block-count', String(list.length)))
   block.appendChild(h)
   block.appendChild(devEl('div', 'dev-note', t('dev.q.approvals.note')))
   if (list.length === 0) block.appendChild(devEl('div', 'dev-empty', t('dev.q.approvals.empty')))
+  if (truncated) block.appendChild(devEl('div', 'dev-note dev-q-approvals-trunc', t('dev.q.truncated_approvals', { max: String(list.length) })))
   list.forEach((a) => {
     const row = devEl('div', 'dev-row dev-q-approval')
     const head = devEl('div', 'dev-row-head')
@@ -20693,7 +20698,7 @@ function devApprovalsBlock(list) {
   return block
 }
 
-function devQuestionRow(q) {
+function devQuestionRow(q, running) {
   const row = devEl('div', 'dev-row dev-q-row')
   row.dataset.qid = String(Number(q.id))
   const head = devEl('div', 'dev-row-head')
@@ -20718,6 +20723,8 @@ function devQuestionRow(q) {
   row.appendChild(devEl('div', 'dev-q-text', q.question_short))
   row.appendChild(devEl('div', 'dev-row-sub', t('dev.q.created', { when: devTime(q.created_at) }) + ' | ' + t('dev.q.expires', { when: devTime(q.expires_at) })))
 
+  // The answer is a bus message: for a stopped agent it waits for the delivery window (60 minutes) and then fails.
+  if (q.status === 'open' && running === false) row.appendChild(devEl('div', 'dev-note dev-q-warn', t('dev.q.not_running_warn')))
   const controls = devEl('div', 'dev-q-controls')
   const msg = devEl('div', 'dev-error dev-q-msg')
   msg.setAttribute('role', 'alert')
@@ -20784,9 +20791,12 @@ function devQuestionControls(q, controls, row, msg) {
 }
 
 // Translated per status code; the raw server text is never shown. 403 splits on
-// the code: owner_session_required is the login hint, any other 403 the generic one.
+// the code: owner_session_required and owner_login_required are the login hints, any other 403 the generic one.
 function devQuestionErrorText(status, data) {
-  if (status === 403) return t(data && data.code === 'owner_session_required' ? 'dev.q.err.session' : 'dev.q.err.403')
+  if (status === 403) {
+    const code = data && data.code
+    return t(code === 'owner_session_required' ? 'dev.q.err.session' : code === 'owner_login_required' ? 'dev.q.err.login' : 'dev.q.err.403')
+  }
   if ([400, 401, 404, 409, 410, 413].includes(status)) return t('dev.q.err.' + status)
   return t('dev.q.err.other', { status: String(status) })
 }

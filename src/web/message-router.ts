@@ -45,6 +45,7 @@ import { isStopMessage, isUrgentDelivery, selectTickWindow } from './message-rou
 import { deliveryHoldFor, type DeliveryHold } from './delivery-hold.js'
 
 import { MESSAGE_ABANDON_WINDOW_MS } from './message-abandon.js'
+import { OWNER_UI_SENDER } from './reserved-senders.js'
 import { whileNotFrozen } from './fleet-freeze.js'
 // How long a message must have waited before the stale-parked-input janitor is
 // allowed to clear the receiver's input box. Long enough that a brief, genuine
@@ -205,11 +206,14 @@ function notifyOrchestratorOfPullStale(msg: AgentMessage, ageMs: number): void {
  * until now only the main agent heard about the failure. The exceptions keep the
  * notice from looping or doubling: 'system' rows get no receipt (a failed notice
  * cannot beget another), the main agent already gets the orchestrator notice, a
- * channel-inbound sender is a person on a channel rather than an agent inbox, and a
+ * channel-inbound sender is a person on a channel rather than an agent inbox, the
+ * dashboard's owner-ui sender (an answer to an open question) has no inbox at all, and a
  * federated sender is notifyDelegationFailed's job.
  */
 export function shouldNotifySenderOfFailure(fromAgent: string, mainAgentId: string): boolean {
   if (!fromAgent || fromAgent === 'system' || fromAgent === mainAgentId) return false
+  // The dashboard's owner-answer sender is no agent inbox: a notice would pile up unread.
+  if (fromAgent === OWNER_UI_SENDER) return false
   if (isQualifiedId(fromAgent) || fromAgent.includes('/')) return false
   return !isChannelInboundSender(fromAgent)
 }

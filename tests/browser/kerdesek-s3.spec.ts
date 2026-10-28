@@ -223,6 +223,38 @@ test.describe('S3-N4 Fejlesztes > Kerdesek', () => {
     expect(box && box.x + box.width).toBeLessThanOrEqual(390)
   })
 
+  test('S3-R1: a stopped agent\'s question shows the delivery warning before answering; a running agent\'s does not', async ({ page }) => {
+    const { errors } = await open(page)
+    await expect(row(page, 21).locator('.dev-q-warn')).toHaveText(/Az ügynök most nem fut; a válasz 60 percig vár a kézbesítésre/)
+    await expect(row(page, 21).locator('.dev-q-warn')).toBeVisible()
+    await expect(row(page, 11).locator('.dev-q-warn')).toHaveCount(0)
+    await expect(row(page, 12).locator('.dev-q-warn')).toHaveCount(0)
+    // the warning sits ahead of the controls
+    const order = await row(page, 21).evaluate((r) => Array.from(r.children).map((c) => c.className.split(' ').find((k) => k === 'dev-q-warn' || k === 'dev-q-controls') || '').filter(Boolean))
+    expect(order).toEqual(['dev-q-warn', 'dev-q-controls'])
+    expect(errors).toEqual([])
+  })
+
+  test('S3-B1: 403 owner_login_required shows the translated "no dashboard user yet" hint', async ({ page }) => {
+    await open(page, { status: 403, body: { error: 'RAW SERVER TEXT', code: 'owner_login_required' } })
+    await row(page, 12).getByRole('button', { name: 'Igen' }).click()
+    const msg = row(page, 12).locator('.dev-q-msg')
+    await expect(msg).toContainText('Még nincs dashboard-felhasználó')
+    await expect(msg).not.toContainText('RAW SERVER TEXT')
+    await expect(msg).not.toContainText('nincs jogosultság')
+    expect(await page.evaluate((k) => localStorage.getItem(k), TOKEN_KEY)).toBe(TOKEN_VALUE)
+  })
+
+  test('S3-R4: truncated flags show a note for the questions and for the approvals; absent flags show none', async ({ page }) => {
+    await open(page, undefined, { ...OVERVIEW, questions_truncated: true, approvals_truncated: true })
+    await expect(page.locator('.dev-q-trunc')).toContainText('Csak az első 3 kérdés látszik')
+    await expect(page.locator('.dev-q-approvals-trunc')).toContainText('Csak a legfrissebb 1 jóváhagyás látszik')
+    await page.unrouteAll({ behavior: 'ignoreErrors' })
+    await open(page)
+    await expect(page.locator('.dev-q-trunc')).toHaveCount(0)
+    await expect(page.locator('.dev-q-approvals-trunc')).toHaveCount(0)
+  })
+
   test('the Funkciok tab switches back', async ({ page }) => {
     await open(page)
     await page.locator('#devTabFunkciok').click()
