@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { requiresAuth } from '../web/auth-gate.js'
 import { operatorGateDecision } from '../web/operator-gate.js'
 import { setFunkciokServiceForTest, tryHandleFunkciok } from '../web/routes/funkciok.js'
@@ -185,5 +187,18 @@ describe('S1-6: authentication and credential scope', () => {
       expect(operatorGateDecision({ kind: 'token' }, p, () => { throw new Error('must not read access for a token') })).toBeNull()
       expect(operatorGateDecision({ kind: 'device', scope: 'full' }, p, () => { throw new Error('must not read access') })).toBeNull()
     }
+  })
+})
+
+describe('R1-6: wiring in web.ts', () => {
+  it('web.ts routes /api/funkciok through tryHandleFunkciok inside the route chain', () => {
+    // Source pin, like commands-dispatch-route: the dispatcher lives inside
+    // startWebServer, which a unit test cannot drive.
+    const web = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
+    const code = web.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+    expect(code).toMatch(/^\s*if \(await tryHandleFunkciok\(routeCtx\)\) return$/m)
+    expect(code).toMatch(/import \{[^}]*\btryHandleFunkciok\b[^}]*\} from '\.\/web\/routes\/funkciok\.js'/)
+    // after the auth handler resolved, i.e. inside the authenticated chain
+    expect(code.indexOf('if (await tryHandleFunkciok(routeCtx)) return')).toBeGreaterThan(code.indexOf('if (await tryHandleAuth(routeCtx)) return'))
   })
 })
