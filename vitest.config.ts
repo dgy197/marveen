@@ -46,6 +46,9 @@ export default defineConfig({
     // Hard gates, run in every worker before any test module is imported:
     //  - assert-not-live-install: refuse to run inside a live install (see that
     //    setup file's header for the 2026-07-27 incident it prevents).
+    //  - rm-guard: refuse recursive or forced deletes outside the temp dir, /tmp and
+    //    this checkout (and inside the checkout's .git), for every caller, however
+    //    it imports fs. Must stay AFTER assert-not-live-install.
     //  - assert-supported-node: refuse to run on a Node whose ABI the installed
     //    native modules were not built for, which otherwise reds out 40 files
     //    with errors that look like bugs in those files (2026-08-17).
@@ -66,6 +69,7 @@ export default defineConfig({
     setupFiles: [
       './src/__tests__/setup/keychain-spawn-guard.ts',
       './src/__tests__/setup/assert-not-live-install.ts',
+      './src/__tests__/setup/rm-guard.ts',
       './src/__tests__/setup/assert-supported-node.ts',
       './src/__tests__/setup/default-ssh-dir-seam.ts',
       './src/__tests__/setup/no-live-ollama.ts',
