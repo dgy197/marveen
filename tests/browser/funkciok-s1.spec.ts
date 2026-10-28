@@ -82,6 +82,10 @@ test.describe('S1-8 Fejlesztes > Funkciok', () => {
     await expect(page.locator('#devFunkciokList .dev-list-item')).toHaveCount(4)
     // the invalid registry entry carries its error flag
     await expect(page.locator('#devFunkciokList .dev-list-item[data-slug="rossz-fajl"] .dev-badge')).toBeVisible()
+    // R1-5: the raw server error code is not shown; a translated generic text is
+    const bad = page.locator('#devFunkciokList .dev-list-item[data-slug="rossz-fajl"]')
+    await expect(bad).toContainText('hibás regiszterfájl')
+    await expect(bad).not.toContainText('schema:')
     // open card count of the first valid function is on its row
     await expect(page.locator('#devFunkciokList .dev-list-item[data-slug="levelkapu"]')).toContainText('nyitott kártya: 2')
     expect(errors).toEqual([])

@@ -19908,6 +19908,20 @@ function devRepoError(code) {
   return txt === key ? String(code) : txt
 }
 
+// Server registry error text -> i18n key. The schema errors are free text
+// ("slug: ...", "repok: ..."), so anything not listed shows the generic text.
+const DEV_REG_ERROR_KEYS = {
+  'invalid JSON': 'dev.reg.err.invalid_json',
+  'file too large': 'dev.reg.err.file_too_large',
+  'not a regular file': 'dev.reg.err.not_a_regular_file',
+  'unreadable': 'dev.reg.err.unreadable',
+}
+
+function devRegistryError(code) {
+  const key = Object.prototype.hasOwnProperty.call(DEV_REG_ERROR_KEYS, code) ? DEV_REG_ERROR_KEYS[code] : 'dev.reg.err.generic'
+  return t(key)
+}
+
 async function loadDevPage() {
   const list = document.getElementById('devFunkciokList')
   if (!list) return
@@ -19944,7 +19958,7 @@ function renderDevList(items) {
     if (item.error) name.appendChild(devEl('span', 'dev-badge', t('dev.list.error_badge')))
     btn.appendChild(name)
     if (item.error) {
-      btn.appendChild(devEl('div', 'dev-list-meta', item.error))
+      btn.appendChild(devEl('div', 'dev-list-meta', devRegistryError(item.error)))
     } else {
       btn.appendChild(devEl('div', 'dev-list-meta', t('dev.list.meta', {
         last: devTime(item.last_change),
