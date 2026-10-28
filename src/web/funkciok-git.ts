@@ -105,10 +105,11 @@ export interface ParsedGitLog { commits: RawCommit[]; dropped: number }
  * the count as a repo-level error, so nothing vanishes silently), when its
  * author, subject or body carries a control separator (NUL, 0x1e, 0x1f): a
  * commit that tries to forge the old row layout loses its own row and no forged
- * row ever appears. The stream is positional, so a group whose hash, short hash
- * or date is malformed (or a tail that is not a whole group) means the
- * alignment can no longer be trusted: parsing stops there and every remaining
- * group counts as dropped (fail closed).
+ * row ever appears. The stream is positional. A malformed short hash or date
+ * drops only that record (B5: NUL cannot occur in git's text, so a valid full
+ * hash keeps the stream aligned). A malformed full hash, or a tail that is not
+ * a whole group, means the alignment can no longer be trusted: parsing stops
+ * there and every remaining group counts as dropped (fail closed).
  */
 export function parseGitLogStrict(stdout: string): ParsedGitLog {
   if (stdout === '') return { commits: [], dropped: 0 }
@@ -122,9 +123,15 @@ export function parseGitLogStrict(stdout: string): ParsedGitLog {
   for (let g = 0; g < groups; g++) {
     const base = 1 + g * FIELDS_PER_COMMIT
     const [hash, short, ct, author, subject, body, filesBlock] = tokens.slice(base, base + FIELDS_PER_COMMIT)
-    if (!HASH_RE.test(hash) || !SHORT_RE.test(short) || !DATE_RE.test(ct)) {
+    if (!HASH_RE.test(hash)) {
       dropped += groups - g
       break
+    }
+    // B5: NUL cannot enter commit text, so with a valid %H the alignment holds;
+    // a bad short hash or date (e.g. a 14-digit committer date) costs only its own record.
+    if (!SHORT_RE.test(short) || !DATE_RE.test(ct)) {
+      dropped++
+      continue
     }
     if (CONTROL_SEPARATOR_RE.test(author) || CONTROL_SEPARATOR_RE.test(subject) || CONTROL_SEPARATOR_RE.test(body)) {
       dropped++

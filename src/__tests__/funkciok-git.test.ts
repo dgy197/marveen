@@ -336,6 +336,54 @@ describe('parseGitLog (B2: NUL-delimited, strict)', () => {
     expect(parseGitLogStrict(rec(H1, 'zz', '1700000000', 'A', 's', '', '\n\n')).commits).toEqual([])
   })
 
+  it('B5: a bad short hash or date drops only that record; later and earlier groups survive', () => {
+    const g1 = rec(H1, 'aaaaaaa', '1700000000', 'A', 's1', '', '\n\n')
+    const badDate = rec(H2, 'bbbbbbb', '99999999999999', 'B', 's2', '', '\n\n')
+    const badShort = rec(H2, 'zz', '1700000100', 'B', 's2b', '', '\n\n')
+    const g3 = rec(H3, 'ccccccc', '1700000200', 'C', 's3', '', '\n\n')
+    for (const bad of [badDate, badShort]) {
+      const r = parseGitLogStrict(g1 + bad + g3)
+      expect(r.commits.map((c) => c.hash)).toEqual([H1, H3])
+      expect(r.dropped).toBe(1)
+    }
+    // an empty date drops only its own record too
+    const r2 = parseGitLogStrict(g1 + rec(H2, 'bbbbbbb', '', 'B', 's2', '', '\n\n') + g3)
+    expect(r2.commits.map((c) => c.hash)).toEqual([H1, H3])
+    expect(r2.dropped).toBe(1)
+  })
+
+  it('B5: a bad full hash still stops the parse and counts the remainder', () => {
+    const g1 = rec(H1, 'aaaaaaa', '1700000000', 'A', 's1', '', '\n\n')
+    const badHash = rec('ABCDEF', 'bbbbbbb', '1700000100', 'B', 's2', '', '\n\n')
+    const after = rec(H2, 'bbbbbbb', '1700000100', 'B', 's3', '', '\n\n') + rec(H3, 'ccccccc', '1700000200', 'C', 's4', '', '\n\n')
+    const r = parseGitLogStrict(g1 + badHash + after)
+    expect(r.commits.map((c) => c.hash)).toEqual([H1])
+    expect(r.dropped).toBe(3)
+  })
+
+  it('B5: a real repo whose MIDDLE commit has a 14-digit committer date keeps the older commit, dropped=1', async () => {
+    const repo = makeRepo([{ at: T0 + 1, msg: 'feat: oldest (card 4fbbb27c)', files: { 'src/a.ts': '1' } }])
+    try {
+      const real = realpathSync(repo)
+      const run = (args: string[], input?: string): string =>
+        execFileSync('git', ['-C', real, ...args], { env: GIT_ENV, input, encoding: 'utf8' }).trim()
+      const tree = run(['rev-parse', 'HEAD^{tree}'])
+      const oldest = run(['rev-parse', 'HEAD'])
+      const raw = (parent: string, ct: string, msg: string): string =>
+        `tree ${tree}\nparent ${parent}\nauthor T <t@example.invalid> ${T0 + 2} +0000\ncommitter T <t@example.invalid> ${ct} +0000\n\n${msg}\n`
+      // git refuses such a date on `git commit`; --literally writes the fsck-valid object as is
+      const middle = run(['hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], raw(oldest, '99999999999999', 'feat: middle bad date'))
+      const newest = run(['hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], raw(middle, String(T0 + 3), 'feat: newest'))
+      run(['update-ref', 'HEAD', newest])
+      const r = await createGitLogReader().read(real)
+      if (!r.ok) throw new Error('expected ok')
+      expect(r.commits.map((c) => c.subject)).toEqual(['feat: newest', 'feat: oldest (card 4fbbb27c)'])
+      expect(r.dropped).toBe(1)
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
   it('a stream that does not start with NUL or ends mid-group is counted, not parsed', () => {
     expect(parseGitLogStrict('garbage').dropped).toBeGreaterThan(0)
     expect(parseGitLogStrict('garbage').commits).toEqual([])
