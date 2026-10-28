@@ -116,12 +116,17 @@ function clip(s: string, max: number): string {
   return chars.length <= max ? s : chars.slice(0, max).join('')
 }
 
+// B3 (S1 security r1): above this size the text is not masked at all and a fixed
+// marker is returned instead (fail closed). A partial cut BEFORE masking could
+// leave half of a multi-part secret unmatched, so there is no "mask a prefix".
+export const MASK_INPUT_MAX_CHARS = 1_000_000
+export const TOO_LONG_MARKER = '[too long]'
+
 /** Mask the WHOLE text first, then cut: a secret cut in half would dodge the patterns. */
 function maskedPreview(raw: string | null, max: number): string | null {
   if (raw === null || raw === undefined) return null
-  // Bound the regex work on a huge body; the preview never reaches past `max`
-  // characters, so a secret straddling this cap cannot end up in it.
-  return clip(maskSecrets(raw.slice(0, 20_000)), max)
+  if (raw.length > MASK_INPUT_MAX_CHARS) return TOO_LONG_MARKER
+  return clip(maskSecrets(raw), max)
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +308,9 @@ async function gatherGit(deps: FunkciokDeps, fn: Funkcio, cardIds: readonly stri
     if (!log.ok) { repos.push({ nev: repo.nev, error: log.error, commits: 0 }); continue }
 
     const matched: MatchedCommit[] = matchCommits(log.commits, { cards, tags: fn.tagek, pathGlobs: repo.pathGlobok })
-    repos.push({ nev: repo.nev, error: null, commits: matched.length })
+    // B2: records the strict parser refused (forged or misaligned) are counted,
+    // never silent: the repo shows an error next to the commits that did parse.
+    repos.push({ nev: repo.nev, error: log.dropped > 0 ? 'git_records_dropped' : null, commits: matched.length })
 
     const seenTests = new Set<string>()
     for (const m of matched) {

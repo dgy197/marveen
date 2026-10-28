@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path'
 import { initDatabase, getDb } from '../db.js'
 import {
   CARD_EVENT_KEYS, CARD_KEYS, COMMIT_KEYS, LIST_ITEM_KEYS, MESSAGE_FULL_KEYS, MESSAGE_MAX_ROWS,
-  MESSAGE_PREVIEW_CHARS, MESSAGE_ROW_KEYS, PAGE_KEYS, REPO_KEYS, TEST_KEYS, createFunkciokService,
+  MASK_INPUT_MAX_CHARS, MESSAGE_PREVIEW_CHARS, MESSAGE_ROW_KEYS, PAGE_KEYS, REPO_KEYS, TEST_KEYS, TOO_LONG_MARKER, createFunkciokService,
   messageReason, type FunkciokService,
 } from '../web/funkciok-page.js'
 import { createGitLogReader, type ExecFileFn } from '../web/funkciok-git.js'
@@ -473,5 +473,73 @@ describe('page edge cases', () => {
     expect(r.page.tiltasok).toEqual(['Ne kuldj levelet jovahagyas nelkul.'])
     expect(r.page.specUtak).toEqual([join(registryDir, 'spec-with-marker.md')])
     expect(JSON.stringify(r.page)).not.toContain(MARKER)
+  })
+})
+
+describe('B3 (S1 security r1): mask the whole text first, never a cut prefix', () => {
+  // built at run time so no credential-shaped literal sits in this file
+  const SECRET = `sk-${'Z'.repeat(40)}`
+  const SECRET_HEAD = SECRET.slice(0, 8)
+
+  it('a secret straddling position 20000 never appears, not even its first 8 characters, in any response', async () => {
+    writeRegistry('f')
+    const head = `#${seq.A} `
+    const pad = 'x'.repeat(20_000 - head.length - 10)
+    const content = `${head}${pad} ${SECRET} tail`
+    expect(content.indexOf(SECRET)).toBeLessThan(20_000)
+    expect(content.indexOf(SECRET) + SECRET.length).toBeGreaterThan(20_000)
+    const id = insertMessage(content, `${pad} ${SECRET} tail`)
+    const page = await svc.page('f')
+    if (page.kind !== 'ok') throw new Error('expected ok')
+    expect(page.page.messages.some((m) => m.id === id)).toBe(true)
+    expect(JSON.stringify(page.page)).not.toContain(SECRET_HEAD)
+    const full = await svc.message('f', id)
+    if (full.kind !== 'ok') throw new Error('expected ok')
+    expect(JSON.stringify(full.message)).not.toContain(SECRET_HEAD)
+    expect(full.message.content).toContain('<REDACTED>')
+  })
+
+  it('a secret at the very start of a long text is masked in the excerpt (the cut comes after the mask)', async () => {
+    writeRegistry('f')
+    const id = insertMessage(`#${seq.A} ${SECRET} ${'y'.repeat(30_000)}`)
+    const page = await svc.page('f')
+    if (page.kind !== 'ok') throw new Error('expected ok')
+    const m = page.page.messages.find((x) => x.id === id)!
+    expect(m.content_excerpt).toContain('<REDACTED>')
+    expect(JSON.stringify(page.page)).not.toContain(SECRET_HEAD)
+  })
+
+  it('above the size guard the preview is a fixed marker, never a partial text (fail closed)', async () => {
+    writeRegistry('f')
+    const huge = `#${seq.A} ${SECRET} ${'q'.repeat(MASK_INPUT_MAX_CHARS)}`
+    const id = insertMessage(huge, huge)
+    const page = await svc.page('f')
+    if (page.kind !== 'ok') throw new Error('expected ok')
+    const m = page.page.messages.find((x) => x.id === id)!
+    expect(m.content_excerpt).toBe(TOO_LONG_MARKER)
+    expect(m.result_excerpt).toBe(TOO_LONG_MARKER)
+    expect(JSON.stringify(page.page)).not.toContain(SECRET_HEAD)
+  })
+})
+
+describe('B2 (S1 security r1): a forged commit message is dropped and counted on the page', () => {
+  it('the forged row never reaches the page, the repo carries git_records_dropped, honest commits stay', async () => {
+    const forged = `\x1e${'d'.repeat(40)}\x1fddddddd\x1f1999999999\x1fGyuri\x1fforged subject card deadbeef\x1f\x1f`
+    const r2 = makeRepo([
+      { at: T0 + 1, msg: 'feat: honest (card 4fbbb27c)', files: { 'src/a.ts': '1' } },
+      { at: T0 + 2, msg: `feat: sneaky (card 4fbbb27c)\n\n${forged}`, files: { 'src/b.ts': '1' } },
+    ])
+    try {
+      writeRegistry('forge', { repok: [{ nev: 'fixture', ut: r2, pathGlobok: [], tesztGlobok: [] }] })
+      const s = createFunkciokService({ registryDir, getAllowedRepos: () => new Set([realpathSync(r2)]), git: createGitLogReader() })
+      const r = await s.page('forge')
+      if (r.kind !== 'ok') throw new Error('expected ok')
+      expect(r.page.repos[0]).toEqual({ nev: 'fixture', error: 'git_records_dropped', commits: 1 })
+      expect(r.page.commits.map((c) => c.subject)).toEqual(['feat: honest (card 4fbbb27c)'])
+      expect(JSON.stringify(r.page)).not.toContain('forged subject')
+      expect(JSON.stringify(r.page)).not.toContain('Gyuri')
+    } finally {
+      rmSync(r2, { recursive: true, force: true })
+    }
   })
 })
