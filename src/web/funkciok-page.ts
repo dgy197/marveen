@@ -9,7 +9,7 @@ import {
   type GitLogReader, type MatchedCommit, type MatchReason,
 } from './funkciok-git.js'
 
-// Card d7b2d5c8 (S1): assembles the function page from the registry, the kanban
+// Function page (S1): assembles the function page from the registry, the kanban
 // tables, the inter-agent bus and git. READ ONLY.
 //
 // Spec 5.4: every response is built by one of the explicit serializers below.

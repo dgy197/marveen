@@ -10,7 +10,7 @@ import {
 } from '../web/funkciok-git.js'
 import { checkRepoPath } from '../web/funkciok-registry.js'
 
-// Card d7b2d5c8 (S1): the git reader and the JS-side matchers. The git fixtures
+// Function page (S1): the git reader and the JS-side matchers. The git fixtures
 // are REAL temp repositories (git init in tmp); nothing here touches another repo.
 
 const GIT_ENV = {
@@ -50,12 +50,12 @@ function makeRepo(commits: FixtureCommit[]): string {
 
 const T0 = 1_760_000_000
 const FIXTURE: FixtureCommit[] = [
-  { at: T0 + 10, msg: 'feat: first thing (card 4fbbb27c, N1)', files: { 'src/a.ts': '1', 'src/__tests__/a.test.ts': '1' } },
+  { at: T0 + 10, msg: 'feat: first thing (card 3333aaaa, N1)', files: { 'src/a.ts': '1', 'src/__tests__/a.test.ts': '1' } },
   { at: T0 + 20, msg: 'chore: tagged work KAPUHATOKOR822 only', files: { 'docs/readme.md': 'x' } },
   { at: T0 + 30, msg: 'fix: touches the gate file (#1234)', files: { 'src/gate/check.ts': '1', 'src/gate/check.test.ts': '1' } },
-  { at: T0 + 40, msg: 'refactor: unrelated\n\nBody mentions card 6a52389f here.', files: { 'src/other.ts': '1' } },
+  { at: T0 + 40, msg: 'refactor: unrelated\n\nBody mentions card 4444aaaa here.', files: { 'src/other.ts': '1' } },
   { at: T0 + 50, msg: 'docs: nothing relevant', files: { 'LICENSE': 'x' } },
-  { at: T0 + 60, msg: 'feat: second (card 4fbbb27c)', files: { 'src/a.ts': '2', 'src/__tests__/a.test.ts': '2' } },
+  { at: T0 + 60, msg: 'feat: second (card 3333aaaa)', files: { 'src/a.ts': '2', 'src/__tests__/a.test.ts': '2' } },
 ]
 
 let repo: string
@@ -68,13 +68,13 @@ describe('createGitLogReader against a real temp repo', () => {
     expect(r.ok).toBe(true)
     if (!r.ok) return
     expect(r.commits).toHaveLength(6)
-    expect(r.commits[0].subject).toBe('feat: second (card 4fbbb27c)')
+    expect(r.commits[0].subject).toBe('feat: second (card 3333aaaa)')
     expect(r.commits[0].date).toBe(T0 + 60)
     expect(r.commits[0].files.sort()).toEqual(['src/__tests__/a.test.ts', 'src/a.ts'])
     expect(r.commits[0].hash).toMatch(/^[0-9a-f]{40}/)
     expect(r.commits[0].short.length).toBeGreaterThanOrEqual(7)
     const withBody = r.commits.find((c) => c.subject === 'refactor: unrelated')!
-    expect(withBody.body).toContain('card 6a52389f')
+    expect(withBody.body).toContain('card 4444aaaa')
     expect(withBody.files).toEqual(['src/other.ts'])
     expect(r.commits[0].author).toBe('Teszt Elek')
   })
@@ -102,11 +102,11 @@ describe('commit matching on the real fixture (card | tag | path)', () => {
   const subjects = (m: ReturnType<typeof matchCommits>) => m.map((x) => x.commit.subject)
 
   it('card: subject or body "card <hex8>" of a registry card', async () => {
-    const m = matchCommits(await commits(), { cards: new Set(['4fbbb27c', '6a52389f']), tags: [], pathGlobs: [] })
+    const m = matchCommits(await commits(), { cards: new Set(['3333aaaa', '4444aaaa']), tags: [], pathGlobs: [] })
     expect(m.every((x) => x.reason === 'card')).toBe(true)
     expect(subjects(m).sort()).toEqual([
-      'feat: first thing (card 4fbbb27c, N1)',
-      'feat: second (card 4fbbb27c)',
+      'feat: first thing (card 3333aaaa, N1)',
+      'feat: second (card 3333aaaa)',
       'refactor: unrelated',
     ].sort())
   })
@@ -125,7 +125,7 @@ describe('commit matching on the real fixture (card | tag | path)', () => {
   })
 
   it('priority when several apply: card beats tag beats path', async () => {
-    const m = matchCommits(await commits(), { cards: new Set(['4fbbb27c']), tags: ['first'], pathGlobs: ['src/*.ts'] })
+    const m = matchCommits(await commits(), { cards: new Set(['3333aaaa']), tags: ['first'], pathGlobs: ['src/*.ts'] })
     const first = m.find((x) => x.commit.subject.startsWith('feat: first'))!
     expect(first.reason).toBe('card')
   })
@@ -133,7 +133,7 @@ describe('commit matching on the real fixture (card | tag | path)', () => {
   it('hasCardRef reflects ANY "card <hex8>", not only registry cards (the traceability gap metric)', async () => {
     const m = matchCommits(await commits(), { cards: new Set(), tags: [], pathGlobs: ['src/**', 'docs/*'] })
     const byS = Object.fromEntries(m.map((x) => [x.commit.subject, x.hasCardRef]))
-    expect(byS['feat: first thing (card 4fbbb27c, N1)']).toBe(true)
+    expect(byS['feat: first thing (card 3333aaaa, N1)']).toBe(true)
     expect(byS['chore: tagged work KAPUHATOKOR822 only']).toBe(false)
   })
 
@@ -162,13 +162,13 @@ describe('commit matching on the real fixture (card | tag | path)', () => {
 
   it('test files: those of the matched commits matching the test globs, last modifying commit first', async () => {
     const all = await commits()
-    const m = matchCommits(all, { cards: new Set(['4fbbb27c']), tags: [], pathGlobs: ['src/gate/*.ts'] })
+    const m = matchCommits(all, { cards: new Set(['3333aaaa']), tags: [], pathGlobs: ['src/gate/*.ts'] })
     const seen = new Map<string, string>()
     for (const x of m) for (const f of x.commit.files) {
       if (!seen.has(f) && matchesAnyGlob(f, ['src/**/*.test.ts'])) seen.set(f, x.commit.subject)
     }
     // newest first: a.test.ts was last touched by the "second" commit
-    expect(seen.get('src/__tests__/a.test.ts')).toBe('feat: second (card 4fbbb27c)')
+    expect(seen.get('src/__tests__/a.test.ts')).toBe('feat: second (card 3333aaaa)')
     expect(seen.get('src/gate/check.test.ts')).toBe('fix: touches the gate file (#1234)')
   })
 })
@@ -310,11 +310,11 @@ describe('parseGitLog (B2: NUL-delimited, strict)', () => {
   })
 
   it('the forged row from the review (0x1e/0x1f in a message) never becomes a row, and is counted', () => {
-    const forgedBody = `\x1e${'d'.repeat(40)}\x1fddddddd\x1f1999999999\x1fGyuri\x1fforged subject card deadbeef\x1f\x1f`
-    const real = rec(H1, 'aaaaaaa', '1700000000', 'Eve', 'real subject (card 4fbbb27c)', forgedBody, '\n\nsrc/a.ts\n')
+    const forgedBody = `\x1e${'d'.repeat(40)}\x1fddddddd\x1f1999999999\x1fMallory\x1fforged subject card deadbeef\x1f\x1f`
+    const real = rec(H1, 'aaaaaaa', '1700000000', 'Eve', 'real subject (card 3333aaaa)', forgedBody, '\n\nsrc/a.ts\n')
     const r = parseGitLogStrict(real + rec(H2, 'bbbbbbb', '1700000100', 'Ok', 'fine', '', '\n\nsrc/b.ts\n'))
     expect(r.commits.map((c) => c.hash)).toEqual([H2])
-    expect(r.commits.some((c) => c.subject.includes('forged') || c.author === 'Gyuri')).toBe(false)
+    expect(r.commits.some((c) => c.subject.includes('forged') || c.author === 'Mallory')).toBe(false)
     expect(r.dropped).toBe(1)
   })
 
@@ -362,7 +362,7 @@ describe('parseGitLog (B2: NUL-delimited, strict)', () => {
   })
 
   it('B5: a real repo whose MIDDLE commit has a 14-digit committer date keeps the older commit, dropped=1', async () => {
-    const repo = makeRepo([{ at: T0 + 1, msg: 'feat: oldest (card 4fbbb27c)', files: { 'src/a.ts': '1' } }])
+    const repo = makeRepo([{ at: T0 + 1, msg: 'feat: oldest (card 3333aaaa)', files: { 'src/a.ts': '1' } }])
     try {
       const real = realpathSync(repo)
       const run = (args: string[], input?: string): string =>
@@ -377,7 +377,7 @@ describe('parseGitLog (B2: NUL-delimited, strict)', () => {
       run(['update-ref', 'HEAD', newest])
       const r = await createGitLogReader().read(real)
       if (!r.ok) throw new Error('expected ok')
-      expect(r.commits.map((c) => c.subject)).toEqual(['feat: newest', 'feat: oldest (card 4fbbb27c)'])
+      expect(r.commits.map((c) => c.subject)).toEqual(['feat: newest', 'feat: oldest (card 3333aaaa)'])
       expect(r.dropped).toBe(1)
     } finally {
       rmSync(repo, { recursive: true, force: true })
@@ -399,17 +399,17 @@ describe('parseGitLog (B2: NUL-delimited, strict)', () => {
   })
 
   it('a real repo: a commit whose message carries the forged sequence is dropped and counted, other commits survive', async () => {
-    const forged = `\x1e${'d'.repeat(40)}\x1fddddddd\x1f1999999999\x1fGyuri\x1fforged subject card deadbeef\x1f\x1f`
+    const forged = `\x1e${'d'.repeat(40)}\x1fddddddd\x1f1999999999\x1fMallory\x1fforged subject card deadbeef\x1f\x1f`
     const r2 = makeRepo([
-      { at: T0 + 1, msg: 'feat: before (card 4fbbb27c)', files: { 'src/a.ts': '1' } },
-      { at: T0 + 2, msg: `feat: sneaky (card 4fbbb27c)\n\n${forged}`, files: { 'src/b.ts': '1' } },
-      { at: T0 + 3, msg: 'feat: after (card 4fbbb27c)', files: { 'src/c.ts': '1' } },
+      { at: T0 + 1, msg: 'feat: before (card 3333aaaa)', files: { 'src/a.ts': '1' } },
+      { at: T0 + 2, msg: `feat: sneaky (card 3333aaaa)\n\n${forged}`, files: { 'src/b.ts': '1' } },
+      { at: T0 + 3, msg: 'feat: after (card 3333aaaa)', files: { 'src/c.ts': '1' } },
     ])
     try {
       const r = await createGitLogReader().read(realpathSync(r2))
       if (!r.ok) throw new Error('expected ok')
-      expect(r.commits.map((c) => c.subject)).toEqual(['feat: after (card 4fbbb27c)', 'feat: before (card 4fbbb27c)'])
-      expect(r.commits.some((c) => c.hash.startsWith('dddd') || c.author === 'Gyuri' || c.subject.includes('forged'))).toBe(false)
+      expect(r.commits.map((c) => c.subject)).toEqual(['feat: after (card 3333aaaa)', 'feat: before (card 3333aaaa)'])
+      expect(r.commits.some((c) => c.hash.startsWith('dddd') || c.author === 'Mallory' || c.subject.includes('forged'))).toBe(false)
       expect(r.dropped).toBe(1)
     } finally {
       rmSync(r2, { recursive: true, force: true })
@@ -417,13 +417,13 @@ describe('parseGitLog (B2: NUL-delimited, strict)', () => {
   })
 
   it('a real repo without separators: dropped is 0 and subject, body and files round-trip', async () => {
-    const r2 = makeRepo([{ at: T0 + 1, msg: 'feat: plain (card 4fbbb27c)\n\nBody line.', files: { 'src/a.ts': '1', 'src/sub/b.ts': '1' } }])
+    const r2 = makeRepo([{ at: T0 + 1, msg: 'feat: plain (card 3333aaaa)\n\nBody line.', files: { 'src/a.ts': '1', 'src/sub/b.ts': '1' } }])
     try {
       const r = await createGitLogReader().read(realpathSync(r2))
       if (!r.ok) throw new Error('expected ok')
       expect(r.dropped).toBe(0)
       expect(r.commits).toHaveLength(1)
-      expect(r.commits[0]).toMatchObject({ subject: 'feat: plain (card 4fbbb27c)', body: 'Body line.', author: 'Teszt Elek', date: T0 + 1 })
+      expect(r.commits[0]).toMatchObject({ subject: 'feat: plain (card 3333aaaa)', body: 'Body line.', author: 'Teszt Elek', date: T0 + 1 })
       expect(r.commits[0].files.sort()).toEqual(['src/a.ts', 'src/sub/b.ts'])
     } finally {
       rmSync(r2, { recursive: true, force: true })
@@ -453,7 +453,7 @@ describe('B1: a repo\'s own config cannot make the log run a program', () => {
       // a rename WITH an edit: only inexact rename detection needs the blobs
       git(src, ['mv', 'a.txt', 'b.txt'])
       writeFileSync(join(src, 'b.txt'), body + 'extra\n')
-      git(src, ['commit', '-q', '-am', 'two (card 4fbbb27c)'])
+      git(src, ['commit', '-q', '-am', 'two (card 3333aaaa)'])
       pc = join(tmp, 'pc')
       execFileSync('git', ['clone', '-q', '--no-local', '--filter=blob:none', '--no-checkout', `file://${src}`, pc], { env: GIT_ENV, stdio: 'ignore' })
       const up = join(tmp, 'up.sh')
@@ -481,7 +481,7 @@ describe('B1: a repo\'s own config cannot make the log run a program', () => {
     if (!r.ok) throw new Error(`expected ok, got ${r.error}`)
     expect(existsSync(marker)).toBe(false)
     expect(r.dropped).toBe(0)
-    expect(r.commits.map((c) => c.subject)).toEqual(['two (card 4fbbb27c)', 'one'])
+    expect(r.commits.map((c) => c.subject)).toEqual(['two (card 3333aaaa)', 'one'])
     // --no-renames: the rename shows as delete + add, both names present
     expect(r.commits[0].files.sort()).toEqual(['a.txt', 'b.txt'])
   })
@@ -521,7 +521,7 @@ describe('pure matchers', () => {
   })
 
   it('cardRefsIn and prNumberOf', () => {
-    expect(cardRefsIn('x (card 6A52389F, N6) and Card 4fbbb27c')).toEqual(['6a52389f', '4fbbb27c'])
+    expect(cardRefsIn('x (card 4444AAAA, N6) and Card 3333aaaa')).toEqual(['4444aaaa', '3333aaaa'])
     expect(cardRefsIn('discard 12345678')).toEqual([])
     expect(prNumberOf('fix thing (#2315)')).toBe(2315)
     expect(prNumberOf('fix (#1) then (#22)')).toBe(22)

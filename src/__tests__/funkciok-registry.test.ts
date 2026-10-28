@@ -8,7 +8,7 @@ import {
 } from '../web/funkciok-registry.js'
 import { getSettingDefinition, validateSettingValue } from '../config-registry.js'
 
-// Card d7b2d5c8 (S1): registry loader, schema validation, slug and repo-path fences.
+// Function page (S1): registry loader, schema validation, slug and repo-path fences.
 
 let dir: string
 
@@ -20,7 +20,7 @@ function good(slug: string, extra: Record<string, unknown> = {}): Record<string,
     slug,
     nev: `Funkcio ${slug}`,
     leiras: 'Rovid leiras.',
-    kartyak: ['4fbbb27c'],
+    kartyak: ['3333aaaa'],
     tagek: ['TAG123'],
     repok: [{ nev: 'marveen', ut: '/tmp/some-repo', pathGlobok: ['src/web/*.ts'], tesztGlobok: ['src/__tests__/*.test.ts'] }],
     tiltasok: ['Ne kuldj levelet jovahagyas nelkul.'],
@@ -35,11 +35,11 @@ function put(slug: string, doc: unknown): void {
 
 describe('validateFunkcio', () => {
   it('accepts a complete document and keeps every field', () => {
-    const r = validateFunkcio(good('levelkapu'), 'levelkapu')
+    const r = validateFunkcio(good('charlie-feature'), 'charlie-feature')
     expect(r.ok).toBe(true)
     if (r.ok) {
-      expect(r.value.slug).toBe('levelkapu')
-      expect(r.value.kartyak).toEqual(['4fbbb27c'])
+      expect(r.value.slug).toBe('charlie-feature')
+      expect(r.value.kartyak).toEqual(['3333aaaa'])
       expect(r.value.repok[0].pathGlobok).toEqual(['src/web/*.ts'])
     }
   })
@@ -53,7 +53,7 @@ describe('validateFunkcio', () => {
 
   it.each([
     ['card id not hex8', { kartyak: ['xyz'] }],
-    ['card id uppercase', { kartyak: ['4FBBB27C'] }],
+    ['card id uppercase', { kartyak: ['3333AAAA'] }],
     ['tag with whitespace', { tagek: ['two words'] }],
     ['tag with control char', { tagek: ['a\nb'] }],
     ['spec path relative', { specUtak: ['docs/spec.md'] }],
@@ -100,9 +100,9 @@ describe('validateFunkcio', () => {
 
 describe('listRegistry / getRegistryEntry', () => {
   it('S1-1 input: four valid files come back sorted by slug', () => {
-    for (const s of ['levelkapu', 'szamlamento-olvasottra-jeloles', 'ajanlat-kor', 'context-guard']) put(s, good(s))
+    for (const s of ['charlie-feature', 'delta-feature', 'alpha-feature', 'bravo-feature']) put(s, good(s))
     const l = listRegistry(dir)
-    expect(l.map((e) => e.slug)).toEqual(['ajanlat-kor', 'context-guard', 'levelkapu', 'szamlamento-olvasottra-jeloles'])
+    expect(l.map((e) => e.slug)).toEqual(['alpha-feature', 'bravo-feature', 'charlie-feature', 'delta-feature'])
     expect(l.every((e) => e.ok)).toBe(true)
   })
 

@@ -8358,7 +8358,7 @@ body {
   text-overflow: ellipsis;
 }
 
-/* === Fejlesztes > Funkciok (card d7b2d5c8, S1) === */
+/* === Fejlesztes > Funkciok (S1) === */
 .dev-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
 .dev-tabs .view-btn { width: auto; padding: 0 12px; }
 .dev-tabs .view-btn:disabled { opacity: 0.55; cursor: not-allowed; }

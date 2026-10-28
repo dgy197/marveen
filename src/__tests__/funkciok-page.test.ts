@@ -11,7 +11,7 @@ import {
 } from '../web/funkciok-page.js'
 import { createGitLogReader, type ExecFileFn } from '../web/funkciok-git.js'
 
-// Card d7b2d5c8 (S1): the assembled page against an in-memory sqlite, a temp
+// Function page (S1): the assembled page against an in-memory sqlite, a temp
 // registry directory and a real temp git repository. Acceptance S1-1 .. S1-5.
 
 const MARKER = 'TITOK-MARKER'
@@ -61,13 +61,13 @@ let seq: Record<string, number>
 function insertCard(id: string, title: string, status: string, parent: string | null = null): number {
   const db = getDb()
   db.prepare(`INSERT INTO kanban_cards (id, title, description, test_steps, status, parent_id, assignee, sort_order, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, 'ezermester', 0, ?, ?)`).run(id, title, `${MARKER} description`, `${MARKER} steps`, status, parent, T0, T0)
+              VALUES (?, ?, ?, ?, ?, ?, 'agent-b', 0, ?, ?)`).run(id, title, `${MARKER} description`, `${MARKER} steps`, status, parent, T0, T0)
   return (db.prepare('SELECT rowid AS seq FROM kanban_cards WHERE id = ?').get(id) as { seq: number }).seq
 }
 
 function insertMessage(content: string, result: string | null = null, extra: { from?: string; to?: string } = {}): number {
   const info = getDb().prepare(`INSERT INTO agent_messages (from_agent, to_agent, content, status, result, created_at, completed_at)
-                                VALUES (?, ?, ?, 'done', ?, ?, ?)`).run(extra.from ?? 'brainy', extra.to ?? 'ezermester', content, result, T0 + 5, T0 + 9)
+                                VALUES (?, ?, ?, 'done', ?, ?, ?)`).run(extra.from ?? 'agent-a', extra.to ?? 'agent-b', content, result, T0 + 5, T0 + 9)
   return Number(info.lastInsertRowid)
 }
 
@@ -75,14 +75,14 @@ function insertMessage(content: string, result: string | null = null, extra: { f
 function seedMarkerRows(): void {
   const db = getDb()
   const cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((c) => c.name)
-  db.prepare('INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)').run('4fbbb27c', 'someone', `${MARKER} comment with a quoted mail`, T0)
-  db.prepare('INSERT INTO kanban_card_field_events (card_id, field, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)').run('4fbbb27c', 'title', `${MARKER} old`, `${MARKER} new`, 'x', T0)
+  db.prepare('INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)').run('3333aaaa', 'someone', `${MARKER} comment with a quoted mail`, T0)
+  db.prepare('INSERT INTO kanban_card_field_events (card_id, field, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)').run('3333aaaa', 'title', `${MARKER} old`, `${MARKER} new`, 'x', T0)
   db.prepare('INSERT INTO memories (chat_id, content, sector, created_at, accessed_at) VALUES (?, ?, ?, ?, ?)').run('c', `${MARKER} memory`, 'semantic', T0, T0)
-  db.prepare('INSERT INTO approvals (id, agent_id, category, action_description, action_payload) VALUES (?, ?, ?, ?, ?)').run('ap1', 'brainy', 'email_send', `${MARKER} action`, `${MARKER} payload`)
-  db.prepare('INSERT INTO token_usage (agent, session_id, timestamp, content_preview, task_title) VALUES (?, ?, ?, ?, ?)').run('ezermester', 's', T0, `${MARKER} preview`, `${MARKER} title`)
+  db.prepare('INSERT INTO approvals (id, agent_id, category, action_description, action_payload) VALUES (?, ?, ?, ?, ?)').run('ap1', 'agent-a', 'email_send', `${MARKER} action`, `${MARKER} payload`)
+  db.prepare('INSERT INTO token_usage (agent, session_id, timestamp, content_preview, task_title) VALUES (?, ?, ?, ?, ?)').run('agent-b', 's', T0, `${MARKER} preview`, `${MARKER} title`)
   db.prepare('INSERT INTO tool_call_log (session_id, tool_name, input_summary, created_at) VALUES (?, ?, ?, ?)').run('s', 'Bash', `${MARKER} input`, T0)
-  db.prepare("INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, created_at) VALUES (?, ?, 'in', ?, ?, ?)").run('brainy', '1', '1', `${MARKER} gyuri says`, T0)
-  db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run('brainy', '2026-10-27', `${MARKER} diary`, T0)
+  db.prepare("INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, created_at) VALUES (?, ?, 'in', ?, ?, ?)").run('agent-a', '1', '1', `${MARKER} mallory says`, T0)
+  db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run('agent-a', '2026-10-27', `${MARKER} diary`, T0)
   // The bus carries free text in more columns than the page reads.
   const msgCols = cols('agent_messages')
   const id = insertMessage('about #' + seq.A + ' and nothing else')
@@ -96,7 +96,7 @@ function writeRegistry(slug: string, over: Record<string, unknown> = {}): void {
     slug,
     nev: `Funkcio ${slug}`,
     leiras: 'Leiras.',
-    kartyak: ['4fbbb27c', '6a52389f'],
+    kartyak: ['3333aaaa', '4444aaaa'],
     tagek: ['FUNKTAG1'],
     repok: [{ nev: 'fixture', ut: repo, pathGlobok: ['src/gate/*.ts'], tesztGlobok: ['src/**/*.test.ts'] }],
     tiltasok: ['Ne kuldj levelet jovahagyas nelkul.'],
@@ -109,24 +109,24 @@ beforeEach(() => {
   initDatabase(':memory:')
   registryDir = mkdtempSync(join(tmpdir(), 'funkciok-page-reg-'))
   repo = makeRepo([
-    { at: T0 + 10, msg: 'feat: one (card 4fbbb27c, N1)', files: { 'src/a.ts': '1', 'src/__tests__/a.test.ts': '1' } },
-    { at: T0 + 20, msg: 'feat: two (card 6a52389f, N2)', files: { 'src/b.ts': '1' } },
+    { at: T0 + 10, msg: 'feat: one (card 3333aaaa, N1)', files: { 'src/a.ts': '1', 'src/__tests__/a.test.ts': '1' } },
+    { at: T0 + 20, msg: 'feat: two (card 4444aaaa, N2)', files: { 'src/b.ts': '1' } },
     { at: T0 + 30, msg: 'chore: tagged FUNKTAG1 work', files: { 'docs/x.md': '1' } },
     { at: T0 + 40, msg: 'fix: gate file touched (#2315)', files: { 'src/gate/check.ts': '1', 'src/gate/check.test.ts': '1' } },
     { at: T0 + 50, msg: 'docs: unrelated', files: { 'LICENSE': 'x' } },
-    { at: T0 + 60, msg: 'feat: three (card 4fbbb27c)', files: { 'src/__tests__/a.test.ts': '2' } },
+    { at: T0 + 60, msg: 'feat: three (card 3333aaaa)', files: { 'src/__tests__/a.test.ts': '2' } },
   ])
   allowed = new Set([realpathSync(repo)])
   svc = createFunkciokService({ registryDir, getAllowedRepos: () => allowed, git: createGitLogReader() })
 
   seq = {}
-  seq.A = insertCard('4fbbb27c', 'Levelkapu fo kartya', 'in_progress')
-  seq.B = insertCard('6a52389f', 'Masodik kartya', 'done')
-  seq.child = insertCard('c1c1c1c1', 'Alkartya', 'planned', '4fbbb27c')
+  seq.A = insertCard('3333aaaa', 'Charlie main card', 'in_progress')
+  seq.B = insertCard('4444aaaa', 'Masodik kartya', 'done')
+  seq.child = insertCard('c1c1c1c1', 'Alkartya', 'planned', '3333aaaa')
   seq.other = insertCard('d0d0d0d0', 'Idegen kartya', 'planned')
   const ev = getDb().prepare("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)")
-  ev.run('4fbbb27c', 'planned', 'in_progress', 'ezermester', T0 + 100)
-  ev.run('6a52389f', 'in_progress', 'done', 'brainy', T0 + 200)
+  ev.run('3333aaaa', 'planned', 'in_progress', 'agent-b', T0 + 100)
+  ev.run('4444aaaa', 'in_progress', 'done', 'agent-a', T0 + 200)
 })
 
 afterEach(() => {
@@ -139,11 +139,11 @@ const sorted = (a: readonly string[]) => [...a].sort()
 
 describe('S1-1: the list', () => {
   it('four valid functions give four items, sorted by slug, with exactly the allowlisted keys', async () => {
-    for (const s of ['levelkapu', 'szamlamento-olvasottra-jeloles', 'ajanlat-kor', 'context-guard']) writeRegistry(s)
+    for (const s of ['charlie-feature', 'delta-feature', 'alpha-feature', 'bravo-feature']) writeRegistry(s)
     const list = await svc.list()
-    expect(list.map((i) => i.slug)).toEqual(['ajanlat-kor', 'context-guard', 'levelkapu', 'szamlamento-olvasottra-jeloles'])
+    expect(list.map((i) => i.slug)).toEqual(['alpha-feature', 'bravo-feature', 'charlie-feature', 'delta-feature'])
     for (const i of list) expect(keysOf(i)).toEqual(sorted(LIST_ITEM_KEYS.filter((k) => k !== 'error')))
-    expect(list[0].open_cards).toBe(2) // 4fbbb27c in_progress + its planned child; 6a52389f is done
+    expect(list[0].open_cards).toBe(2) // 3333aaaa in_progress + its planned child; 4444aaaa is done
     expect(list[0].last_change).toBe(T0 + 200) // newest of: matched commits (T0+60), card status events (T0+200)
   })
 
@@ -163,19 +163,19 @@ describe('cards block', () => {
     writeRegistry('f')
     const r = await svc.page('f')
     if (r.kind !== 'ok') throw new Error('expected ok')
-    expect(r.page.cards.map((c) => c.id)).toEqual(['4fbbb27c', 'c1c1c1c1', '6a52389f'])
+    expect(r.page.cards.map((c) => c.id)).toEqual(['3333aaaa', 'c1c1c1c1', '4444aaaa'])
     const a = r.page.cards[0]
     expect(a.seq).toBe(seq.A)
     expect(a.status).toBe('in_progress')
-    expect(a.events).toEqual([{ from_status: 'planned', to_status: 'in_progress', actor: 'ezermester', created_at: T0 + 100 }])
+    expect(a.events).toEqual([{ from_status: 'planned', to_status: 'in_progress', actor: 'agent-b', created_at: T0 + 100 }])
     expect(a.last_status_at).toBe(T0 + 100)
-    expect(r.page.cards[1].parent_id).toBe('4fbbb27c')
+    expect(r.page.cards[1].parent_id).toBe('3333aaaa')
     expect(r.page.cards[1].last_status_at).toBe(T0) // never moved: falls back to created_at
     expect(r.page.open_cards).toBe(2)
   })
 
   it('a registry card that does not exist is reported, not invented', async () => {
-    writeRegistry('f', { kartyak: ['4fbbb27c', 'deadbeef'] })
+    writeRegistry('f', { kartyak: ['3333aaaa', 'deadbeef'] })
     const r = await svc.page('f')
     if (r.kind !== 'ok') throw new Error('expected ok')
     expect(r.page.cards_missing).toEqual(['deadbeef'])
@@ -188,16 +188,16 @@ describe('S1-2: the commit block', () => {
     const r = await svc.page('f')
     if (r.kind !== 'ok') throw new Error('expected ok')
     const bySubject = Object.fromEntries(r.page.commits.map((c) => [c.subject, c]))
-    expect(bySubject['feat: one (card 4fbbb27c, N1)'].reason).toBe('card')
-    expect(bySubject['feat: two (card 6a52389f, N2)'].reason).toBe('card')
-    expect(bySubject['feat: three (card 4fbbb27c)'].reason).toBe('card')
+    expect(bySubject['feat: one (card 3333aaaa, N1)'].reason).toBe('card')
+    expect(bySubject['feat: two (card 4444aaaa, N2)'].reason).toBe('card')
+    expect(bySubject['feat: three (card 3333aaaa)'].reason).toBe('card')
     expect(bySubject['chore: tagged FUNKTAG1 work'].reason).toBe('tag')
     expect(bySubject['fix: gate file touched (#2315)'].reason).toBe('path')
     expect(bySubject['fix: gate file touched (#2315)'].pr).toBe(2315)
     expect(bySubject['docs: unrelated']).toBeUndefined()
     expect(r.page.commits_total).toBe(5)
     // newest first
-    expect(r.page.commits[0].subject).toBe('feat: three (card 4fbbb27c)')
+    expect(r.page.commits[0].subject).toBe('feat: three (card 3333aaaa)')
     // the tag commit and the path commit carry no "card <hex8>" at all
     expect(r.page.commits_without_card).toBe(2)
     expect(r.page.repos).toEqual([{ nev: 'fixture', error: null, commits: 5 }])
@@ -219,12 +219,12 @@ describe('S1-3: the inter-agent message block', () => {
     writeRegistry('f')
     const hit1 = insertMessage(`Feladat #${seq.A}: kesz`, 'Kesz.')
     const hit2 = insertMessage(`Masodik: #${seq.B} kesz`)
-    const hitHex = insertMessage('regi sor 4fbbb27c hivatkozas')
+    const hitHex = insertMessage('regi sor 3333aaaa hivatkozas')
     const hitTag = insertMessage('FUNKTAG1 modositas')
     const missOther = insertMessage(`masik kartya #${seq.other}`)
     const missPr = insertMessage('PR #1234 merged') // 1234 is not a registry seq
     const missPrefix = insertMessage(`#${seq.A}0 only`) // "#<seq>0" is a different number
-    const missGlued = insertMessage('x4fbbb27cx glued hex')
+    const missGlued = insertMessage('x3333aaaax glued hex')
     const r = await svc.page('f')
     if (r.kind !== 'ok') throw new Error('expected ok')
     const ids = r.page.messages.map((m) => m.id)
@@ -524,10 +524,10 @@ describe('B3 (S1 security r1): mask the whole text first, never a cut prefix', (
 
 describe('B2 (S1 security r1): a forged commit message is dropped and counted on the page', () => {
   it('the forged row never reaches the page, the repo carries git_records_dropped, honest commits stay', async () => {
-    const forged = `\x1e${'d'.repeat(40)}\x1fddddddd\x1f1999999999\x1fGyuri\x1fforged subject card deadbeef\x1f\x1f`
+    const forged = `\x1e${'d'.repeat(40)}\x1fddddddd\x1f1999999999\x1fMallory\x1fforged subject card deadbeef\x1f\x1f`
     const r2 = makeRepo([
-      { at: T0 + 1, msg: 'feat: honest (card 4fbbb27c)', files: { 'src/a.ts': '1' } },
-      { at: T0 + 2, msg: `feat: sneaky (card 4fbbb27c)\n\n${forged}`, files: { 'src/b.ts': '1' } },
+      { at: T0 + 1, msg: 'feat: honest (card 3333aaaa)', files: { 'src/a.ts': '1' } },
+      { at: T0 + 2, msg: `feat: sneaky (card 3333aaaa)\n\n${forged}`, files: { 'src/b.ts': '1' } },
     ])
     try {
       writeRegistry('forge', { repok: [{ nev: 'fixture', ut: r2, pathGlobok: [], tesztGlobok: [] }] })
@@ -535,9 +535,9 @@ describe('B2 (S1 security r1): a forged commit message is dropped and counted on
       const r = await s.page('forge')
       if (r.kind !== 'ok') throw new Error('expected ok')
       expect(r.page.repos[0]).toEqual({ nev: 'fixture', error: 'git_records_dropped', commits: 1 })
-      expect(r.page.commits.map((c) => c.subject)).toEqual(['feat: honest (card 4fbbb27c)'])
+      expect(r.page.commits.map((c) => c.subject)).toEqual(['feat: honest (card 3333aaaa)'])
       expect(JSON.stringify(r.page)).not.toContain('forged subject')
-      expect(JSON.stringify(r.page)).not.toContain('Gyuri')
+      expect(JSON.stringify(r.page)).not.toContain('Mallory')
     } finally {
       rmSync(r2, { recursive: true, force: true })
     }

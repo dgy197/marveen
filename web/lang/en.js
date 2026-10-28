@@ -2199,7 +2199,7 @@ window._i18n.en = {
   'auth.bridge.err.enroll_failed':               'Pairing failed. Check the dashboard log and try again.',
   'auth.bridge.err.enroll813':                   'Pairing stopped at a safety check: this install looks like a test environment (VITEST or NODE_ENV=test), so authorized_keys was left untouched. Remove the test signal from the service environment, then try again.',
 
-  // --- Development > Functions (card d7b2d5c8, S1) ---
+  // --- Development > Functions (S1) ---
   'nav.dev':                         'Development',
   'dev.page_title':                  'Development',
   'dev.page_subtitle':               'One place per function: cards, messages, commits, tests and prohibitions',

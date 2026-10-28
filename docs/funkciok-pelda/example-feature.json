@@ -1,0 +1,25 @@
+{
+  "slug": "example-feature",
+  "nev": "Example feature",
+  "leiras": "A generic example registry entry: copy it to store/funkciok/<slug>.json and adapt the values.",
+  "kartyak": ["aaaa1111", "bbbb2222"],
+  "tagek": ["example-tag"],
+  "repok": [
+    {
+      "nev": "example-repo",
+      "ut": "/tmp/example/example-repo",
+      "pathGlobok": [
+        "src/example/*.ts"
+      ],
+      "tesztGlobok": [
+        "src/__tests__/example*.test.ts"
+      ]
+    }
+  ],
+  "tiltasok": [
+    "Example rule: do not change the public interface without review."
+  ],
+  "specUtak": [
+    "/tmp/example/example-repo/docs/spec.md"
+  ]
+}

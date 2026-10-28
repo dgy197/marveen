@@ -1,6 +1,6 @@
 import { execFile as nodeExecFile } from 'node:child_process'
 
-// Card d7b2d5c8 (S1): the git side of the function page.
+// Function page (S1): the git side of the function page.
 //
 // The ONLY process this feature spawns is `git -C <realpath> log <fixed args>`
 // through execFile (no shell). The repo path arrives already realpath'd and

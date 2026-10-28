@@ -2201,7 +2201,7 @@ window._i18n.hu = {
   'auth.bridge.err.enroll_failed':               'A párosítás nem sikerült. Nézd meg a dashboard naplóját, és próbáld újra.',
   'auth.bridge.err.enroll813':                   'A párosítás egy biztonsági ellenőrzésen állt meg: ez a telepítés teszt-környezetnek látszik (VITEST vagy NODE_ENV=test), ezért a rendszer hozzá sem nyúlt az authorized_keys fájlhoz. Vedd ki a teszt-jelzést a szolgáltatás környezetéből, majd próbáld újra.',
 
-  // --- Fejlesztés > Funkciók (card d7b2d5c8, S1) ---
+  // --- Fejlesztés > Funkciók (S1) ---
   'nav.dev':                         'Fejlesztés',
   'dev.page_title':                  'Fejlesztés',
   'dev.page_subtitle':               'Funkciónként egy helyen: kártyák, üzenetek, commitok, tesztek és tiltások',

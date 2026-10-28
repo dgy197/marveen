@@ -7,7 +7,7 @@ import { setFunkciokServiceForTest, tryHandleFunkciok } from '../web/routes/funk
 import type { FunkciokService } from '../web/funkciok-page.js'
 import type { RouteContext } from '../web/routes/types.js'
 
-// Card d7b2d5c8 (S1): the HTTP surface of the function page. Routing, method,
+// Function page (S1): the HTTP surface of the function page. Routing, method,
 // slug and id fences, and the auth answers (S1-6): 401 without a principal,
 // 403 for an operator-scoped key. The service behind is a stub here; its own
 // behaviour is covered in funkciok-page.test.ts.
@@ -29,8 +29,8 @@ let stub: { list: ReturnType<typeof vi.fn>; page: ReturnType<typeof vi.fn>; mess
 
 beforeEach(() => {
   stub = {
-    list: vi.fn(async () => [{ slug: 'levelkapu', nev: 'Levelkapu', last_change: 1, open_cards: 0 }]),
-    page: vi.fn(async (slug: string) => (slug === 'levelkapu'
+    list: vi.fn(async () => [{ slug: 'charlie-feature', nev: 'Charlie feature', last_change: 1, open_cards: 0 }]),
+    page: vi.fn(async (slug: string) => (slug === 'charlie-feature'
       ? { kind: 'ok', page: { slug } }
       : slug === 'broken' ? { kind: 'invalid', slug, error: 'invalid JSON' } : { kind: 'not_found' })),
     message: vi.fn(async (_slug: string, id: number) => (id === 7 ? { kind: 'ok', message: { id: 7 } } : { kind: 'not_found' })),
@@ -44,17 +44,17 @@ describe('routing', () => {
     let r = call('/api/funkciok')
     expect(await tryHandleFunkciok(r.ctx)).toBe(true)
     expect(r.out.status).toBe(200)
-    expect(r.out.body.funkciok[0].slug).toBe('levelkapu')
+    expect(r.out.body.funkciok[0].slug).toBe('charlie-feature')
 
-    r = call('/api/funkciok/levelkapu')
+    r = call('/api/funkciok/charlie-feature')
     expect(await tryHandleFunkciok(r.ctx)).toBe(true)
     expect(r.out.status).toBe(200)
-    expect(r.out.body.slug).toBe('levelkapu')
+    expect(r.out.body.slug).toBe('charlie-feature')
 
-    r = call('/api/funkciok/levelkapu/messages/7')
+    r = call('/api/funkciok/charlie-feature/messages/7')
     expect(await tryHandleFunkciok(r.ctx)).toBe(true)
     expect(r.out.status).toBe(200)
-    expect(stub.message).toHaveBeenCalledWith('levelkapu', 7)
+    expect(stub.message).toHaveBeenCalledWith('charlie-feature', 7)
   })
 
   it('responses are not cacheable', async () => {
@@ -67,7 +67,7 @@ describe('routing', () => {
     let r = call('/api/funkciok/nincs-ilyen')
     await tryHandleFunkciok(r.ctx)
     expect(r.out.status).toBe(404)
-    r = call('/api/funkciok/levelkapu/messages/8')
+    r = call('/api/funkciok/charlie-feature/messages/8')
     await tryHandleFunkciok(r.ctx)
     expect(r.out.status).toBe(404)
     r = call('/api/funkciok/broken')
@@ -84,7 +84,7 @@ describe('routing', () => {
 
   it('only GET: POST, PUT and DELETE are 405 with an Allow header, and reach no service', async () => {
     for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
-      for (const p of ['/api/funkciok', '/api/funkciok/levelkapu', '/api/funkciok/levelkapu/messages/7']) {
+      for (const p of ['/api/funkciok', '/api/funkciok/charlie-feature', '/api/funkciok/charlie-feature/messages/7']) {
         const r = call(p, { method })
         expect(await tryHandleFunkciok(r.ctx)).toBe(true)
         expect(r.out.status).toBe(405)
@@ -120,13 +120,13 @@ describe('slug and id fences', () => {
   })
 
   it.each([
-    '/api/funkciok/levelkapu/messages/abc',
-    '/api/funkciok/levelkapu/messages/-1',
-    '/api/funkciok/levelkapu/messages/1.5',
-    '/api/funkciok/levelkapu/messages/1e3',
-    '/api/funkciok/levelkapu/messages/0x10',
-    '/api/funkciok/levelkapu/messages/1%20OR%201=1',
-    '/api/funkciok/levelkapu/messages/12345678901234567890',
+    '/api/funkciok/charlie-feature/messages/abc',
+    '/api/funkciok/charlie-feature/messages/-1',
+    '/api/funkciok/charlie-feature/messages/1.5',
+    '/api/funkciok/charlie-feature/messages/1e3',
+    '/api/funkciok/charlie-feature/messages/0x10',
+    '/api/funkciok/charlie-feature/messages/1%20OR%201=1',
+    '/api/funkciok/charlie-feature/messages/12345678901234567890',
     '/api/funkciok/..%2f/messages/7',
     '/api/funkciok/%2e%2e/messages/7',
   ])('message: %s is a 404 and never reaches the service', async (p) => {
@@ -139,7 +139,7 @@ describe('slug and id fences', () => {
 })
 
 describe('S1-6: authentication and credential scope', () => {
-  const paths = ['/api/funkciok', '/api/funkciok/levelkapu', '/api/funkciok/levelkapu/messages/7']
+  const paths = ['/api/funkciok', '/api/funkciok/charlie-feature', '/api/funkciok/charlie-feature/messages/7']
 
   it('no principal: 401 on every route, and the service is not reached', async () => {
     for (const p of paths) {
@@ -170,7 +170,7 @@ describe('S1-6: authentication and credential scope', () => {
 
   it.each([
     ['dashboard token', { kind: 'token' }],
-    ['token with an agent claim', { kind: 'token', agent: 'ezermester' }],
+    ['token with an agent claim', { kind: 'token', agent: 'agent-b' }],
     ['browser session', { kind: 'session', user: 'owner' }],
     ['full-scope device key', { kind: 'device', device: 'phone', deviceId: 2, scope: 'full' }],
   ] as [string, Auth][])('allowed: %s', async (_label, auth) => {

@@ -1,7 +1,7 @@
 import { lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 
-// Card d7b2d5c8 (S1): the function registry behind "Fejlesztes > Funkciok".
+// Function page (S1): the function registry behind "Fejlesztes > Funkciok".
 //
 // One JSON file per function, store/funkciok/<slug>.json, written by hand (it
 // is diffable and needs no write API, so it adds no permission surface). This

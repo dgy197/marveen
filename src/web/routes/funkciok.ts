@@ -7,7 +7,7 @@ import { createFunkciokService, type FunkciokService } from '../funkciok-page.js
 import { SLUG_RE, resolveAllowedRepos } from '../funkciok-registry.js'
 import type { RouteContext } from './types.js'
 
-// Card d7b2d5c8 (S1): GET-only, read-only function pages for the dashboard tab
+// Function page (S1): GET-only, read-only function pages for the dashboard tab
 // "Fejlesztes > Funkciok".
 //
 //   GET /api/funkciok                       list

@@ -19881,7 +19881,7 @@ function wireFederationPage() {
 }
 
 // ============================================================
-// === Fejlesztes > Funkciok (card d7b2d5c8, S1) ===
+// === Fejlesztes > Funkciok (S1) ===
 // Read-only. Every server string reaches the DOM through textContent only
 // (devEl), never through innerHTML; slugs are encodeURIComponent'ed.
 // ============================================================
