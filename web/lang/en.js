@@ -2319,7 +2319,7 @@ window._i18n.en = {
   'dev.dec.err.422':                 'The referenced msg_id does not exist, or the function registry file is invalid.',
   'dev.dec.err.other':               'Error: {status}',
   'dev.q.refresh':                   'Refresh',
-  'dev.q.empty':                     'No open questions.',
+  'dev.q.empty':                     'No questions are waiting.',
   'dev.q.load_error':                'The questions cannot be loaded ({status}).',
   'dev.q.agent_count':               '{count} open',
   'dev.q.running':                   'running',

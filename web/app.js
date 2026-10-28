@@ -20617,12 +20617,13 @@ function devRefreshQuestionsIfActive() {
   if (devActiveView === 'kerdesek') loadDevQuestions()
 }
 
-;(() => {
+function wireDevViewTabs() {
   document.querySelectorAll('#devTabs [data-dev-view]').forEach((b) => {
     if (b.disabled) return
     b.addEventListener('click', () => devSetView(b.dataset.devView))
   })
-})()
+}
+wireDevViewTabs()
 
 async function loadDevQuestions() {
   const root = document.getElementById('devKerdesekView')
