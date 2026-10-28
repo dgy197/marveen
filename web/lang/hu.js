@@ -2243,6 +2243,7 @@ window._i18n.hu = {
   'dev.repo.err.repo_missing':       'a repó útvonala nem található',
   'dev.repo.err.git_failed':         'a git lekérdezés nem sikerült',
   'dev.repo.err.git_timeout':        'a git lekérdezés időtúllépés miatt megszakadt',
+  'dev.repo.err.git_records_dropped': 'a git napló néhány rekordját elutasítottuk (hamisított vagy hibás formátum)',
   'dev.reg.err.generic':             'hibás regiszterfájl',
   'dev.reg.err.invalid_json':        'hibás regiszterfájl: érvénytelen JSON',
   'dev.reg.err.file_too_large':      'hibás regiszterfájl: túl nagy fájl',

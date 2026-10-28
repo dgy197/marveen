@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   GIT_MAX_BUFFER, GIT_TIMEOUT_MS, containsToken, createGitLogReader, globToRegExp, gitLogArgs,
-  matchCommits, matchesAnyGlob, parseGitLog, prNumberOf, cardRefsIn,
+  matchCommits, matchesAnyGlob, parseGitLog, parseGitLogStrict, prNumberOf, cardRefsIn,
   type ExecFileFn, type RawCommit,
 } from '../web/funkciok-git.js'
 import { checkRepoPath } from '../web/funkciok-registry.js'
@@ -176,7 +176,16 @@ describe('commit matching on the real fixture (card | tag | path)', () => {
 describe('the git invocation is fixed and shell-free', () => {
   it('gitLogArgs: -C <repo> log with fixed options only', () => {
     const a = gitLogArgs('/some/real/repo')
-    expect(a.slice(0, 5)).toEqual(['-C', '/some/real/repo', '-c', 'core.quotepath=off', 'log'])
+    // B1: the -c overrides are fixed literals and all precede the subcommand
+    expect(a.slice(0, 11)).toEqual([
+      '-C', '/some/real/repo',
+      '-c', 'core.quotepath=off',
+      '-c', 'protocol.allow=never',
+      '-c', 'core.fsmonitor=false',
+      '-c', 'core.sshCommand=false',
+      'log',
+    ])
+    expect(a).toContain('--no-renames')
     expect(a).toContain('--name-only')
     expect(a).toContain('--no-color')
     expect(a.find((x) => x.startsWith('--max-count='))).toBeDefined()
@@ -197,7 +206,17 @@ describe('the git invocation is fixed and shell-free', () => {
     expect(opts.maxBuffer).toBe(GIT_MAX_BUFFER)
     expect(opts).not.toHaveProperty('shell')
     const env = opts.env as Record<string, string | undefined>
-    expect(Object.keys(env).sort()).toEqual(['GIT_OPTIONAL_LOCKS', 'GIT_TERMINAL_PROMPT', 'HOME', 'LC_ALL', 'PATH'])
+    expect(Object.keys(env).sort()).toEqual([
+      'GIT_CONFIG_NOSYSTEM', 'GIT_NO_LAZY_FETCH', 'GIT_OPTIONAL_LOCKS', 'GIT_PROTOCOL_FROM_USER', 'GIT_TERMINAL_PROMPT',
+      'HOME', 'LC_ALL', 'PATH',
+    ])
+    // B1: the values of the protections are pinned too
+    expect(env.GIT_NO_LAZY_FETCH).toBe('1')
+    expect(env.GIT_CONFIG_NOSYSTEM).toBe('1')
+    expect(env.GIT_PROTOCOL_FROM_USER).toBe('0')
+    expect(env.GIT_OPTIONAL_LOCKS).toBe('0')
+    expect(env.GIT_TERMINAL_PROMPT).toBe('0')
+    expect(env.LC_ALL).toBe('C')
   })
 
   it('S1-5 mechanism: a repo that is not on the allowlist is stopped BEFORE any execFile call', () => {
@@ -223,7 +242,7 @@ describe('the git invocation is fixed and shell-free', () => {
 describe('R1-2: non-ASCII file names', () => {
   it('gitLogArgs turns core.quotepath off, and a real log returns the unquoted UTF-8 name', async () => {
     const a = gitLogArgs('/some/real/repo')
-    expect(a.slice(0, 5)).toEqual(['-C', '/some/real/repo', '-c', 'core.quotepath=off', 'log'])
+    expect(a.slice(0, 4)).toEqual(['-C', '/some/real/repo', '-c', 'core.quotepath=off'])
     const r2 = makeRepo([{ at: T0 + 1, msg: 'feat: accents', files: { 'src/árvíztűrő.ts': '1' } }])
     try {
       const r = await createGitLogReader().read(realpathSync(r2))
@@ -270,27 +289,153 @@ describe('10 minute cache', () => {
   })
 })
 
-describe('parseGitLog', () => {
-  const RS = '\x1e'
-  const US = '\x1f'
+describe('parseGitLog (B2: NUL-delimited, strict)', () => {
+  const NUL = '\x00'
   const H1 = 'a'.repeat(40)
   const H2 = 'b'.repeat(40)
+  const H3 = 'c'.repeat(40)
+  const rec = (h: string, short: string, ct: string, an: string, s: string, b: string, files: string): string =>
+    [NUL, h, NUL, short, NUL, ct, NUL, an, NUL, s, NUL, b, NUL, files].join('')
 
-  it('parses records, keeps a body that contains the field separator, and skips junk records', () => {
-    const out = [
-      `${RS}${H1}${US}aaaaaaa${US}1700000000${US}Name${US}subject one${US}body${US}more${US}\n\nsrc/x.ts\nsrc/y.ts\n`,
-      `${RS}not-a-hash${US}x${US}1${US}n${US}s${US}b${US}\n\nz\n`,
-      `${RS}${H2}${US}bbbbbbb${US}1700000100${US}Other${US}subject two${US}${US}\n\n`,
-    ].join('')
-    const c = parseGitLog(out)
-    expect(c).toHaveLength(2)
-    expect(c[0]).toMatchObject({ hash: H1, short: 'aaaaaaa', date: 1_700_000_000, author: 'Name', subject: 'subject one', files: ['src/x.ts', 'src/y.ts'] })
-    expect(c[0].body).toBe(`body${US}more`)
-    expect(c[1].files).toEqual([])
+  it('parses records; a record with a 0x1f in its text is refused and counted, the others survive', () => {
+    const ok = rec(H1, 'aaaaaaa', '1700000000', 'Name', 'subject one', 'body\nmore', '\n\nsrc/x.ts\nsrc/y.ts\n')
+    const ok2 = rec(H2, 'bbbbbbb', '1700000100', 'Other', 'subject two', '', '\n\n')
+    const withSep = rec(H3, 'ccccccc', '1700000200', 'Eve', 'has\x1fsep', 'b', '\n\nz\n')
+    const r = parseGitLogStrict(ok + withSep + ok2)
+    expect(r.commits).toHaveLength(2)
+    expect(r.dropped).toBe(1)
+    expect(r.commits[0]).toMatchObject({ hash: H1, short: 'aaaaaaa', date: 1_700_000_000, author: 'Name', subject: 'subject one', body: 'body\nmore', files: ['src/x.ts', 'src/y.ts'] })
+    expect(r.commits[1].files).toEqual([])
+    expect(parseGitLog(ok + ok2)).toHaveLength(2)
   })
 
-  it('empty output is no commits', () => {
+  it('the forged row from the review (0x1e/0x1f in a message) never becomes a row, and is counted', () => {
+    const forgedBody = `\x1e${'d'.repeat(40)}\x1fddddddd\x1f1999999999\x1fGyuri\x1fforged subject card deadbeef\x1f\x1f`
+    const real = rec(H1, 'aaaaaaa', '1700000000', 'Eve', 'real subject (card 4fbbb27c)', forgedBody, '\n\nsrc/a.ts\n')
+    const r = parseGitLogStrict(real + rec(H2, 'bbbbbbb', '1700000100', 'Ok', 'fine', '', '\n\nsrc/b.ts\n'))
+    expect(r.commits.map((c) => c.hash)).toEqual([H2])
+    expect(r.commits.some((c) => c.subject.includes('forged') || c.author === 'Gyuri')).toBe(false)
+    expect(r.dropped).toBe(1)
+  })
+
+  it('a malformed group (hash/short/date) loses alignment: parsing stops and the rest is counted dropped', () => {
+    const good1 = rec(H1, 'aaaaaaa', '1700000000', 'A', 's1', '', '\n\n')
+    const bad = rec('not-a-hash', 'x', '1', 'n', 's', 'b', '\n\nz\n')
+    const after = rec(H2, 'bbbbbbb', '1700000100', 'B', 's2', '', '\n\n') + rec(H3, 'ccccccc', '1700000200', 'C', 's3', '', '\n\n')
+    const r = parseGitLogStrict(good1 + bad + after)
+    expect(r.commits.map((c) => c.hash)).toEqual([H1])
+    expect(r.dropped).toBe(3)
+    // a NUL smuggled into a field (git cannot print one, but if it did) shifts every later group: fail closed
+    const shifted = rec(H1, 'aaaaaaa', '1700000000', 'A', `s${NUL}x`, '', '\n\n') + after
+    const r2 = parseGitLogStrict(shifted)
+    expect(r2.commits.map((c) => c.hash)).not.toContain(H2)
+    expect(r2.commits.map((c) => c.hash)).not.toContain(H3)
+    expect(r2.dropped).toBeGreaterThan(0)
+    // a bad date and a short hash that is not hex are structural errors too
+    expect(parseGitLogStrict(rec(H1, 'aaaaaaa', 'soon', 'A', 's', '', '\n\n')).commits).toEqual([])
+    expect(parseGitLogStrict(rec(H1, 'zz', '1700000000', 'A', 's', '', '\n\n')).commits).toEqual([])
+  })
+
+  it('a stream that does not start with NUL or ends mid-group is counted, not parsed', () => {
+    expect(parseGitLogStrict('garbage').dropped).toBeGreaterThan(0)
+    expect(parseGitLogStrict('garbage').commits).toEqual([])
+    const half = rec(H1, 'aaaaaaa', '1700000000', 'A', 's', '', '\n\n') + NUL + H2
+    const r = parseGitLogStrict(half)
+    expect(r.commits).toHaveLength(1)
+    expect(r.dropped).toBe(1)
+  })
+
+  it('empty output is no commits and nothing dropped', () => {
     expect(parseGitLog('')).toEqual([])
+    expect(parseGitLogStrict('')).toEqual({ commits: [], dropped: 0 })
+  })
+
+  it('a real repo: a commit whose message carries the forged sequence is dropped and counted, other commits survive', async () => {
+    const forged = `\x1e${'d'.repeat(40)}\x1fddddddd\x1f1999999999\x1fGyuri\x1fforged subject card deadbeef\x1f\x1f`
+    const r2 = makeRepo([
+      { at: T0 + 1, msg: 'feat: before (card 4fbbb27c)', files: { 'src/a.ts': '1' } },
+      { at: T0 + 2, msg: `feat: sneaky (card 4fbbb27c)\n\n${forged}`, files: { 'src/b.ts': '1' } },
+      { at: T0 + 3, msg: 'feat: after (card 4fbbb27c)', files: { 'src/c.ts': '1' } },
+    ])
+    try {
+      const r = await createGitLogReader().read(realpathSync(r2))
+      if (!r.ok) throw new Error('expected ok')
+      expect(r.commits.map((c) => c.subject)).toEqual(['feat: after (card 4fbbb27c)', 'feat: before (card 4fbbb27c)'])
+      expect(r.commits.some((c) => c.hash.startsWith('dddd') || c.author === 'Gyuri' || c.subject.includes('forged'))).toBe(false)
+      expect(r.dropped).toBe(1)
+    } finally {
+      rmSync(r2, { recursive: true, force: true })
+    }
+  })
+
+  it('a real repo without separators: dropped is 0 and subject, body and files round-trip', async () => {
+    const r2 = makeRepo([{ at: T0 + 1, msg: 'feat: plain (card 4fbbb27c)\n\nBody line.', files: { 'src/a.ts': '1', 'src/sub/b.ts': '1' } }])
+    try {
+      const r = await createGitLogReader().read(realpathSync(r2))
+      if (!r.ok) throw new Error('expected ok')
+      expect(r.dropped).toBe(0)
+      expect(r.commits).toHaveLength(1)
+      expect(r.commits[0]).toMatchObject({ subject: 'feat: plain (card 4fbbb27c)', body: 'Body line.', author: 'Teszt Elek', date: T0 + 1 })
+      expect(r.commits[0].files.sort()).toEqual(['src/a.ts', 'src/sub/b.ts'])
+    } finally {
+      rmSync(r2, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('B1: a repo\'s own config cannot make the log run a program', () => {
+  let tmp: string
+  let marker: string
+  let pc = ''
+  let skipReason = ''
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'funkciok-b1-'))
+    marker = join(tmp, 'MARKER')
+    skipReason = ''
+    try {
+      const src = join(tmp, 'src')
+      mkdirSync(src)
+      git(src, ['init', '-q'])
+      git(src, ['config', 'uploadpack.allowFilter', 'true'])
+      const body = Array.from({ length: 30 }, (_, i) => `line ${i} content content content`).join('\n') + '\n'
+      writeFileSync(join(src, 'a.txt'), body)
+      git(src, ['add', '-A'])
+      git(src, ['commit', '-q', '-m', 'one'])
+      // a rename WITH an edit: only inexact rename detection needs the blobs
+      git(src, ['mv', 'a.txt', 'b.txt'])
+      writeFileSync(join(src, 'b.txt'), body + 'extra\n')
+      git(src, ['commit', '-q', '-am', 'two (card 4fbbb27c)'])
+      pc = join(tmp, 'pc')
+      execFileSync('git', ['clone', '-q', '--no-local', '--filter=blob:none', '--no-checkout', `file://${src}`, pc], { env: GIT_ENV, stdio: 'ignore' })
+      const up = join(tmp, 'up.sh')
+      writeFileSync(up, `#!/bin/sh\necho "UPLOADPACK $*" >> "${marker}"\nexec git upload-pack "$@"\n`)
+      chmodSync(up, 0o755)
+      git(pc, ['config', 'remote.origin.uploadpack', up])
+    } catch (err) {
+      skipReason = `git could not build the partial-clone fixture here: ${(err as Error).message}`
+    }
+  })
+  afterEach(() => { rmSync(tmp, { recursive: true, force: true }) })
+
+  it('control: the same log WITHOUT the protections runs the uploadpack program (so the next test proves something)', (ctx) => {
+    if (skipReason) { console.warn(`B1 control skipped: ${skipReason}`); ctx.skip(); return }
+    execFileSync('git', ['-C', pc, '-c', 'core.quotepath=off', 'log', '--name-only', '--format=%H'], {
+      env: { PATH: process.env.PATH, HOME: process.env.HOME, LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' },
+      stdio: 'ignore',
+    })
+    expect(existsSync(marker)).toBe(true)
+  })
+
+  it('the function\'s commits are read without ever starting the repo\'s uploadpack, and the rename still lists its file names', async (ctx) => {
+    if (skipReason) { console.warn(`B1 test skipped: ${skipReason}`); ctx.skip(); return }
+    const r = await createGitLogReader().read(realpathSync(pc))
+    if (!r.ok) throw new Error(`expected ok, got ${r.error}`)
+    expect(existsSync(marker)).toBe(false)
+    expect(r.dropped).toBe(0)
+    expect(r.commits.map((c) => c.subject)).toEqual(['two (card 4fbbb27c)', 'one'])
+    // --no-renames: the rename shows as delete + add, both names present
+    expect(r.commits[0].files.sort()).toEqual(['a.txt', 'b.txt'])
   })
 })
 

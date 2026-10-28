@@ -2241,6 +2241,7 @@ window._i18n.en = {
   'dev.repo.err.repo_missing':       'the repo path was not found',
   'dev.repo.err.git_failed':         'the git query failed',
   'dev.repo.err.git_timeout':        'the git query timed out',
+  'dev.repo.err.git_records_dropped': 'some git log records were refused (forged or malformed)',
   'dev.reg.err.generic':             'invalid registry file',
   'dev.reg.err.invalid_json':        'invalid registry file: not valid JSON',
   'dev.reg.err.file_too_large':      'invalid registry file: file too large',

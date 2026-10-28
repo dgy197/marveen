@@ -14,11 +14,14 @@ export const GIT_MAX_COMMITS = 20000
 export const GIT_CACHE_TTL_MS = 10 * 60 * 1000
 const GIT_CACHE_MAX_ENTRIES = 16
 
-// Record separator opens a commit, unit separator splits its fields; the
-// --name-only file list follows the format on its own lines.
-const RS = '\x1e'
-const US = '\x1f'
-const GIT_FORMAT = `--format=%x1e%H%x1f%h%x1f%ct%x1f%an%x1f%s%x1f%b%x1f`
+// B2 (S1 security r1): the fields are NUL-delimited. Git never prints a NUL from
+// commit text (a message is a C string to it), so no commit author can write the
+// delimiter, unlike the 0x1e/0x1f bytes an earlier layout used (a message
+// containing them forged whole rows). Layout per commit:
+// NUL H NUL h NUL ct NUL an NUL s NUL b NUL <--name-only block>, so the stream
+// split on NUL is "" followed by groups of exactly FIELDS_PER_COMMIT tokens.
+const FIELDS_PER_COMMIT = 7
+const GIT_FORMAT = `--format=%x00%H%x00%h%x00%ct%x00%an%x00%s%x00%b%x00`
 
 export interface RawCommit {
   hash: string
@@ -48,48 +51,97 @@ const defaultExecFile: ExecFileFn = (file, args, opts) =>
 export type GitError = 'git_timeout' | 'git_failed'
 
 export type GitLogResult =
-  | { ok: true; commits: RawCommit[] }
+  /** `dropped`: records the strict parser refused (see parseGitLogStrict). */
+  | { ok: true; commits: RawCommit[]; dropped: number }
   | { ok: false; error: GitError }
 
-function gitEnv(): NodeJS.ProcessEnv {
+/** Exported so a test can pin it. */
+export function gitEnv(): NodeJS.ProcessEnv {
   // Minimal, explicit environment: no inherited GIT_DIR / GIT_* redirection.
+  // B1: the repo's own config must not make this process run anything. A
+  // blobless partial clone would lazy-fetch (rename detection) through the
+  // repo's remote.origin.uploadpack / core.sshCommand, so lazy fetch is off,
+  // the system config is ignored and user-supplied protocols are not allowed.
   return {
     PATH: process.env.PATH,
     HOME: process.env.HOME,
     LC_ALL: 'C',
     GIT_OPTIONAL_LOCKS: '0',
     GIT_TERMINAL_PROMPT: '0',
+    GIT_NO_LAZY_FETCH: '1',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_PROTOCOL_FROM_USER: '0',
   }
 }
 
 /** The fixed argument vector. Exported so a test can pin it. */
 export function gitLogArgs(realRepo: string): string[] {
   // core.quotepath=off: non-ASCII file names come back as UTF-8, not as quoted octal escapes.
-  return ['-C', realRepo, '-c', 'core.quotepath=off', 'log', '--no-color', '--no-show-signature', `--max-count=${GIT_MAX_COMMITS}`, '--name-only', GIT_FORMAT]
+  // B1: protocol.allow=never (no transport at all), core.fsmonitor=false and
+  // core.sshCommand=false override whatever the repo's own config carries;
+  // --no-renames removes the object lookups that triggered the lazy fetch.
+  return [
+    '-C', realRepo,
+    '-c', 'core.quotepath=off',
+    '-c', 'protocol.allow=never',
+    '-c', 'core.fsmonitor=false',
+    '-c', 'core.sshCommand=false',
+    'log', '--no-color', '--no-show-signature', '--no-renames',
+    `--max-count=${GIT_MAX_COMMITS}`, '--name-only', GIT_FORMAT,
+  ]
 }
 
 const HASH_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/
 
-export function parseGitLog(stdout: string): RawCommit[] {
+const SHORT_RE = /^[0-9a-f]{4,64}$/
+const DATE_RE = /^\d{1,12}$/
+// The old delimiters (and NUL) inside free text: such a record is refused, not repaired.
+const CONTROL_SEPARATOR_RE = /[\x00\x1e\x1f]/
+
+export interface ParsedGitLog { commits: RawCommit[]; dropped: number }
+
+/**
+ * Strict parse. A record is DROPPED, and counted in `dropped` (the page reports
+ * the count as a repo-level error, so nothing vanishes silently), when its
+ * author, subject or body carries a control separator (NUL, 0x1e, 0x1f): a
+ * commit that tries to forge the old row layout loses its own row and no forged
+ * row ever appears. The stream is positional, so a group whose hash, short hash
+ * or date is malformed (or a tail that is not a whole group) means the
+ * alignment can no longer be trusted: parsing stops there and every remaining
+ * group counts as dropped (fail closed).
+ */
+export function parseGitLogStrict(stdout: string): ParsedGitLog {
+  if (stdout === '') return { commits: [], dropped: 0 }
+  const tokens = stdout.split('\x00')
+  const rest = tokens.length - 1
+  const groups = Math.floor(rest / FIELDS_PER_COMMIT)
+  const tail = rest % FIELDS_PER_COMMIT === 0 ? 0 : 1
+  if (tokens[0] !== '') return { commits: [], dropped: Math.max(1, groups) + tail }
   const out: RawCommit[] = []
-  for (const chunk of stdout.split(RS)) {
-    if (!chunk) continue
-    const fields = chunk.split(US)
-    // hash, short, date, author, subject, body..., files
-    if (fields.length < 7) continue
-    const [hash, short, ct, author, subject] = fields
-    if (!HASH_RE.test(hash)) continue
-    const date = Number(ct)
-    if (!Number.isFinite(date)) continue
-    const filesBlock = fields[fields.length - 1]
-    const body = fields.slice(5, -1).join(US)
+  let dropped = tail
+  for (let g = 0; g < groups; g++) {
+    const base = 1 + g * FIELDS_PER_COMMIT
+    const [hash, short, ct, author, subject, body, filesBlock] = tokens.slice(base, base + FIELDS_PER_COMMIT)
+    if (!HASH_RE.test(hash) || !SHORT_RE.test(short) || !DATE_RE.test(ct)) {
+      dropped += groups - g
+      break
+    }
+    if (CONTROL_SEPARATOR_RE.test(author) || CONTROL_SEPARATOR_RE.test(subject) || CONTROL_SEPARATOR_RE.test(body)) {
+      dropped++
+      continue
+    }
     const files = filesBlock.split('\n').map((l) => l.trim()).filter((l) => l.length > 0)
-    out.push({ hash, short, date, author, subject, body: body.trim(), files })
+    out.push({ hash, short, date: Number(ct), author, subject, body: body.trim(), files })
   }
-  return out
+  return { commits: out, dropped }
 }
 
-interface CacheEntry { at: number; commits: RawCommit[] }
+/** The commits of a log, strictly parsed; see parseGitLogStrict for what is refused. */
+export function parseGitLog(stdout: string): RawCommit[] {
+  return parseGitLogStrict(stdout).commits
+}
+
+interface CacheEntry { at: number; commits: RawCommit[]; dropped: number }
 
 export interface GitLogReader {
   read(realRepo: string): Promise<GitLogResult>
@@ -116,14 +168,14 @@ export function createGitLogReader(opts: { exec?: ExecFileFn; now?: () => number
         env: gitEnv(),
         encoding: 'utf8',
       })
-      const commits = parseGitLog(stdout)
-      cache.set(realRepo, { at: now(), commits })
+      const { commits, dropped } = parseGitLogStrict(stdout)
+      cache.set(realRepo, { at: now(), commits, dropped })
       while (cache.size > GIT_CACHE_MAX_ENTRIES) {
         const oldest = cache.keys().next().value
         if (oldest === undefined) break
         cache.delete(oldest)
       }
-      return { ok: true, commits }
+      return { ok: true, commits, dropped }
     } catch (err) {
       const e = err as { killed?: boolean; signal?: string; code?: unknown }
       // An overflowing buffer also kills the child; that is a failure, not a timeout.
@@ -135,7 +187,7 @@ export function createGitLogReader(opts: { exec?: ExecFileFn; now?: () => number
   return {
     async read(realRepo) {
       const hit = cache.get(realRepo)
-      if (hit && now() - hit.at < ttl) return { ok: true, commits: hit.commits }
+      if (hit && now() - hit.at < ttl) return { ok: true, commits: hit.commits, dropped: hit.dropped }
       const pending = inflight.get(realRepo)
       if (pending) return pending
       const p = run(realRepo).finally(() => { inflight.delete(realRepo) })
