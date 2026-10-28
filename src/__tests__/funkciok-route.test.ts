@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
+import { isBlockedCrossOriginWrite } from '../web/csrf-origin.js'
 import { requiresAuth } from '../web/auth-gate.js'
 import { operatorGateDecision } from '../web/operator-gate.js'
 import { setFunkciokServiceForTest, tryHandleFunkciok } from '../web/routes/funkciok.js'
@@ -14,7 +16,7 @@ import type { RouteContext } from '../web/routes/types.js'
 
 type Auth = RouteContext['auth']
 
-function call(pathAndQuery: string, opts: { method?: string; auth?: Auth | null } = {}): { ctx: RouteContext; out: { status: number; body: any; headers: Record<string, unknown> } } {
+function call(pathAndQuery: string, opts: { method?: string; auth?: Auth | null; req?: unknown } = {}): { ctx: RouteContext; out: { status: number; body: any; headers: Record<string, unknown> } } {
   const out: { status: number; body: any; headers: Record<string, unknown> } = { status: 0, body: null, headers: {} }
   const res: any = {
     writeHead(status: number, headers?: Record<string, unknown>) { out.status = status; out.headers = headers ?? {}; return res },
@@ -22,13 +24,18 @@ function call(pathAndQuery: string, opts: { method?: string; auth?: Auth | null 
   }
   const url = new URL(`http://localhost:3420${pathAndQuery}`)
   const auth = opts.auth === undefined ? ({ kind: 'token' } as Auth) : (opts.auth ?? undefined)
-  return { ctx: { req: {} as any, res, path: url.pathname, method: opts.method ?? 'GET', url, auth } as RouteContext, out }
+  return { ctx: { req: (opts.req ?? {}) as any, res, path: url.pathname, method: opts.method ?? 'GET', url, auth } as RouteContext, out }
 }
 
-let stub: { list: ReturnType<typeof vi.fn>; page: ReturnType<typeof vi.fn>; message: ReturnType<typeof vi.fn> }
+let stub: {
+  list: ReturnType<typeof vi.fn>; page: ReturnType<typeof vi.fn>; message: ReturnType<typeof vi.fn>
+  decisions: ReturnType<typeof vi.fn>; recordDecision: ReturnType<typeof vi.fn>
+}
 
 beforeEach(() => {
   stub = {
+    decisions: vi.fn(async (slug: string) => (slug === 'charlie-feature' ? { kind: 'ok', decisions: [{ id: 1 }] } : { kind: 'not_found' })),
+    recordDecision: vi.fn(async (slug: string) => (slug === 'charlie-feature' ? { kind: 'ok', decision: { id: 2 } } : { kind: 'not_found' })),
     list: vi.fn(async () => [{ slug: 'charlie-feature', nev: 'Charlie feature', last_change: 1, open_cards: 0 }]),
     page: vi.fn(async (slug: string) => (slug === 'charlie-feature'
       ? { kind: 'ok', page: { slug } }
@@ -187,6 +194,122 @@ describe('S1-6: authentication and credential scope', () => {
       expect(operatorGateDecision({ kind: 'token' }, p, () => { throw new Error('must not read access for a token') })).toBeNull()
       expect(operatorGateDecision({ kind: 'device', scope: 'full' }, p, () => { throw new Error('must not read access') })).toBeNull()
     }
+  })
+})
+
+// Card d7b2d5c8 (S2-A): the decision log is the one write surface of this module.
+describe('S2-A: /api/funkciok/:slug/decisions', () => {
+  const P = '/api/funkciok/levelkapu/decisions'
+  const reqWith = (body: string) => Object.assign(Readable.from([Buffer.from(body)]), { headers: {} as Record<string, string> })
+  const goodBody = JSON.stringify({ quote_short: 'igen', tg_msg_id: '1' })
+
+  it('GET lists, POST appends (201); the service gets the slug, the raw text and the principal', async () => {
+    let r = call(P)
+    expect(await tryHandleFunkciok(r.ctx)).toBe(true)
+    expect(r.out.status).toBe(200)
+    expect(r.out.body).toEqual({ decisions: [{ id: 1 }] })
+    r = call(P, { method: 'POST', auth: { kind: 'token', agent: 'ezermester' }, req: reqWith(goodBody) })
+    expect(await tryHandleFunkciok(r.ctx)).toBe(true)
+    expect(r.out.status).toBe(201)
+    expect(stub.recordDecision).toHaveBeenCalledWith('levelkapu', goodBody, { via: 'token', by: 'ezermester' })
+  })
+
+  it('auth matrix: 401 without a principal, 403 for operator scope and federation, on GET and POST, and the service is not reached', async () => {
+    for (const method of ['GET', 'POST']) {
+      for (const [auth, status] of [
+        [null, 401],
+        [{ kind: 'device', device: 'op', deviceId: 1, scope: 'operator' }, 403],
+        [{ kind: 'federation', peer: 'p' }, 403],
+      ] as [Auth | null, number][]) {
+        const r = call(P, { method, auth, req: reqWith(goodBody) })
+        expect(await tryHandleFunkciok(r.ctx)).toBe(true)
+        expect(r.out.status, `${method} ${JSON.stringify(auth)}`).toBe(status)
+      }
+    }
+    expect(stub.decisions).not.toHaveBeenCalled()
+    expect(stub.recordDecision).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['dashboard token', { kind: 'token' }, 'token'],
+    ['token with an agent claim', { kind: 'token', agent: 'ezermester' }, 'ezermester'],
+    ['browser session', { kind: 'session', user: 'owner' }, 'session:owner'],
+    ['full-scope device key', { kind: 'device', device: 'phone', deviceId: 2, scope: 'full' }, 'device:phone'],
+  ] as [string, Auth, string][])('POST allowed: %s -> recorded as %s', async (_l, auth, by) => {
+    const r = call(P, { method: 'POST', auth, req: reqWith(goodBody) })
+    await tryHandleFunkciok(r.ctx)
+    expect(r.out.status).toBe(201)
+    expect(stub.recordDecision.mock.calls[0][2].by).toBe(by)
+  })
+
+  it('PUT, PATCH, DELETE are 405 with Allow: GET, POST (there is no overwrite or delete path)', async () => {
+    for (const method of ['PUT', 'PATCH', 'DELETE']) {
+      const r = call(P, { method, req: reqWith('{}') })
+      expect(await tryHandleFunkciok(r.ctx)).toBe(true)
+      expect(r.out.status).toBe(405)
+      expect(r.out.headers.Allow).toBe('GET, POST')
+    }
+    expect(stub.recordDecision).not.toHaveBeenCalled()
+  })
+
+  it('an unknown slug is 404; a bad slug never reaches the service or reads the body', async () => {
+    let r = call('/api/funkciok/nincs/decisions', { method: 'POST', req: reqWith(goodBody) })
+    await tryHandleFunkciok(r.ctx)
+    expect(r.out.status).toBe(404)
+    for (const p of ['/api/funkciok/%2e%2e/decisions', '/api/funkciok/UPPER/decisions']) {
+      stub.recordDecision.mockClear()
+      r = call('/api/funkciok')
+      r.ctx.path = p
+      r.ctx.method = 'POST'
+      r.ctx.req = reqWith(goodBody) as any
+      await tryHandleFunkciok(r.ctx)
+      expect(r.out.status).toBe(404)
+      expect(stub.recordDecision).not.toHaveBeenCalled()
+    }
+  })
+
+  it('the body limit: a declared length over 16 KB and a streamed body over 16 KB are both 413, the service is not reached', async () => {
+    const big = 'x'.repeat(17 * 1024)
+    let r = call(P, { method: 'POST', req: Object.assign(reqWith(big), { headers: { 'content-length': String(big.length) } }) })
+    await tryHandleFunkciok(r.ctx)
+    expect(r.out.status).toBe(413)
+    r = call(P, { method: 'POST', req: reqWith(big) })
+    await tryHandleFunkciok(r.ctx)
+    expect(r.out.status).toBe(413)
+    expect(stub.recordDecision).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [{ kind: 'bad_request', error: 'e' }, 400],
+    [{ kind: 'unprocessable', error: 'e' }, 422],
+    [{ kind: 'conflict', error: 'e' }, 409],
+    [{ kind: 'invalid', slug: 'levelkapu', error: 'broken' }, 422],
+    [{ kind: 'not_found' }, 404],
+  ])('service answer %j is HTTP %i', async (answer, status) => {
+    stub.recordDecision.mockResolvedValueOnce(answer)
+    const r = call(P, { method: 'POST', req: reqWith(goodBody) })
+    await tryHandleFunkciok(r.ctx)
+    expect(r.out.status).toBe(status)
+  })
+
+  it('the dashboard gate: POST needs auth and an operator key is denied there', () => {
+    expect(requiresAuth(P, 'POST')).toBe(true)
+    expect(operatorGateDecision({ kind: 'device', scope: 'operator' }, P, () => ({ enabled: true, capabilities: {} as never, commands: [] }))).toBe('operator credential: not an operator endpoint')
+  })
+
+  it('a cross-origin write with a valid session cookie is refused BEFORE routing and auth (spec 5.2)', () => {
+    const allowedOrigins = new Set(['http://localhost:3420'])
+    expect(isBlockedCrossOriginWrite('POST', 'https://evil.example', 'localhost:3420', undefined, allowedOrigins)).toBe(true)
+    expect(isBlockedCrossOriginWrite('POST', 'http://localhost:3420', 'localhost:3420', undefined, allowedOrigins)).toBe(false)
+    // Source pin: in web.ts the origin gate runs before the principal is resolved and before the route chain,
+    // and answers 403, so the session cookie is never looked at for a foreign-origin write.
+    const web = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
+    const code = web.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+    const gate = code.indexOf('if (isBlockedCrossOriginWrite(')
+    expect(gate).toBeGreaterThan(-1)
+    expect(gate).toBeLessThan(code.indexOf('resolveAuth(req, url, path, method'))
+    expect(gate).toBeLessThan(code.indexOf('if (await tryHandleFunkciok(routeCtx)) return'))
+    expect(code.slice(gate, gate + 700)).toMatch(/writeHead\(403/)
   })
 })
 
