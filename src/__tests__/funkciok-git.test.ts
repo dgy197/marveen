@@ -176,7 +176,7 @@ describe('commit matching on the real fixture (card | tag | path)', () => {
 describe('the git invocation is fixed and shell-free', () => {
   it('gitLogArgs: -C <repo> log with fixed options only', () => {
     const a = gitLogArgs('/some/real/repo')
-    expect(a.slice(0, 3)).toEqual(['-C', '/some/real/repo', 'log'])
+    expect(a.slice(0, 5)).toEqual(['-C', '/some/real/repo', '-c', 'core.quotepath=off', 'log'])
     expect(a).toContain('--name-only')
     expect(a).toContain('--no-color')
     expect(a.find((x) => x.startsWith('--max-count='))).toBeDefined()
