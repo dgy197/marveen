@@ -18,6 +18,7 @@ export const HEX8_RE = /^[0-9a-f]{8}$/
 const MAX_FILE_BYTES = 64 * 1024
 const MAX_CARDS = 100
 const MAX_TAGS = 50
+export const MIN_TAG_LEN = 3
 const MAX_REPOS = 10
 const MAX_GLOBS = 50
 const MAX_PROHIBITIONS = 100
@@ -114,7 +115,8 @@ export function validateFunkcio(raw: unknown, expectedSlug: string): Check<Funkc
     (s) => (HEX8_RE.test(s) ? null : 'each card must be 8 lowercase hex characters'))
   if (!kartyak.ok) return kartyak
   const tagek = checkStringArray(raw.tagek ?? [], 'tagek', MAX_TAGS, 60,
-    (s) => (/\s/.test(s) ? 'a tag must not contain whitespace' : null))
+    // B4 (S1 security r1): a 1-2 character tag would match inside almost any commit message.
+    (s) => (s.length < MIN_TAG_LEN ? `a tag must be at least ${MIN_TAG_LEN} characters` : /\s/.test(s) ? 'a tag must not contain whitespace' : null))
   if (!tagek.ok) return tagek
   const tiltasok = checkStringArray(raw.tiltasok ?? [], 'tiltasok', MAX_PROHIBITIONS, 400)
   if (!tiltasok.ok) return tiltasok

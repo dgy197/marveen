@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync, realpathSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  SLUG_RE, checkRepoPath, getRegistryEntry, listRegistry, parseRepoAllowlist,
+  MIN_TAG_LEN, SLUG_RE, checkRepoPath, getRegistryEntry, listRegistry, parseRepoAllowlist,
   resolveAllowedRepos, validateFunkcio,
 } from '../web/funkciok-registry.js'
 import { getSettingDefinition, validateSettingValue } from '../config-registry.js'
@@ -67,6 +67,24 @@ describe('validateFunkcio', () => {
     ['kartyak not an array', { kartyak: 'x' }],
   ])('rejects: %s', (_label, patch) => {
     expect(validateFunkcio(good('f', patch as Record<string, unknown>), 'f').ok).toBe(false)
+  })
+
+  it('B4: a tag shorter than 3 characters is a validation error, 3 characters is fine', () => {
+    for (const short of ['a', 'ab', 'x1']) {
+      const r = validateFunkcio(good('f', { tagek: ['GOODTAG', short] }), 'f')
+      expect(r.ok).toBe(false)
+      if (!r.ok) expect(r.error).toMatch(/^tagek: a tag must be at least 3 characters/)
+    }
+    expect(MIN_TAG_LEN).toBe(3)
+    expect(validateFunkcio(good('f', { tagek: ['abc'] }), 'f').ok).toBe(true)
+  })
+
+  it('B4: a file with a too-short tag is listed with the error flag and the others still work', () => {
+    put('ok-one', good('ok-one'))
+    put('short-tag', good('short-tag', { tagek: ['ab'] }))
+    const byslug = Object.fromEntries(listRegistry(dir).map((e) => [e.slug, e]))
+    expect(byslug['ok-one'].ok).toBe(true)
+    expect(byslug['short-tag']).toMatchObject({ ok: false, error: 'tagek: a tag must be at least 3 characters' })
   })
 
   it('a top-level array or null is rejected', () => {
