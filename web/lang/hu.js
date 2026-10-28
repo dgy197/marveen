@@ -2221,6 +2221,11 @@ window._i18n.hu = {
   'dev.wl.owner':                    'Gyuri',
   'dev.wl.kind.owner':               'Gyuri',
   'dev.wl.kind.agent':               'ügynök',
+  'dev.wl.segments':                  'Szakaszok: én {me}, AI {ai}',
+  'dev.wl.heat_title':                'Elmúlt 30 nap, napi saját percek',
+  'dev.wl.heat_cell':                 '{date}: {minutes} perc',
+  'dev.wl.agents_block':              'Percek ügynökönként',
+  'dev.wl.truncated':                 'Csak az első {max} prompt látszik, a nap többi promptja nincs a listában.',
 
   // --- Fejlesztés > Funkciók (S1) ---
   'nav.dev':                         'Fejlesztés',

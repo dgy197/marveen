@@ -8377,6 +8377,12 @@ body {
 .wl-ticks span:last-child { transform: translateX(-100%); }
 .wl-prompt { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; overflow-wrap: anywhere; }
 .wl-nodata { background: transparent; }
+.wl-heat { display: grid; grid-template-columns: repeat(10, 1fr); gap: 3px; margin: 6px 0 10px; }
+.wl-heat-cell { aspect-ratio: 1; border-radius: 3px; background: var(--bg-card-hover); }
+.wl-heat-1 { background: color-mix(in srgb, var(--accent) 25%, var(--bg-card-hover)); }
+.wl-heat-2 { background: color-mix(in srgb, var(--accent) 50%, var(--bg-card-hover)); }
+.wl-heat-3 { background: color-mix(in srgb, var(--accent) 75%, var(--bg-card-hover)); }
+.wl-heat-4 { background: var(--accent); }
 @media (max-width: 768px) {
   .wl-row { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .wl-ticks { margin-left: 0; }

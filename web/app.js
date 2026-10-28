@@ -19945,12 +19945,43 @@ async function loadWorklog() {
   if (devWlSelected && data && Array.isArray(data.days) && data.days.some((d) => d.date === devWlSelected)) selectWorklogDay(devWlSelected)
 }
 
+// Heatmap level from the owner's minutes of a day (5 levels):
+//   0 = none, 1 = 1-29 min, 2 = 30-89 min, 3 = 90-179 min, 4 = 180+ min.
+function wlHeatLevel(minutes) {
+  const m = Number(minutes) || 0
+  if (m <= 0) return 0
+  if (m < 30) return 1
+  if (m < 90) return 2
+  if (m < 180) return 3
+  return 4
+}
+
+// One cell per day of the last 30 days (oldest first), textContent / title
+// and aria-label only.
+function wlHeatmap(allDays) {
+  const wrap = devEl('div', 'wl-heat')
+  wrap.setAttribute('role', 'group')
+  wrap.setAttribute('aria-label', t('dev.wl.heat_title'))
+  const days = Array.isArray(allDays) ? allDays.slice(-30) : []
+  for (const d of days) {
+    const label = t('dev.wl.heat_cell', { date: String(d.date), minutes: String(d.me_minutes) })
+    const cell = devEl('div', 'wl-heat-cell wl-heat-' + wlHeatLevel(d.me_minutes))
+    cell.dataset.date = String(d.date)
+    cell.setAttribute('role', 'img')
+    cell.setAttribute('aria-label', label)
+    cell.title = label
+    wrap.appendChild(cell)
+  }
+  return wrap
+}
+
 function renderWorklogList(data) {
   const list = document.getElementById('devWorklogList')
   list.replaceChildren()
   const days = data && Array.isArray(data.days) ? data.days.slice().reverse() : []
   if (data && data.tz) list.appendChild(devEl('div', 'dev-list-meta', t('dev.wl.tz', { tz: data.tz })))
   if (!days.length) { list.appendChild(devEl('div', 'dev-empty', t('dev.wl.empty'))); return }
+  list.appendChild(wlHeatmap(data.days))
   for (const d of days) {
     const row = devEl('button', 'dev-list-item wl-day')
     row.type = 'button'
@@ -19965,6 +19996,7 @@ function renderWorklogList(data) {
     }
     row.appendChild(head)
     row.appendChild(devEl('div', 'dev-list-meta', t('dev.wl.me_ai', { me: String(d.me_minutes), ai: String(d.ai_minutes) })))
+    row.appendChild(devEl('div', 'dev-list-meta', t('dev.wl.segments', { me: String(d.me_segments), ai: String(d.ai_segments) })))
     row.appendChild(devEl('div', 'dev-list-meta', t('dev.wl.prompt_counts', { owner: String(d.prompts_owner), agent: String(d.prompts_agent) })))
     row.addEventListener('click', () => selectWorklogDay(d.date))
     list.appendChild(row)
@@ -20026,6 +20058,8 @@ function renderWorklogDetail(root, data) {
   if (rangeDay && Array.isArray(rangeDay.ai_by_agent)) for (const a of rangeDay.ai_by_agent) minutes[a.agent] = a.minutes
   const agents = Array.isArray(data.ai_by_agent) ? data.ai_by_agent : []
   const maxMin = Math.max(1, ...agents.map((a) => minutes[a.agent] || 0))
+  const ab = devEl('section', 'dev-block wl-agent-block')
+  ab.appendChild(devEl('h3', null, t('dev.wl.agents_block')))
   for (const a of agents) {
     const row = devEl('div', 'wl-row wl-agent-row')
     const m = minutes[a.agent]
@@ -20036,7 +20070,7 @@ function renderWorklogDetail(root, data) {
     seg.style.width = (m === undefined ? 0 : Math.max(1, (m / maxMin) * 100)).toFixed(1) + '%'
     track.appendChild(seg)
     row.appendChild(track)
-    tl.appendChild(row)
+    ab.appendChild(row)
   }
   const prompts = Array.isArray(data.prompts) ? data.prompts : []
   const dots = devEl('div', 'wl-row')
@@ -20054,15 +20088,17 @@ function renderWorklogDetail(root, data) {
   for (let i = 0; i <= 4; i++) {
     const at = data.day_start + Math.round((span * i) / 4)
     const tk = devEl('span', null, wlFmtTime(at, tz))
-    tk.style.left = (i * 25) + '%'
+    tk.style.left = (i * 25).toFixed(0) + '%'
     ticks.appendChild(tk)
   }
   tl.appendChild(ticks)
   root.appendChild(tl)
+  if (agents.length) root.appendChild(ab)
 
   const pl = devEl('section', 'dev-block')
   pl.appendChild(devEl('h3', null, t('dev.wl.prompt_list')))
   if (!prompts.length) pl.appendChild(devEl('div', 'dev-empty', t('dev.wl.prompts_none')))
+  if (data.truncated === true) pl.appendChild(devEl('div', 'dev-error wl-truncated-note', t('dev.wl.truncated', { max: String(prompts.length) })))
   for (const p of prompts) {
     const row = devEl('div', 'wl-prompt')
     row.appendChild(devEl('span', 'dev-mono', wlFmtTime(p.ts, tz)))

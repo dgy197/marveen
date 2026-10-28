@@ -123,6 +123,80 @@ test.describe('S4-C Fejlesztes > Munkanaplo', () => {
     expect(errors).toEqual([])
   })
 
+  test('S4-M1: heatmap has one labelled cell per day with 5 levels; segment counts are listed', async ({ page }) => {
+    const { errors } = await open(page)
+    await page.locator('#devTabMunkanaplo').click()
+    const cells = page.locator('#devWorklogList .wl-heat .wl-heat-cell')
+    await expect(cells).toHaveCount(2)
+    await expect(cells.nth(0)).toHaveAttribute('data-date', '2026-10-27')
+    await expect(cells.nth(0)).toHaveAttribute('aria-label', '2026-10-27: 95 perc')
+    await expect(cells.nth(0)).toHaveClass(/wl-heat-3/)
+    await expect(cells.nth(1)).toHaveAttribute('aria-label', '2026-10-28: 10 perc')
+    await expect(cells.nth(1)).toHaveClass(/wl-heat-1/)
+    await expect(page.locator('#devWorklogList .wl-day[data-date="2026-10-27"]')).toContainText('Szakaszok: én 3, AI 5')
+    expect(errors).toEqual([])
+  })
+
+  test('S4-M1: only the last 30 days get a heatmap cell, levels 0 and 4 exist', async ({ page }) => {
+    const days = Array.from({ length: 35 }, (_, i) => ({
+      date: new Date(Date.UTC(2026, 8, 1 + i)).toISOString().slice(0, 10),
+      me_minutes: i === 34 ? 600 : i === 33 ? 0 : 5, me_segments: 0, ai_minutes: 0, ai_segments: 0,
+      ai_by_agent: [], prompts_owner: 0, prompts_agent: 0, sources: { token_usage: true, tool_call_log: true },
+    }))
+    await open(page)
+    await page.route('**/api/worklog', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...RANGE, days }) }))
+    await page.locator('#devTabMunkanaplo').click()
+    const cells = page.locator('#devWorklogList .wl-heat .wl-heat-cell')
+    await expect(cells).toHaveCount(30)
+    await expect(cells.last()).toHaveClass(/wl-heat-4/)
+    await expect(cells.nth(28)).toHaveClass(/wl-heat-0/)
+  })
+
+  test('S4-M2: per-agent minutes sit in their own labelled block, not in the 24 h timeline', async ({ page }) => {
+    await open(page)
+    await page.locator('#devTabMunkanaplo').click()
+    await page.locator('#devWorklogList .wl-day[data-date="2026-10-27"]').click()
+    const detail = page.locator('#devWorklogDetail')
+    await expect(detail.locator('.wl-agent-block h3')).toHaveText('Percek ügynökönként')
+    await expect(detail.locator('.wl-agent-block .wl-agent-row')).toHaveCount(2)
+    await expect(detail.locator('section.dev-block').first().locator('.wl-agent-row')).toHaveCount(0)
+    await expect(detail.locator('section.dev-block').first().locator('.wl-seg-agent')).toHaveCount(0)
+  })
+
+  test('S4-M3: a truncated prompt list shows the translated note, a normal one does not', async ({ page }) => {
+    await open(page)
+    await page.locator('#devTabMunkanaplo').click()
+    await page.locator('#devWorklogList .wl-day[data-date="2026-10-27"]').click()
+    await expect(page.locator('#devWorklogDetail h2')).toHaveText('2026-10-27')
+    await expect(page.locator('#devWorklogDetail .wl-truncated-note')).toHaveCount(0)
+    await page.route('**/api/worklog/2026-10-27', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...DETAIL, truncated: true }) }))
+    await page.locator('#devWorklogList .wl-day[data-date="2026-10-28"]').click()
+    await page.locator('#devWorklogList .wl-day[data-date="2026-10-27"]').click()
+    await expect(page.locator('#devWorklogDetail .wl-truncated-note')).toContainText('Csak az első 2 prompt látszik')
+  })
+
+  test('S4-N3: a 25 h DST day (2026-10-25) positions the bars against its real length', async ({ page }) => {
+    const D = 1792881600 // arbitrary anchor, only the 25 h span matters
+    const dst = {
+      date: '2026-10-25', tz: 'Europe/Budapest', day_start: D, day_end: D + 25 * 3600,
+      me: [{ start: D + 13 * 3600, end: D + 14 * 3600 }], ai: [{ start: D + 24 * 3600, end: D + 25 * 3600 }],
+      ai_by_agent: [], prompts: [], sources: { token_usage: true, tool_call_log: true },
+    }
+    const range = { ...RANGE, days: [{ ...RANGE.days[0], date: '2026-10-25' }] }
+    await open(page)
+    await page.route('**/api/worklog', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(range) }))
+    await page.route('**/api/worklog/2026-10-25', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(dst) }))
+    await page.locator('#devTabMunkanaplo').click()
+    await page.locator('#devWorklogList .wl-day[data-date="2026-10-25"]').click()
+    const me = page.locator('#devWorklogDetail .wl-seg-me')
+    await expect(me).toHaveCount(1)
+    const st = await me.evaluate((el) => ({ left: (el as HTMLElement).style.left, width: (el as HTMLElement).style.width }))
+    expect(parseFloat(st.left)).toBeCloseTo((13 / 25) * 100, 2)
+    expect(parseFloat(st.width)).toBeCloseTo((1 / 25) * 100, 2)
+    const ai = await page.locator('#devWorklogDetail .wl-seg-ai').evaluate((el) => (el as HTMLElement).style.left)
+    expect(parseFloat(ai)).toBeCloseTo((24 / 25) * 100, 2)
+  })
+
   test('mobile 390px: no horizontal page scroll with the timeline open', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 800 })
     await open(page)

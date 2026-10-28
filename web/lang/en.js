@@ -2219,6 +2219,11 @@ window._i18n.en = {
   'dev.wl.owner':                    'Gyuri',
   'dev.wl.kind.owner':               'Gyuri',
   'dev.wl.kind.agent':               'agent',
+  'dev.wl.segments':                  'Segments: me {me}, AI {ai}',
+  'dev.wl.heat_title':                'Last 30 days, own minutes per day',
+  'dev.wl.heat_cell':                 '{date}: {minutes} min',
+  'dev.wl.agents_block':              'Minutes per agent',
+  'dev.wl.truncated':                 'Only the first {max} prompts are shown, the rest of the day is not in the list.',
 
   // --- Development > Functions (S1) ---
   'nav.dev':                         'Development',
