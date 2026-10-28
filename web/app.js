@@ -20128,6 +20128,8 @@ function renderDevDetail(root, page) {
   })
   root.appendChild(bTests)
 
+  root.appendChild(devDecisionsBlock(page))
+
   // --- Tiltasok (+ spec utak, plain paths only) ---
   const tilt = page.tiltasok || []
   const specs = page.specUtak || []
@@ -20164,6 +20166,192 @@ async function toggleDevMessage(slug, id, full) {
   } catch (err) {
     full.replaceChildren(devEl('div', 'dev-error', t('dev.msg.full_error', { status: String((err && err.message) || err) })))
   }
+}
+
+// ============================================================
+// === Fejlesztes > Dontesek (card d7b2d5c8, S2) ===
+// Decision log block, record form and the context package button. Same rules
+// as above: server strings only via textContent, slug encodeURIComponent'ed,
+// same-origin fetch (the global wrapper adds the token header).
+// ============================================================
+
+const DEV_DEC_QUOTE_MAX = 280
+
+function devDecCodepoints(s) {
+  return Array.from(String(s)).length
+}
+
+function devDecSourceLabel(d) {
+  const parts = []
+  if (d.tg_msg_id) parts.push('tg ' + (d.tg_chat ? d.tg_chat + '/' : '') + d.tg_msg_id)
+  if (d.msg_id) parts.push('msg #' + d.msg_id)
+  return parts.join(' | ')
+}
+
+// Server error -> translated text. Status decides; 409 distinguishes the two
+// conflict messages by their fixed server wording.
+function devDecErrorText(status, serverError) {
+  if (status === 400) return t('dev.dec.err.400')
+  if (status === 401) return t('dev.dec.err.401')
+  if (status === 403) return t('dev.dec.err.403')
+  if (status === 404) return t('dev.dec.err.404')
+  if (status === 409) return t('dev.dec.err.409')
+  if (status === 413) return t('dev.dec.err.413')
+  if (status === 422) return t('dev.dec.err.422')
+  return t('dev.dec.err.other', { status: String(status) })
+}
+
+function devDecisionsBlock(page) {
+  const slug = page.slug
+  const list = Array.isArray(page.decisions) ? page.decisions : []
+  // A div, not a section.dev-block: the S1 block count and order stay as they are.
+  const section = devEl('div', 'dev-dec-block')
+  const h = devEl('h3', null, t('dev.dec.title'))
+  h.appendChild(devEl('span', 'dev-block-count', '(' + list.length + ')'))
+  section.appendChild(h)
+  if (list.length === 0) section.appendChild(devEl('div', 'dev-empty', t('dev.dec.none')))
+  list.forEach((d) => {
+    const row = devEl('div', 'dev-row dev-dec-row')
+    row.dataset.decId = String(d.id)
+    const head = devEl('div', 'dev-row-head')
+    head.appendChild(devEl('strong', null, '#' + d.id))
+    head.appendChild(devEl('span', 'dev-row-sub', devTime(d.decided_at)))
+    const status = ['verified', 'verified_at_record', 'not_found', 'none'].includes(d.source_status) ? d.source_status : 'none'
+    head.appendChild(devEl('span', 'dev-chip dev-dec-status dev-dec-status-' + status, t('dev.dec.status.' + status)))
+    if (d.supersedes) head.appendChild(devEl('span', 'dev-chip dev-dec-supersedes', t('dev.dec.supersedes', { id: d.supersedes })))
+    row.appendChild(head)
+    row.appendChild(devEl('div', 'dev-dec-quote', d.quote_short))
+    const src = devDecSourceLabel(d)
+    row.appendChild(devEl('div', 'dev-row-sub', t('dev.dec.source') + ': ' + (src || '-') +
+      (d.card_id ? ' | ' + t('dev.dec.card') + ': ' + d.card_id : '') +
+      ' | ' + t('dev.dec.recorded_by') + ': ' + (d.recorded_by || '-')))
+    section.appendChild(row)
+  })
+
+  section.appendChild(devDecisionForm(slug, list))
+
+  // --- Context package ---
+  const ctxWrap = devEl('div', 'dev-dec-ctx')
+  const ctxBtn = devEl('button', 'btn dev-dec-ctx-btn', t('dev.dec.ctx.button'))
+  ctxBtn.type = 'button'
+  const ctxOut = devEl('pre', 'dev-dec-ctx-out')
+  ctxOut.hidden = true
+  ctxBtn.addEventListener('click', async () => {
+    ctxOut.hidden = false
+    ctxOut.textContent = t('dev.detail.loading')
+    try {
+      const res = await fetch('/api/funkciok/' + encodeURIComponent(slug) + '/context')
+      if (!res.ok) {
+        ctxOut.textContent = devDecErrorText(res.status)
+        return
+      }
+      ctxOut.textContent = await res.text()
+    } catch (err) {
+      ctxOut.textContent = t('dev.dec.err.other', { status: String((err && err.message) || err) })
+    }
+  })
+  ctxWrap.appendChild(ctxBtn)
+  ctxWrap.appendChild(ctxOut)
+  section.appendChild(ctxWrap)
+  return section
+}
+
+function devDecisionForm(slug, list) {
+  const form = devEl('form', 'dev-dec-form')
+  form.noValidate = true
+  form.appendChild(devEl('h4', null, t('dev.dec.form.title')))
+
+  function field(labelKey, input) {
+    const label = devEl('label', 'dev-dec-field')
+    label.appendChild(devEl('span', null, t(labelKey)))
+    label.appendChild(input)
+    form.appendChild(label)
+    return input
+  }
+  function input(name) {
+    const el = devEl('input')
+    el.type = 'text'
+    el.name = name
+    el.autocomplete = 'off'
+    return el
+  }
+
+  const quote = devEl('textarea')
+  quote.name = 'quote_short'
+  quote.rows = 3
+  field('dev.dec.form.quote', quote)
+  const counter = devEl('div', 'dev-dec-counter')
+  form.appendChild(counter)
+  const tgChat = field('dev.dec.form.tg_chat', input('tg_chat'))
+  const tgMsg = field('dev.dec.form.tg_msg_id', input('tg_msg_id'))
+  const msgId = field('dev.dec.form.msg_id', input('msg_id'))
+  const cardId = field('dev.dec.form.card_id', input('card_id'))
+  const sup = devEl('select')
+  sup.name = 'supersedes'
+  sup.appendChild(Object.assign(devEl('option', null, t('dev.dec.form.supersedes_none')), { value: '' }))
+  list.forEach((d) => {
+    const o = devEl('option', null, '#' + d.id + ' ' + String(d.quote_short).slice(0, 40))
+    o.value = String(d.id)
+    sup.appendChild(o)
+  })
+  field('dev.dec.form.supersedes', sup)
+
+  const submit = devEl('button', 'btn btn-primary dev-dec-submit', t('dev.dec.form.submit'))
+  submit.type = 'submit'
+  form.appendChild(submit)
+  const msg = devEl('div', 'dev-error dev-dec-msg')
+  msg.hidden = true
+  form.appendChild(msg)
+
+  function refresh() {
+    const n = devDecCodepoints(quote.value.trim())
+    counter.textContent = n + '/' + DEV_DEC_QUOTE_MAX
+    const over = n > DEV_DEC_QUOTE_MAX
+    counter.classList.toggle('over', over)
+    submit.disabled = over || n < 1
+  }
+  quote.addEventListener('input', refresh)
+  refresh()
+
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault()
+    msg.hidden = true
+    const text = quote.value.trim()
+    const n = devDecCodepoints(text)
+    if (n < 1 || n > DEV_DEC_QUOTE_MAX) { refresh(); return }
+    const body = { quote_short: text }
+    if (tgChat.value.trim()) body.tg_chat = tgChat.value.trim()
+    if (tgMsg.value.trim()) body.tg_msg_id = tgMsg.value.trim()
+    if (msgId.value.trim()) {
+      const num = Number(msgId.value.trim())
+      if (!Number.isSafeInteger(num) || num < 1) { msg.textContent = t('dev.dec.err.400'); msg.hidden = false; return }
+      body.msg_id = num
+    }
+    if (cardId.value.trim()) body.card_id = cardId.value.trim()
+    if (sup.value) body.supersedes = Number(sup.value)
+    if (!body.tg_msg_id && !body.msg_id) { msg.textContent = t('dev.dec.err.source'); msg.hidden = false; return }
+    submit.disabled = true
+    try {
+      const res = await fetch('/api/funkciok/' + encodeURIComponent(slug) + '/decisions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        msg.textContent = devDecErrorText(res.status, data && data.error)
+        msg.hidden = false
+        submit.disabled = false
+        return
+      }
+      selectDevFunkcio(slug)
+    } catch (err) {
+      msg.textContent = t('dev.dec.err.other', { status: String((err && err.message) || err) })
+      msg.hidden = false
+      submit.disabled = false
+    }
+  })
+  return form
 }
 
 ;(() => {

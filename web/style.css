@@ -8413,3 +8413,26 @@ body {
 @media (max-width: 768px) {
   .dev-layout { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* === Fejlesztes > Dontesek (card d7b2d5c8, S2) === */
+.dev-dec-block {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 12px 14px; margin-top: 14px; min-width: 0;
+}
+.dev-dec-block > h3 { margin: 0 0 8px; font-size: 15px; }
+.dev-dec-quote { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dev-dec-status-verified, .dev-dec-status-verified_at_record { background: var(--success-soft, var(--accent-soft)); color: var(--success, var(--accent)); }
+.dev-dec-status-not_found { background: var(--danger-soft); color: var(--danger); }
+.dev-dec-status-none { background: var(--bg-card-hover); color: var(--text-muted); }
+.dev-dec-form { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.dev-dec-form h4 { margin: 0; font-size: 14px; }
+.dev-dec-field { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--text-muted); }
+.dev-dec-field input, .dev-dec-field textarea, .dev-dec-field select { width: 100%; box-sizing: border-box; font-size: 14px; }
+.dev-dec-counter { font-size: 12px; color: var(--text-muted); text-align: right; }
+.dev-dec-counter.over { color: var(--danger); font-weight: 600; }
+.dev-dec-submit { align-self: flex-start; }
+.dev-dec-ctx { margin-top: 12px; }
+.dev-dec-ctx-out {
+  margin: 8px 0 0; padding: 8px; max-height: 360px; overflow: auto; white-space: pre-wrap;
+  overflow-wrap: anywhere; font-size: 12px; background: var(--bg-card-hover); border-radius: var(--radius-sm);
+}
