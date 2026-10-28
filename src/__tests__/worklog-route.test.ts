@@ -9,7 +9,7 @@ import { localDayBounds } from '../web/worklog-intervals.js'
 import { DAY_KEYS, DETAIL_KEYS, RANGE_KEYS } from '../web/worklog.js'
 import type { RouteContext } from '../web/routes/types.js'
 
-// Card d7b2d5c8 (S4-B): the HTTP surface of the work log. Auth matrix, date
+// Card (S4-B): the HTTP surface of the work log. Auth matrix, date
 // validation, range cap, response keys, and the wiring pin in web.ts.
 
 type Auth = RouteContext['auth']

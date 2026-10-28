@@ -19881,7 +19881,7 @@ function wireFederationPage() {
 }
 
 // ============================================================
-// === Fejlesztes > Munkanaplo (card d7b2d5c8, S4) ===
+// === Fejlesztes > Munkanaplo (card S4) ===
 // Read-only. Server strings reach the DOM through textContent only (devEl).
 // Times are shown in the zone the API returns (`tz`), not the browser zone.
 // ============================================================

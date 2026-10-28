@@ -15,7 +15,7 @@ import {
 } from '../worklog.js'
 import type { RouteContext } from './types.js'
 
-// Card d7b2d5c8 (S4-B): GET-only work log for "Fejlesztes > Munkanaplo".
+// Card (S4-B): GET-only work log for "Fejlesztes > Munkanaplo".
 //
 //   GET /api/worklog?from=YYYY-MM-DD&to=YYYY-MM-DD   per-day aggregate (default last 30 days, max 92)
 //   GET /api/worklog/:date                           one day in detail

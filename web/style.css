@@ -8358,7 +8358,7 @@ body {
   text-overflow: ellipsis;
 }
 
-/* === Fejlesztes > Munkanaplo (card d7b2d5c8, S4) === */
+/* === Fejlesztes > Munkanaplo (card S4) === */
 .dev-layout[hidden] { display: none; }
 .wl-day-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .wl-row { display: grid; grid-template-columns: minmax(80px, 160px) minmax(0, 1fr); gap: 8px; align-items: center; margin: 6px 0; }

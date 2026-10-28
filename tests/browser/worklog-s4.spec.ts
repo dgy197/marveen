@@ -1,4 +1,4 @@
-// Card d7b2d5c8, S4-C: the Fejlesztes > Munkanaplo sub-view. Static web/ with
+// Card S4-C: the Fejlesztes > Munkanaplo sub-view. Static web/ with
 // every /api call answered by routes (same approach as funkciok-s1.spec.ts);
 // external hosts are aborted so nothing leaves 127.0.0.1.
 import { test, expect, type Page } from '@playwright/test'
@@ -14,7 +14,7 @@ const RANGE = {
   days: [
     {
       date: '2026-10-27', me_minutes: 95, me_segments: 3, ai_minutes: 240, ai_segments: 5,
-      ai_by_agent: [{ agent: 'ezermester', minutes: 200 }, { agent: `bad${XSS}`, minutes: 60 }],
+      ai_by_agent: [{ agent: 'agent-b', minutes: 200 }, { agent: `bad${XSS}`, minutes: 60 }],
       prompts_owner: 4, prompts_agent: 2, sources: { token_usage: true, tool_call_log: true },
     },
     {
@@ -28,10 +28,10 @@ const DETAIL = {
   date: '2026-10-27', tz: 'Europe/Budapest', day_start: DAY0, day_end: DAY1,
   me: [{ start: DAY0 + 3600, end: DAY0 + 7200 }],
   ai: [{ start: DAY0 + 3600, end: DAY0 + 10800 }, { start: DAY0 + 40000, end: DAY0 + 41000 }],
-  ai_by_agent: [{ agent: 'ezermester', segments: 3 }, { agent: `bad${XSS}`, segments: 1 }],
+  ai_by_agent: [{ agent: 'agent-b', segments: 3 }, { agent: `bad${XSS}`, segments: 1 }],
   prompts: [
-    { ts: DAY0 + 3700, kind: 'owner', agent: 'ezermester', from_agent: null, to_agent: 'ezermester' },
-    { ts: DAY0 + 5000, kind: 'agent', agent: 'brainy', from_agent: 'brainy', to_agent: `x${XSS}` },
+    { ts: DAY0 + 3700, kind: 'owner', agent: 'agent-b', from_agent: null, to_agent: 'agent-b' },
+    { ts: DAY0 + 5000, kind: 'agent', agent: 'agent-a', from_agent: 'agent-a', to_agent: `x${XSS}` },
   ],
   sources: { token_usage: true, tool_call_log: true },
 }
@@ -71,7 +71,7 @@ test.describe('S4-C Fejlesztes > Munkanaplo', () => {
     await expect(rows.nth(0)).toHaveAttribute('data-date', '2026-10-28')
     await expect(rows.nth(1)).toContainText('Én: 95 perc')
     await expect(rows.nth(1)).toContainText('AI: 240 perc')
-    await expect(rows.nth(1)).toContainText('Gyuri 4, ügynök 2')
+    await expect(rows.nth(1)).toContainText('Mallory 4, ügynök 2')
     expect(requested).toContain('/api/worklog')
     // switching back shows the function view again
     await page.locator('#devTabFunkciok').click()
@@ -89,13 +89,13 @@ test.describe('S4-C Fejlesztes > Munkanaplo', () => {
     await expect(detail.locator('.wl-seg-me')).toHaveCount(1)
     await expect(detail.locator('.wl-seg-ai')).toHaveCount(2)
     await expect(detail.locator('.wl-agent-row')).toHaveCount(2)
-    await expect(detail.locator('.wl-agent-row').first()).toContainText('ezermester: 3 szakasz, 200 perc')
+    await expect(detail.locator('.wl-agent-row').first()).toContainText('agent-b: 3 szakasz, 200 perc')
     await expect(detail.locator('.wl-dot')).toHaveCount(2)
     const prompts = detail.locator('.wl-prompt')
     await expect(prompts).toHaveCount(2)
-    await expect(prompts.nth(0)).toContainText('Gyuri')
-    await expect(prompts.nth(0)).toContainText('-> ezermester')
-    await expect(prompts.nth(1)).toContainText('brainy ->')
+    await expect(prompts.nth(0)).toContainText('Mallory')
+    await expect(prompts.nth(0)).toContainText('-> agent-b')
+    await expect(prompts.nth(1)).toContainText('agent-a ->')
     // the bar position is a percentage of the day span
     const left = await detail.locator('.wl-seg-me').evaluate((el) => (el as HTMLElement).style.left)
     expect(parseFloat(left)).toBeCloseTo((3600 / 86400) * 100, 1)

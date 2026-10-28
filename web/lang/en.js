@@ -2199,14 +2199,14 @@ window._i18n.en = {
   'auth.bridge.err.enroll_failed':               'Pairing failed. Check the dashboard log and try again.',
   'auth.bridge.err.enroll813':                   'Pairing stopped at a safety check: this install looks like a test environment (VITEST or NODE_ENV=test), so authorized_keys was left untouched. Remove the test signal from the service environment, then try again.',
 
-  // --- Development > Work log (card d7b2d5c8, S4) ---
+  // --- Development > Work log (card S4) ---
   'dev.wl.loading':                  'Loading...',
   'dev.wl.error':                    'The work log could not be loaded ({status}).',
   'dev.wl.empty':                    'No day to show.',
   'dev.wl.pick':                     'Pick a day from the list.',
   'dev.wl.tz':                       'Time zone: {tz}',
   'dev.wl.me_ai':                    'Me: {me} min | AI: {ai} min',
-  'dev.wl.prompt_counts':            'Prompts: Gyuri {owner}, agent {agent}',
+  'dev.wl.prompt_counts':            'Prompts: Mallory {owner}, agent {agent}',
   'dev.wl.no_data':                  'no data',
   'dev.wl.no_data_hint':             'At least one source table has no data for this day (pruned or not collected yet), so the AI time may be incomplete.',
   'dev.wl.timeline':                 'Timeline',
@@ -2216,8 +2216,8 @@ window._i18n.en = {
   'dev.wl.agent_row':                '{agent}: {segments} segments, {minutes} min',
   'dev.wl.prompt_list':              'Prompts (metadata only)',
   'dev.wl.prompts_none':             'No prompts on this day.',
-  'dev.wl.owner':                    'Gyuri',
-  'dev.wl.kind.owner':               'Gyuri',
+  'dev.wl.owner':                    'Mallory',
+  'dev.wl.kind.owner':               'Mallory',
   'dev.wl.kind.agent':               'agent',
   'dev.wl.segments':                  'Segments: me {me}, AI {ai}',
   'dev.wl.heat_title':                'Last 30 days, own minutes per day',

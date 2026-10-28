@@ -4,7 +4,7 @@ import {
   localDayBounds, summarizeDay, totalSeconds, unionIntervals, type Interval,
 } from '../web/worklog-intervals.js'
 
-// Card d7b2d5c8 (S4-A): the time-interval core. Fixed instants and explicit
+// Card (S4-A): the time-interval core. Fixed instants and explicit
 // Europe/Budapest dates only, no wall clock. Acceptance S4-1 (hand-computed
 // minutes) and S4-2 (overlapping agents are not counted twice).
 

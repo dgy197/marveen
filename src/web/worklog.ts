@@ -1,5 +1,5 @@
 // Work log: read-only aggregation over data the system already records
-// (card d7b2d5c8, S4-B; SPEC 4.1 "no new data", 5.4).
+// (card S4-B; SPEC 4.1 "no new data", 5.4).
 //
 // Sources, ONLY timestamp and identifier columns, named in every SELECT (never
 // `*`), so no text column can reach a response:

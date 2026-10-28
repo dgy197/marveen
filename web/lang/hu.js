@@ -2201,14 +2201,14 @@ window._i18n.hu = {
   'auth.bridge.err.enroll_failed':               'A párosítás nem sikerült. Nézd meg a dashboard naplóját, és próbáld újra.',
   'auth.bridge.err.enroll813':                   'A párosítás egy biztonsági ellenőrzésen állt meg: ez a telepítés teszt-környezetnek látszik (VITEST vagy NODE_ENV=test), ezért a rendszer hozzá sem nyúlt az authorized_keys fájlhoz. Vedd ki a teszt-jelzést a szolgáltatás környezetéből, majd próbáld újra.',
 
-  // --- Fejlesztés > Munkanapló (card d7b2d5c8, S4) ---
+  // --- Fejlesztés > Munkanapló (card S4) ---
   'dev.wl.loading':                  'Betöltés...',
   'dev.wl.error':                    'A munkanapló nem tölthető be ({status}).',
   'dev.wl.empty':                    'Nincs megjeleníthető nap.',
   'dev.wl.pick':                     'Válassz egy napot a listából.',
   'dev.wl.tz':                       'Időzóna: {tz}',
   'dev.wl.me_ai':                    'Én: {me} perc | AI: {ai} perc',
-  'dev.wl.prompt_counts':            'Promptok: Gyuri {owner}, ügynök {agent}',
+  'dev.wl.prompt_counts':            'Promptok: Mallory {owner}, ügynök {agent}',
   'dev.wl.no_data':                  'nincs adat',
   'dev.wl.no_data_hint':             'Erre a napra legalább az egyik forrástábla nem ad adatot (törölt vagy még nem gyűjtött sorok), ezért az AI-idő hiányos lehet.',
   'dev.wl.timeline':                 'Idősáv',
@@ -2218,8 +2218,8 @@ window._i18n.hu = {
   'dev.wl.agent_row':                '{agent}: {segments} szakasz, {minutes} perc',
   'dev.wl.prompt_list':              'Promptok (csak metaadat)',
   'dev.wl.prompts_none':             'Ezen a napon nincs prompt.',
-  'dev.wl.owner':                    'Gyuri',
-  'dev.wl.kind.owner':               'Gyuri',
+  'dev.wl.owner':                    'Mallory',
+  'dev.wl.kind.owner':               'Mallory',
   'dev.wl.kind.agent':               'ügynök',
   'dev.wl.segments':                  'Szakaszok: én {me}, AI {ai}',
   'dev.wl.heat_title':                'Elmúlt 30 nap, napi saját percek',

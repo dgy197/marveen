@@ -1,4 +1,4 @@
-// Time-interval core for the work log (card d7b2d5c8, S4-A).
+// Time-interval core for the work log (card S4-A).
 //
 // Pure functions, no DB, no clock, no config import: the zone is always an
 // explicit argument (callers pass APP_TZ). Events are unix SECONDS.

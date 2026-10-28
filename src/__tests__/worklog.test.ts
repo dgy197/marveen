@@ -12,7 +12,7 @@ import {
   type WorklogOptions,
 } from '../web/worklog.js'
 
-// Card d7b2d5c8 (S4-B): the aggregation over the four sources, on an in-memory DB.
+// Card (S4-B): the aggregation over the four sources, on an in-memory DB.
 // Every text column carries a marker; none may reach an output.
 
 const TZ = 'Europe/Budapest'
