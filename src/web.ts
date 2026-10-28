@@ -74,6 +74,7 @@ import { tryHandleDailyLog } from './web/routes/daily-log.js'
 import { tryHandlePrLedger } from './web/routes/pr-ledger.js'
 import { tryHandleFunkciok } from './web/routes/funkciok.js'
 import { tryHandleWorklog } from './web/routes/worklog.js'
+import { tryHandleOpenQuestions } from './web/routes/open-questions.js'
 import { tryHandleHomoglyphs } from './web/routes/homoglyphs.js'
 import { tryHandleContacts } from './web/routes/contacts.js'
 import { tryHandleMemoryGate } from './web/routes/memory-gate.js'
@@ -246,6 +247,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandlePrLedger(routeCtx)) return
       if (await tryHandleFunkciok(routeCtx)) return
       if (await tryHandleWorklog(routeCtx)) return
+      if (await tryHandleOpenQuestions(routeCtx)) return
       if (await tryHandleHomoglyphs(routeCtx)) return
       if (await tryHandleContacts(routeCtx)) return
       if (await tryHandleMemoryGate(routeCtx)) return

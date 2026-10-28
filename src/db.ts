@@ -1782,6 +1782,64 @@ export function initDatabase(dbPathOverride?: string): void {
     END
   `)
 
+  // --- Open questions (S3) ---
+  // Questions an agent raises for the owner, shown on "Fejlesztes > Kerdesek".
+  // A question authorizes NOTHING (no gate reads this table, spec 5.3): it is
+  // information for the asking agent. There is deliberately no hash, nonce or
+  // payload column. `status` stays 'open' until the owner answers; expiry is
+  // lazy (a row past expires_at reads as expired, see web/open-questions.ts),
+  // there is no background job. A row is answered once: the trigger below lets
+  // only an OPEN row change, and only its status/answer_*/answered_* columns;
+  // DELETE aborts. answered_by / answered_principal feed the work log (S4) and
+  // are not part of any response.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS open_questions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL,
+      card_id TEXT,
+      msg_id INTEGER,
+      kind TEXT NOT NULL CHECK (kind IN ('info','yesno','free')),
+      question_short TEXT NOT NULL CHECK (length(question_short) BETWEEN 1 AND 400),
+      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','ack','yes','no','answered','expired')),
+      answer_short TEXT CHECK (answer_short IS NULL OR length(answer_short) <= 1000),
+      answered_via TEXT CHECK (answered_via IN ('ui','telegram')),
+      answered_at INTEGER,
+      answered_by TEXT,
+      answered_principal TEXT CHECK (answered_principal IN ('session','device')),
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      source TEXT NOT NULL CHECK (source IN ('extractor','agent')),
+      CHECK (expires_at > created_at),
+      CHECK (status <> 'open' OR (answer_short IS NULL AND answered_via IS NULL AND answered_at IS NULL AND answered_by IS NULL AND answered_principal IS NULL)),
+      CHECK (status NOT IN ('ack','yes','no','answered') OR (answered_via IS NOT NULL AND answered_at IS NOT NULL))
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_open_questions_status_agent ON open_questions(status, agent_id)`)
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS open_questions_guard_update
+    BEFORE UPDATE ON open_questions
+    WHEN OLD.status <> 'open'
+      OR NEW.id IS NOT OLD.id
+      OR NEW.agent_id IS NOT OLD.agent_id
+      OR NEW.card_id IS NOT OLD.card_id
+      OR NEW.msg_id IS NOT OLD.msg_id
+      OR NEW.kind IS NOT OLD.kind
+      OR NEW.question_short IS NOT OLD.question_short
+      OR NEW.created_at IS NOT OLD.created_at
+      OR NEW.expires_at IS NOT OLD.expires_at
+      OR NEW.source IS NOT OLD.source
+    BEGIN
+      SELECT RAISE(ABORT, 'open_questions: only an open question can be answered, and only its answer columns change');
+    END
+  `)
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS open_questions_no_delete
+    BEFORE DELETE ON open_questions
+    BEGIN
+      SELECT RAISE(ABORT, 'open_questions rows are never deleted');
+    END
+  `)
+
   // --- Dashboard browser login (OPTIONAL; the bearer token stays primary) ---
   // Zero rows here = exactly the token-only behavior. A row is created only when
   // the operator opts in (Settings card or the dashboard-user CLI). No seeded
