@@ -828,11 +828,15 @@
       <div class="dev-tabs" id="devTabs">
         <button type="button" class="view-btn active" id="devTabFunkciok" data-dev-view="funkciok" data-i18n="dev.tab.funkciok">Funkciók</button>
         <button type="button" class="view-btn" id="devTabKerdesek" data-dev-view="kerdesek" disabled aria-disabled="true"><span data-i18n="dev.tab.kerdesek">Kérdések</span> <small data-i18n="dev.soon">hamarosan</small></button>
-        <button type="button" class="view-btn" id="devTabMunkanaplo" data-dev-view="munkanaplo" disabled aria-disabled="true"><span data-i18n="dev.tab.munkanaplo">Munkanapló</span> <small data-i18n="dev.soon">hamarosan</small></button>
+        <button type="button" class="view-btn" id="devTabMunkanaplo" data-dev-view="munkanaplo" data-i18n="dev.tab.munkanaplo">Munkanapló</button>
       </div>
       <div class="dev-layout" id="devFunkciokView">
         <div class="dev-list" id="devFunkciokList"></div>
         <div class="dev-detail" id="devFunkcioDetail"></div>
+      </div>
+      <div class="dev-layout" id="devMunkanaploView" hidden>
+        <div class="dev-list" id="devWorklogList"></div>
+        <div class="dev-detail" id="devWorklogDetail"></div>
       </div>
     </div>
 

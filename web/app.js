@@ -19881,6 +19881,200 @@ function wireFederationPage() {
 }
 
 // ============================================================
+// === Fejlesztes > Munkanaplo (card d7b2d5c8, S4) ===
+// Read-only. Server strings reach the DOM through textContent only (devEl).
+// Times are shown in the zone the API returns (`tz`), not the browser zone.
+// ============================================================
+
+let devWlRange = null
+let devWlSelected = null
+let devWlSeq = 0
+
+function wireDevTabs() {
+  const tabs = document.getElementById('devTabs')
+  if (!tabs || tabs.dataset.wired) return
+  tabs.dataset.wired = '1'
+  tabs.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('button[data-dev-view]') : null
+    if (!btn || btn.disabled) return
+    setDevView(btn.dataset.devView)
+  })
+}
+
+function setDevView(view) {
+  const fun = document.getElementById('devFunkciokView')
+  const wl = document.getElementById('devMunkanaploView')
+  if (!fun || !wl) return
+  const isWl = view === 'munkanaplo'
+  fun.hidden = isWl
+  wl.hidden = !isWl
+  document.getElementById('devTabFunkciok')?.classList.toggle('active', !isWl)
+  document.getElementById('devTabMunkanaplo')?.classList.toggle('active', isWl)
+  if (isWl) loadWorklog()
+}
+
+function wlFmtTime(unix, tz) {
+  try {
+    return new Date(unix * 1000).toLocaleTimeString('hu-HU', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false })
+  } catch { return new Date(unix * 1000).toISOString() }
+}
+
+function wlNoData(sources) {
+  return !!sources && (sources.token_usage === false || sources.tool_call_log === false)
+}
+
+async function loadWorklog() {
+  const list = document.getElementById('devWorklogList')
+  const detail = document.getElementById('devWorklogDetail')
+  if (!list || !detail) return
+  const seq = ++devWlSeq
+  list.replaceChildren(devEl('div', 'dev-empty', t('dev.wl.loading')))
+  let data = null
+  try {
+    const res = await fetch('/api/worklog')
+    if (!res.ok) throw new Error(String(res.status))
+    data = await res.json()
+  } catch (err) {
+    if (seq === devWlSeq) list.replaceChildren(devEl('div', 'dev-error', t('dev.wl.error', { status: String((err && err.message) || err) })))
+    return
+  }
+  if (seq !== devWlSeq) return
+  devWlRange = data
+  renderWorklogList(data)
+  if (!detail.hasChildNodes()) detail.replaceChildren(devEl('div', 'dev-empty', t('dev.wl.pick')))
+  if (devWlSelected && data && Array.isArray(data.days) && data.days.some((d) => d.date === devWlSelected)) selectWorklogDay(devWlSelected)
+}
+
+function renderWorklogList(data) {
+  const list = document.getElementById('devWorklogList')
+  list.replaceChildren()
+  const days = data && Array.isArray(data.days) ? data.days.slice().reverse() : []
+  if (data && data.tz) list.appendChild(devEl('div', 'dev-list-meta', t('dev.wl.tz', { tz: data.tz })))
+  if (!days.length) { list.appendChild(devEl('div', 'dev-empty', t('dev.wl.empty'))); return }
+  for (const d of days) {
+    const row = devEl('button', 'dev-list-item wl-day')
+    row.type = 'button'
+    row.dataset.date = String(d.date)
+    if (d.date === devWlSelected) row.classList.add('active')
+    const head = devEl('div', 'wl-day-head')
+    head.appendChild(devEl('span', 'dev-list-name', d.date))
+    if (wlNoData(d.sources)) {
+      const b = devEl('span', 'dev-badge wl-nodata', t('dev.wl.no_data'))
+      b.title = t('dev.wl.no_data_hint')
+      head.appendChild(b)
+    }
+    row.appendChild(head)
+    row.appendChild(devEl('div', 'dev-list-meta', t('dev.wl.me_ai', { me: String(d.me_minutes), ai: String(d.ai_minutes) })))
+    row.appendChild(devEl('div', 'dev-list-meta', t('dev.wl.prompt_counts', { owner: String(d.prompts_owner), agent: String(d.prompts_agent) })))
+    row.addEventListener('click', () => selectWorklogDay(d.date))
+    list.appendChild(row)
+  }
+}
+
+async function selectWorklogDay(date) {
+  devWlSelected = date
+  document.querySelectorAll('#devWorklogList .wl-day').forEach((el) => el.classList.toggle('active', el.dataset.date === date))
+  const detail = document.getElementById('devWorklogDetail')
+  const seq = ++devWlSeq
+  detail.replaceChildren(devEl('div', 'dev-empty', t('dev.detail.loading')))
+  let data = null
+  try {
+    const res = await fetch('/api/worklog/' + encodeURIComponent(date))
+    if (!res.ok) throw new Error(String(res.status))
+    data = await res.json()
+  } catch (err) {
+    if (seq === devWlSeq) detail.replaceChildren(devEl('div', 'dev-error', t('dev.wl.error', { status: String((err && err.message) || err) })))
+    return
+  }
+  if (seq !== devWlSeq) return
+  renderWorklogDetail(detail, data)
+}
+
+function wlBar(label, intervals, data, cls) {
+  const row = devEl('div', 'wl-row')
+  row.appendChild(devEl('div', 'wl-label', label))
+  const track = devEl('div', 'wl-track')
+  const span = (data.day_end - data.day_start) || 1
+  for (const iv of intervals) {
+    const left = Math.max(0, Math.min(100, ((iv.start - data.day_start) / span) * 100))
+    const right = Math.max(left, Math.min(100, ((iv.end - data.day_start) / span) * 100))
+    const seg = devEl('div', 'wl-seg ' + cls)
+    seg.style.left = left.toFixed(3) + '%'
+    seg.style.width = Math.max(0.3, right - left).toFixed(3) + '%'
+    seg.title = wlFmtTime(iv.start, data.tz) + ' - ' + wlFmtTime(iv.end, data.tz)
+    track.appendChild(seg)
+  }
+  row.appendChild(track)
+  return row
+}
+
+function renderWorklogDetail(root, data) {
+  root.replaceChildren()
+  const tz = data.tz
+  root.appendChild(devEl('h2', null, data.date))
+  if (wlNoData(data.sources)) root.appendChild(devEl('div', 'dev-error wl-nodata-note', t('dev.wl.no_data_hint')))
+  const tl = devEl('section', 'dev-block')
+  tl.appendChild(devEl('h3', null, t('dev.wl.timeline')))
+  const me = Array.isArray(data.me) ? data.me : []
+  const ai = Array.isArray(data.ai) ? data.ai : []
+  tl.appendChild(wlBar(t('dev.wl.me'), me, data, 'wl-seg-me'))
+  tl.appendChild(wlBar(t('dev.wl.ai'), ai, data, 'wl-seg-ai'))
+  // Per agent: the detail API gives the segment count only, the minutes come
+  // from the range row of the same day.
+  const rangeDay = devWlRange && Array.isArray(devWlRange.days) ? devWlRange.days.find((d) => d.date === data.date) : null
+  const minutes = {}
+  if (rangeDay && Array.isArray(rangeDay.ai_by_agent)) for (const a of rangeDay.ai_by_agent) minutes[a.agent] = a.minutes
+  const agents = Array.isArray(data.ai_by_agent) ? data.ai_by_agent : []
+  const maxMin = Math.max(1, ...agents.map((a) => minutes[a.agent] || 0))
+  for (const a of agents) {
+    const row = devEl('div', 'wl-row wl-agent-row')
+    const m = minutes[a.agent]
+    row.appendChild(devEl('div', 'wl-label', t('dev.wl.agent_row', { agent: String(a.agent), segments: String(a.segments), minutes: m === undefined ? '?' : String(m) })))
+    const track = devEl('div', 'wl-track')
+    const seg = devEl('div', 'wl-seg wl-seg-agent')
+    seg.style.left = '0%'
+    seg.style.width = (m === undefined ? 0 : Math.max(1, (m / maxMin) * 100)).toFixed(1) + '%'
+    track.appendChild(seg)
+    row.appendChild(track)
+    tl.appendChild(row)
+  }
+  const prompts = Array.isArray(data.prompts) ? data.prompts : []
+  const dots = devEl('div', 'wl-row')
+  dots.appendChild(devEl('div', 'wl-label', t('dev.wl.prompts')))
+  const dtrack = devEl('div', 'wl-track')
+  const span = (data.day_end - data.day_start) || 1
+  for (const p of prompts) {
+    const dot = devEl('div', 'wl-dot ' + (p.kind === 'owner' ? 'wl-dot-owner' : 'wl-dot-agent'))
+    dot.style.left = Math.max(0, Math.min(100, ((p.ts - data.day_start) / span) * 100)).toFixed(3) + '%'
+    dtrack.appendChild(dot)
+  }
+  dots.appendChild(dtrack)
+  tl.appendChild(dots)
+  const ticks = devEl('div', 'wl-ticks')
+  for (let i = 0; i <= 4; i++) {
+    const at = data.day_start + Math.round((span * i) / 4)
+    const tk = devEl('span', null, wlFmtTime(at, tz))
+    tk.style.left = (i * 25) + '%'
+    ticks.appendChild(tk)
+  }
+  tl.appendChild(ticks)
+  root.appendChild(tl)
+
+  const pl = devEl('section', 'dev-block')
+  pl.appendChild(devEl('h3', null, t('dev.wl.prompt_list')))
+  if (!prompts.length) pl.appendChild(devEl('div', 'dev-empty', t('dev.wl.prompts_none')))
+  for (const p of prompts) {
+    const row = devEl('div', 'wl-prompt')
+    row.appendChild(devEl('span', 'dev-mono', wlFmtTime(p.ts, tz)))
+    row.appendChild(devEl('span', 'dev-badge', t(p.kind === 'owner' ? 'dev.wl.kind.owner' : 'dev.wl.kind.agent')))
+    const from = p.from_agent || t('dev.wl.owner')
+    row.appendChild(devEl('span', null, String(from) + ' -> ' + String(p.to_agent || '?')))
+    pl.appendChild(row)
+  }
+  root.appendChild(pl)
+}
+
+// ============================================================
 // === Fejlesztes > Funkciok (S1) ===
 // Read-only. Every server string reaches the DOM through textContent only
 // (devEl), never through innerHTML; slugs are encodeURIComponent'ed.
@@ -19923,6 +20117,7 @@ function devRegistryError(code) {
 }
 
 async function loadDevPage() {
+  wireDevTabs()
   const list = document.getElementById('devFunkciokList')
   if (!list) return
   list.replaceChildren(devEl('div', 'dev-empty', t('dev.detail.loading')))
