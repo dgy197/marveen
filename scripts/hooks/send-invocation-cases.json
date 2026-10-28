@@ -2274,6 +2274,426 @@
       "name": "graph-forward GS1 control: show with a brace in a later argument",
       "cmd": "npx tsx scripts/graph-mail.ts show --id AAMkAGFmZXN0MDEyMzQ1Njc4OQ== --out {a,b}",
       "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: bash -c -- (the string after the option terminator)",
+      "cmd": "bash -c -- 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: bash -ec cluster",
+      "cmd": "bash -ec 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: bash -xc cluster",
+      "cmd": "bash -xc 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: sh -euc cluster",
+      "cmd": "sh -euc 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: bash -o pipefail -c skips the option value",
+      "cmd": "bash -o pipefail -c 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: bash +O extglob -c skips the option value",
+      "cmd": "bash +O extglob -c 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: tcsh -c",
+      "cmd": "tcsh -c 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: csh -c",
+      "cmd": "csh -c 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: ksh -c",
+      "cmd": "ksh -c 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: mksh -c",
+      "cmd": "mksh -c 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: fish -c",
+      "cmd": "fish -c 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: fish --command=",
+      "cmd": "fish --command='sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: bash -ec with graph-mail send",
+      "cmd": "bash -ec 'npx tsx scripts/graph-mail.ts send --to a@b.hu --subject t --body x'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: nested bash -ec",
+      "cmd": "bash -ec \"bash -c 'sendmail a@b.hu < m.txt'\"",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: bash -c 'echo hi' near miss",
+      "cmd": "bash -c 'echo hi'",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: bash -ec 'echo sendmail' near miss",
+      "cmd": "bash -ec 'echo sendmail'",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: bash -e script.sh (no c) near miss",
+      "cmd": "bash -e ./run.sh sendmail",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: fish -c 'echo hi' near miss",
+      "cmd": "fish -c 'echo hi'",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: ksh heredoc body is a shell program",
+      "cmd": "ksh <<'EOF'\nsendmail a@b.hu < m.txt\nEOF",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: eval single quoted string",
+      "cmd": "eval 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: eval double quoted string",
+      "cmd": "eval \"sendmail a@b.hu < m.txt\"",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: eval of separate words",
+      "cmd": "eval sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: eval echo sendmail near miss",
+      "cmd": "eval echo sendmail",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: eval of an inner shell -c",
+      "cmd": "eval \"bash -c 'sendmail a@b.hu < m.txt'\"",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: env -S string",
+      "cmd": "env -S 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: env -SSTR attached",
+      "cmd": "env -S'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: env --split-string=STR",
+      "cmd": "env --split-string='sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: env --split-string STR",
+      "cmd": "env --split-string 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: env -i -S string",
+      "cmd": "env -i -S 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: env -S with graph-mail send",
+      "cmd": "env -S 'npx tsx scripts/graph-mail.ts send --to a@b.hu --subject t --body x'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: env -S 'echo x' near miss",
+      "cmd": "env -S 'echo x'",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: env -S 'echo sendmail' near miss",
+      "cmd": "env -S 'echo sendmail'",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: caffeinate -i",
+      "cmd": "caffeinate -i sendmail a@b.hu < m.txt",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: caffeinate -t 5 (value flag)",
+      "cmd": "caffeinate -t 5 sendmail a@b.hu < m.txt",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: stdbuf -o0",
+      "cmd": "stdbuf -o0 sendmail a@b.hu < m.txt",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: stdbuf -o 0 (separate value)",
+      "cmd": "stdbuf -o 0 sendmail a@b.hu < m.txt",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: unbuffer",
+      "cmd": "unbuffer sendmail a@b.hu < m.txt",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: unbuffer -p",
+      "cmd": "unbuffer -p sendmail a@b.hu < m.txt",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: doas",
+      "cmd": "doas sendmail a@b.hu < m.txt",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: doas -u user",
+      "cmd": "doas -u mailer sendmail a@b.hu < m.txt",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: busybox applet",
+      "cmd": "busybox sendmail a@b.hu < m.txt",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: flock FILE CMD",
+      "cmd": "flock /tmp/x.lock sendmail a@b.hu < m.txt",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: flock -w 5 FILE CMD",
+      "cmd": "flock -w 5 /tmp/x.lock sendmail a@b.hu < m.txt",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: flock FILE -c STR",
+      "cmd": "flock /tmp/x.lock -c 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: script BSD -q FILE CMD",
+      "cmd": "script -q /dev/null sendmail a@b.hu < m.txt",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: script util-linux -c STR",
+      "cmd": "script -q -c 'sendmail a@b.hu < m.txt' /dev/null",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: watch -n 60 CMD",
+      "cmd": "watch -n 60 sendmail a@b.hu < m.txt",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: watch quoted command string",
+      "cmd": "watch 'date; sendmail a@b.hu'",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: parallel template",
+      "cmd": "parallel sendmail ::: a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: parallel with an option value",
+      "cmd": "parallel -j 4 sendmail ::: a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: caffeinate -i date near miss",
+      "cmd": "caffeinate -i date",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: stdbuf -o0 cat near miss",
+      "cmd": "stdbuf -o0 cat sendmail.log",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: watch -n 5 date near miss",
+      "cmd": "watch -n 5 date",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: watch grep sendmail near miss",
+      "cmd": "watch -n 5 grep sendmail /var/log/mail.log",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: flock FILE true near miss",
+      "cmd": "flock /tmp/x.lock true",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: script -q FILE ls near miss",
+      "cmd": "script -q /dev/null ls",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: parallel echo near miss",
+      "cmd": "parallel echo ::: sendmail a b",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: doas ls near miss",
+      "cmd": "doas ls /root",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: busybox ls near miss",
+      "cmd": "busybox ls /",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: find -exec",
+      "cmd": "find . -name m.txt -exec sendmail a@b.hu \\;",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: find -execdir",
+      "cmd": "find . -name m.txt -execdir sendmail a@b.hu \\;",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: find -ok",
+      "cmd": "find . -name m.txt -ok sendmail a@b.hu \\;",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: find -okdir",
+      "cmd": "find . -name m.txt -okdir sendmail a@b.hu \\;",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: find -exec with {} +",
+      "cmd": "find . -exec sendmail a@b.hu {} +",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: find -exec bash -c string",
+      "cmd": "find . -name m.txt -exec bash -c 'sendmail a@b.hu < \"$0\"' {} \\;",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: find second -exec sends",
+      "cmd": "find . -exec echo {} \\; -exec sendmail a@b.hu \\;",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: find -exec graph-mail send",
+      "cmd": "find . -exec npx tsx scripts/graph-mail.ts send --to a@b.hu --subject t --body x \\;",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: find -exec grep sendmail near miss",
+      "cmd": "find . -name '*.py' -exec grep -l sendmail {} \\;",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: find -exec echo near miss",
+      "cmd": "find . -exec echo sendmail {} +",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: find -name sendmail near miss",
+      "cmd": "find /usr -name sendmail -print",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: quoted << is text, the next line is a command",
+      "cmd": "echo \"<<EOF\"\nsendmail a@b.hu\nEOF",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: single-quoted << is text, the next line is a command",
+      "cmd": "echo '<<EOF'\nsendmail a@b.hu\nEOF",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: quoted << alone near miss",
+      "cmd": "echo \"<<EOF\"",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: quoted << then a harmless line near miss",
+      "cmd": "echo \"<<EOF\"\necho hi\nEOF",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: real heredoc after an apostrophe in an earlier body still a heredoc",
+      "cmd": "cat <<'A'\ndon't\nA\nbash <<'B'\nsendmail a@b.hu < m.txt\nB",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: real heredoc after a comment apostrophe",
+      "cmd": "# don't\nbash <<'B'\nsendmail a@b.hu < m.txt\nB",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: s=sendmail; $s",
+      "cmd": "s=sendmail; $s a@b.hu < m.txt",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: s=sendmail && ${s}",
+      "cmd": "s=sendmail && ${s} a@b.hu < m.txt",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: export S=sendmail; $S",
+      "cmd": "export S=sendmail; $S a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: s=sendmail; sudo $s",
+      "cmd": "s=sendmail; sudo $s a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: s='sendmail -t'; $s",
+      "cmd": "s='sendmail -t'; $s",
+      "expected": true
+    },
+    {
+      "name": "cards 11f53410/f491b3be: s=echo; $s sendmail near miss",
+      "cmd": "s=echo; $s sendmail",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: unresolved $x keeps today's rule near miss",
+      "cmd": "$x a@b.hu",
+      "expected": false
+    },
+    {
+      "name": "cards 11f53410/f491b3be: variable assigned AFTER use near miss",
+      "cmd": "$s a@b.hu; s=sendmail",
+      "expected": false
     }
   ]
 }

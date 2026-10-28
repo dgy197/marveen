@@ -129,7 +129,9 @@ const GRAPHMAIL = /^graph-mail(\.ts|\.js)?$/i
 // in hooks/outgoing-copy-gate.py (the python twin) for the full rationale.
 const GRAPHMAIL_READS = new Set(['verify', 'list', 'show'])
 const GRAPHMAIL_RUNNER = /^(node|nodejs|tsx|ts-node|deno|bun|bunx|npx|pnpx|npm|pnpm|yarn)$/i
-const WRAPPER_SHELL = /^(sh|bash|zsh|dash)$/i
+// Shared by the `-c` rule, the heredoc-to-shell rules and the pipe rule (card 11f53410: ksh, mksh,
+// csh, tcsh and fish were not shells to the gate). Mirrors _WRAPPER_SHELL in outgoing-copy-gate.py.
+const WRAPPER_SHELL = /^(sh|bash|zsh|dash|ksh|mksh|csh|tcsh|fish)$/i
 const CURLISH = /^(curl|wget|http)$/i
 const RESEND_TARGET = /^(https?:\/\/)?([^/@\s]*\.)?api\.resend\.com(\/|$)/i
 // RESENDGETTWIN1010: port of the python twin's method verdict (RESENDGATE826,
@@ -290,10 +292,78 @@ export function maskSubshellMarkers(cmd, comments = true) {
   return out
 }
 
+const HEREDOC_STICKY = new RegExp(HEREDOC_RE.source, 'y')
+
+// The heredocs of cmd, in order: HEREDOC_RE matches whose `<<` is NOT inside quotes. A quoted
+// `<<` (`echo "<<EOF"`) is text, and taking it for a heredoc dropped the commands after it as
+// a body (H1, card 11f53410). The quote scan skips each heredoc BODY it finds, so an
+// apostrophe in prose does not flip the state for the next one. Read with and without shell
+// comments like the classifier itself and the matches of both readings are united: a `<<`
+// counts as text only when BOTH readings see it quoted. Mirrors _heredoc_matches in
+// hooks/outgoing-copy-gate.py.
+let heredocCache = { cmd: null, out: null } // one scan per command string, not one per caller
+function heredocMatches(cmd) {
+  if (heredocCache.cmd === cmd) return heredocCache.out
+  const found = new Map()
+  const n = cmd.length
+  for (const comments of [true, false]) {
+    let i = 0
+    let q = null
+    while (i < n) {
+      const ch = cmd[i]
+      if (q) {
+        if (ch === '\\' && q === '"') { i += 2; continue }
+        if (ch === q) q = null
+        i++
+        continue
+      }
+      if (ch === '\\') { i += 2; continue }
+      if (ch === '$' && cmd[i + 1] === "'") {
+        const j = ansiCEnd(cmd, i)
+        if (j !== -1) { i = j + 1; continue }
+      }
+      if (ch === "'" || ch === '"') { q = ch; i++; continue }
+      if (comments && ch === '#' && (i === 0 || WORD_BREAK.includes(cmd[i - 1]))) {
+        const j = cmd.indexOf('\n', i)
+        i = j === -1 ? n : j
+        continue
+      }
+      if (ch === '<' && cmd.startsWith('<<', i)) {
+        HEREDOC_STICKY.lastIndex = i
+        const m = HEREDOC_STICKY.exec(cmd)
+        if (m) {
+          if (!found.has(m.index)) found.set(m.index, m)
+          i = m.index + m[0].length
+          continue
+        }
+      }
+      i++
+    }
+  }
+  const out = []
+  let lastEnd = 0
+  for (const start of [...found.keys()].sort((a, b) => a - b)) {
+    if (start >= lastEnd) { const m = found.get(start); out.push(m); lastEnd = start + m[0].length }
+  }
+  heredocCache = { cmd, out }
+  return out
+}
+
+// cmd with every heredoc body cut and its opening line kept (was cmd.replace(HEREDOC_RE, '$1')).
+function stripHeredocBodies(cmd) {
+  let out = ''
+  let last = 0
+  for (const m of heredocMatches(cmd)) {
+    out += cmd.slice(last, m.index) + m[1]
+    last = m.index + m[0].length
+  }
+  return out + cmd.slice(last)
+}
+
 // Quote-aware tokenizer -> [[token, ...], ...] per segment. Throws on an
 // unbalanced quote (the caller falls back to the legacy content patterns).
 export function segmentsTokens(cmd, comments = true) {
-  const s = maskSubshellMarkers(cmd.replace(HEREDOC_RE, '$1'), comments)
+  const s = maskSubshellMarkers(stripHeredocBodies(cmd), comments)
   const segments = []
   let cur = []
   let tok = ''
@@ -350,8 +420,120 @@ const WRAPPERS = new Map([
     'max-procs', 'max-chars', 'process-slot-var'], 0]],
   ['timeout', ['sk', ['signal', 'kill-after'], 1]],
   ['setsid', ['', [], 0]],
+  // Card 11f53410: more programs that run their trailing words -- see _WRAPPERS in
+  // outgoing-copy-gate.py (the python twin) for the value flags and the positionals.
+  ['caffeinate', ['wt', [], 0]],
+  ['stdbuf', ['ioe', ['input', 'output', 'error'], 0]],
+  ['unbuffer', ['', [], 0]],
+  ['doas', ['uC', [], 0]],
+  ['busybox', ['', [], 0]],
+  ['flock', ['wE', ['timeout', 'wait', 'conflict-exit-code'], 1]],
+  ['script', ['FtcEIOBTmo', ['command', 'log-in', 'log-out', 'log-io', 'log-timing',
+    'logging-format', 'timing', 'output-limit', 'echo'], 1]],
+  // watch hands its words, joined by spaces, to `sh -c`: the joined rest is judged as a string.
+  ['watch', ['nq', ['interval', 'equexit'], 0]],
 ])
+const JOIN_WRAPPERS = new Set(['watch'])
+const COMMAND_STRING_WRAPPERS = new Set(['flock', 'script'])
+const FIND_EXEC = new Set(['-exec', '-execdir', '-ok', '-okdir'])
 const HEAD_DEPTH = 8
+
+// The command of every -exec / -execdir / -ok / -okdir of a find line: the words up to the `;`
+// (a `\;` is a `;` token once dequoted) or `+`, or to the end. Scanning resumes AFTER the
+// terminator, so a head that itself holds a find is that head's business (no blow-up).
+function findExecHeads(toks) {
+  const heads = []
+  let i = 0
+  while (i < toks.length) {
+    if (FIND_EXEC.has(toks[i])) {
+      let j = i + 1
+      while (j < toks.length && toks[j] !== ';' && toks[j] !== '+') j++
+      heads.push(toks.slice(i + 1, j))
+      i = j + 1
+    } else i++
+  }
+  return heads
+}
+
+// The words `env -S` makes of its string (shell quoting rules, no operators); an unbalanced
+// quote falls back to whitespace splitting. Mirrors _split_words.
+function splitWords(value) {
+  const words = []
+  let tok = ''
+  let has = false
+  let q = null
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < value.length && '"\\'.includes(value[i + 1])) { tok += value[++i]; continue }
+      if (ch === q) { q = null; continue }
+      tok += ch
+      continue
+    }
+    if (ch === "'" || ch === '"') { q = ch; has = true; continue }
+    if (ch === '\\' && i + 1 < value.length) { tok += value[++i]; has = true; continue }
+    if (/\s/.test(ch)) { if (has) { words.push(tok); tok = ''; has = false } continue }
+    tok += ch
+    has = true
+  }
+  if (q) return value.split(/\s+/).filter(Boolean)
+  if (has) words.push(tok)
+  return words
+}
+
+// [value, next index] when toks[i] is env's -S / -SSTR / --split-string[=STR] (any unambiguous
+// prefix of the long name), else null. Mirrors _env_split_string.
+function envSplitString(toks, i) {
+  const t = toks[i]
+  if (t.startsWith('--')) {
+    const eq = t.indexOf('=')
+    const name = eq < 0 ? t.slice(2) : t.slice(2, eq)
+    if (name && 'split-string'.startsWith(name)) {
+      if (eq >= 0) return [t.slice(eq + 1), i + 1]
+      return [i + 1 < toks.length ? toks[i + 1] : '', i + 2]
+    }
+    return null
+  }
+  if (t.startsWith('-') && t.length > 1) {
+    let k = -1
+    for (let x = 1; x < t.length; x++) if ('uCS'.includes(t[x])) { k = x; break }
+    if (k !== -1 && t[k] === 'S') {
+      if (k < t.length - 1) return [t.slice(k + 1), i + 1]
+      return [i + 1 < toks.length ? toks[i + 1] : '', i + 2]
+    }
+  }
+  return null
+}
+
+// GNU parallel runs its command template through a shell; the template is every word up to the
+// first `:::` / `::::`. Each word of the option run that could be the template is judged (an
+// unknown option errs toward auditing); more than six candidates is an unreadable option run:
+// audit (null). Mirrors _parallel_heads.
+function parallelHeads(toks) {
+  const starts = []
+  let x = 1
+  let prevDash = false
+  while (x < toks.length) {
+    const t = toks[x]
+    if (t === '--') { starts.push(x + 1); break }
+    if (t.startsWith('-') && t.length > 1) { prevDash = true; x++; continue }
+    starts.push(x)
+    if (!prevDash) break
+    prevDash = false
+    x++
+  }
+  const heads = []
+  for (const s of starts.slice(0, 6)) {
+    const words = []
+    for (const t of toks.slice(s)) {
+      if (t.startsWith(':::')) break
+      words.push(t)
+    }
+    if (words.length) heads.push(['sh', '-c', words.join(' ')])
+  }
+  if (starts.length > 6) heads.push(null)
+  return heads
+}
 
 // MAILGATEUV1020: a project launcher's `run` subcommand in front of the sender --
 // see the full rationale at _LAUNCHERS in outgoing-copy-gate.py (the python twin).
@@ -428,19 +610,42 @@ function commandHeads(toksIn, d = 0) {
   if (!toks.length) return [toks]
   const w = basename(toks[0])
   // Still a wrapper at the depth bound: counts as a send (null), see the python twin.
-  if (d >= HEAD_DEPTH) return (WRAPPERS.has(w) || LAUNCHERS.has(w) || w === 'function' || w === 'coproc') ? [null] : [toks]
+  if (d >= HEAD_DEPTH) {
+    // find with an -exec is a wrapper too: the command it runs is out of sight here
+    const isWrapper = WRAPPERS.has(w) || LAUNCHERS.has(w) || w === 'parallel' || w === 'function' || w === 'coproc' ||
+      ((w === 'find' || FIND_EXEC.has(toks[0])) && findExecHeads(toks).length > 0)
+    return isWrapper ? [null] : [toks]
+  }
   if (w === 'function') return commandHeads(toks.slice(2), d + 1)
   if (w === 'coproc') return [...commandHeads(toks.slice(1), d + 1), ...commandHeads(toks.slice(2), d + 1)]
   const launcher = LAUNCHERS.get(w)
   if (launcher) return launcherHeads(toks, launcher, d)
+  if (w === 'find' || FIND_EXEC.has(toks[0])) {
+    // The find line itself stays a head (graph-mail words in its arguments are judged as before);
+    // every -exec / -execdir / -ok / -okdir command is a head of its own. A segment that STARTS
+    // with -exec is the tail of a `\;`-split find line (python only; harmless here).
+    return [toks, ...findExecHeads(toks).flatMap((h) => commandHeads(h, d + 1))]
+  }
+  if (w === 'parallel') return [toks, ...parallelHeads(toks)]
   const spec = WRAPPERS.get(w)
   if (!spec) return [toks]
   const [shortVal, longVal, positionals] = spec
   let i = 1
   const starts = []
+  let extra = []
   while (i < toks.length) {
     const t = toks[i]
     if (t === '--') { i++; break }
+    if (w === 'env') {
+      // env -S STR / -SSTR / --split-string=STR: STR is split into words that run as a command
+      // line, in front of the words after it (a command string, card 11f53410).
+      const sv = envSplitString(toks, i)
+      if (sv) {
+        extra = commandHeads(['env', ...splitWords(sv[0]), ...toks.slice(sv[1])], d + 1)
+        i = toks.length
+        break
+      }
+    }
     if (t.startsWith('--')) {
       if (!t.includes('=') && longVal.includes(t.slice(2))) { i += 2; continue }
       if (!t.includes('=')) starts.push(i + 2)
@@ -457,7 +662,23 @@ function commandHeads(toksIn, d = 0) {
     break
   }
   starts.unshift(i)
-  return starts.flatMap((s) => commandHeads(toks.slice(s + positionals), d + 1))
+  const heads = [...extra]
+  for (const s of starts) {
+    const rest = toks.slice(s + positionals)
+    if (JOIN_WRAPPERS.has(w)) { if (rest.length) heads.push(['sh', '-c', rest.join(' ')]) }
+    else heads.push(...commandHeads(rest, d + 1))
+  }
+  if (COMMAND_STRING_WRAPPERS.has(w)) {
+    // `flock FILE -c STR` / `script -c STR`: the option's value is a command string
+    const seen = new Set()
+    for (let k = 1; k < toks.length; k++) {
+      const t = toks[k]
+      const cs = (t === '-c' || t === '--command') && k + 1 < toks.length ? toks[k + 1]
+        : t.startsWith('--command=') ? t.slice(10) : null
+      if (cs !== null && !seen.has(cs)) { seen.add(cs); heads.push(['sh', '-c', cs]) }
+    }
+  }
+  return heads
 }
 
 // SUBAGENTMAILGATE1016 (measured on the sub-agent gate, 2026-10-16): the
@@ -629,8 +850,75 @@ function pythonHeadSends(rest) {
   return false
 }
 
-function segmentIsSend(toksIn, depth) {
-  return commandHeads(toksIn).some((h) => headIsSend(h, depth))
+const VAR_WORD = /^\$(?:\{(\w+)\}|(\w+))$/
+const ASSIGN_PREFIX = new Set(['export', 'declare', 'readonly', 'local', 'typeset'])
+
+function segmentIsSend(toksIn, depth, env = null) {
+  for (const h of commandHeads(toksIn)) {
+    if (headIsSend(h, depth)) return true
+    // Q4: a program word that is exactly $NAME / ${NAME}, with NAME assigned a literal earlier
+    // in the same line, is judged with that literal (word-split) as the program.
+    const m = env && env.size && h && h.length ? VAR_WORD.exec(h[0]) : null
+    if (m) {
+      for (const lit of env.get(m[1] ?? m[2]) ?? []) {
+        if (commandHeads([...lit.split(/\s+/).filter(Boolean), ...h.slice(1)], 1).some((h2) => headIsSend(h2, depth))) return true
+      }
+    }
+  }
+  return false
+}
+
+// Literal NAME=value words at the head of a segment (after export / declare ...) into env;
+// every earlier value of a name is kept (a branch may have taken either), at most 8 per name.
+// A value with a substitution or a glob is not a literal. Mirrors _collect_assignments.
+function collectAssignments(toks, env) {
+  let i = 0
+  while (i < toks.length && ASSIGN_PREFIX.has(toks[i])) i++
+  while (i < toks.length && ENV_ASSIGN.test(toks[i])) {
+    const eq = toks[i].indexOf('=')
+    const name = toks[i].slice(0, eq)
+    const val = toks[i].slice(eq + 1)
+    if (val && !UNDECIDABLE_PATH.test(val)) {
+      if (!env.has(name)) env.set(name, [])
+      const vals = env.get(name)
+      if (!vals.includes(val) && vals.length < 8) vals.push(val)
+    }
+    i++
+  }
+}
+
+function segmentsSend(segments, depth) {
+  const env = new Map()
+  for (const toks of segments) {
+    if (segmentIsSend(toks, depth, env)) return true
+    collectAssignments(toks, env)
+  }
+  return false
+}
+
+// The command strings a shell is given -- see _shell_command_strings in outgoing-copy-gate.py.
+function shellCommandStrings(rest) {
+  const out = new Set()
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === '-c' && rest[i + 1]) out.add(rest[i + 1])
+  }
+  let cSeen = false
+  let i = 0
+  while (i < rest.length) {
+    const t = rest[i]
+    if (t === '--') { i++; break }
+    if (t === '--command' && i + 1 < rest.length) { out.add(rest[i + 1]); break }
+    if (t.startsWith('--command=')) { out.add(t.slice(10)); break }
+    if (t.startsWith('--')) { i += ['--rcfile', '--init-file', '--init-command'].includes(t) ? 2 : 1; continue }
+    if (t.length > 1 && (t[0] === '-' || t[0] === '+')) {
+      if (t[0] === '-' && t.slice(1).includes('c')) cSeen = true
+      i += t.endsWith('o') || t.endsWith('O') ? 2 : 1
+      continue
+    }
+    break
+  }
+  if (cSeen && i < rest.length && rest[i]) out.add(rest[i])
+  return [...out]
 }
 
 function headIsSend(toks, depth) {
@@ -639,10 +927,16 @@ function headIsSend(toks, depth) {
   const prog = basename(toks[0])
   const rest = toks.slice(1)
   if (SENDER_PROG.test(prog)) return true
-  if (WRAPPER_SHELL.test(prog) && depth < 3) {
-    for (let i = 0; i < rest.length; i++) {
-      if (rest[i] === '-c' && rest[i + 1] && isSendInvocation(rest[i + 1], depth + 1)) return true
+  // (card 11f53410: option clusters with c, `--`, option values; at the string-depth bound a
+  // command string is out of sight, so it counts as a send, like the head-depth bound)
+  if (WRAPPER_SHELL.test(prog)) {
+    for (const cs of shellCommandStrings(rest)) {
+      if (depth >= 3 || isSendInvocation(cs, depth + 1)) return true
     }
+  }
+  // eval joins its words with spaces and runs the result as a command string
+  if (prog === 'eval' && rest.length) {
+    if (depth >= 3 || isSendInvocation(rest.join(' '), depth + 1)) return true
   }
   if (PYTHON.test(prog) || NODEISH.test(prog)) {
     for (let i = 0; i < rest.length; i++) {
@@ -721,9 +1015,9 @@ export function buildWrapperDepthMsg() {
 const HEREDOC_SENDER_ARGV = /['"](?:[^'"\s]*\/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])/
 const heredocBodySends = (body) =>
   CODE_SEND.test(body) || CODE_SEND_MODULE.test(body) || (CODE_EXECISH.test(body) && HEREDOC_SENDER_ARGV.test(body))
-const HEREDOC_SHELL = /(?:^|[\s;&|(])(?:\S*\/)?(?:bash|sh|zsh|dash)\b[^\n<]*$/i
+const HEREDOC_SHELL = /(?:^|[\s;&|(])(?:\S*\/)?(?:bash|sh|zsh|dash|ksh|mksh|csh|tcsh|fish)\b[^\n<]*$/i
 const HEREDOC_INTERP = /(?:^|[\s;&|(])(?:\S*\/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun)\b[^\n<]*$/i
-const HEREDOC_PIPE = /\|\s*(?:\S*\/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun|bash|sh|zsh|dash)\b/i
+const HEREDOC_PIPE = /\|\s*(?:\S*\/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun|bash|sh|zsh|dash|ksh|mksh|csh|tcsh|fish)\b/i
 const HEREDOC_REDIRECT = /(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a)?)\s*(['"]?)([^\s'"<>;&|]+)\1/
 function writtenThenRun(cmd, written, depth) {
   if (!written.size) return false
@@ -743,7 +1037,7 @@ function writtenThenRun(cmd, written, depth) {
 }
 function heredocProgramSends(cmd, depth = 0) {
   const written = new Map()
-  for (const m of cmd.matchAll(HEREDOC_RE)) {
+  for (const m of heredocMatches(cmd)) {
     const opener = cmd.slice(cmd.lastIndexOf('\n', m.index - 1) + 1, m.index) + m[1]
     const w = HEREDOC_REDIRECT.exec(opener)
     if (w) written.set(w[2], cmd.slice(m.index + m[1].length + 1, m.index + m[0].length - m[2].length))
@@ -784,7 +1078,7 @@ export function isSendInvocation(cmd, depth = 0) {
       if (SEND_PATTERNS.some((re) => re.test(cmd))) return true
       continue
     }
-    if (segments.some((toks) => segmentIsSend(toks, depth))) return true
+    if (segmentsSend(segments, depth)) return true
   }
   // The same command with every substitution as one undecidable word (see
   // flattenSubstitutions): the outer command keeps the word it would run. Read
@@ -794,7 +1088,7 @@ export function isSendInvocation(cmd, depth = 0) {
   if (flat === cmd) return false
   for (const comments of [true, false]) {
     try {
-      if (segmentsTokens(flat, comments).some((toks) => segmentIsSend(toks, depth))) return true
+      if (segmentsSend(segmentsTokens(flat, comments), depth)) return true
     } catch {
       if (SEND_PATTERNS.some((re) => re.test(cmd))) return true
     }

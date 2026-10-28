@@ -30,6 +30,7 @@ mean "let it through". The block message says how to make it inspectable.
 Contract: PreToolUse. Reads the hook payload on stdin, exit 0 = allow,
 exit 2 = block (stderr goes back to the model).
 """
+import functools
 import html
 import json
 import os
@@ -119,7 +120,9 @@ _GRAPHMAIL = re.compile(r"^graph-mail(\.ts|\.js)?$", re.I)
 # email-send-gate.mjs (GRAPHMAIL_READS / GRAPHMAIL_RUNNER).
 _GRAPHMAIL_READS = frozenset(("verify", "list", "show"))
 _GRAPHMAIL_RUNNER = re.compile(r"^(node|nodejs|tsx|ts-node|deno|bun|bunx|npx|pnpx|npm|pnpm|yarn)$", re.I)
-_WRAPPER_SHELL = re.compile(r"^(sh|bash|zsh|dash)$", re.I)
+# The shell set is shared by the `-c` rule, the heredoc-to-shell rules and the pipe rule below
+# (card 11f53410: ksh, mksh, csh, tcsh and fish were not shells to the gate).
+_WRAPPER_SHELL = re.compile(r"^(sh|bash|zsh|dash|ksh|mksh|csh|tcsh|fish)$", re.I)
 _CURLISH = re.compile(r"^(curl|wget|http)$", re.I)
 # Interpreter kod-string argumentum (python -c / node -e): az interpreternek
 # atadott kod MUVELET, nem tartalom -- a kod-szintu kuldes-hivasokra szurunk.
@@ -359,11 +362,77 @@ def _mask_subshell_markers(cmd: str, comments: bool = True) -> str:
     return "".join(out)
 
 
+@functools.lru_cache(maxsize=8)
+def _heredoc_matches(cmd: str) -> tuple:
+    """The heredocs of cmd, in order: _HEREDOC matches whose `<<` is NOT inside quotes.
+    A quoted `<<` (`echo "<<EOF"`) is text, and taking it for a heredoc dropped the
+    commands after it as a body (H1, card 11f53410). The quote scan skips each heredoc
+    BODY it finds, so an apostrophe in prose does not flip the state for the next one.
+    Read with and without shell comments like the classifier itself, and the matches
+    of both readings are united: a `<<` counts as text only when BOTH readings see it
+    quoted (a `# don't` comment must not hide a real heredoc). Mirrored in
+    email-send-gate.mjs (heredocMatches)."""
+    found = {}
+    n = len(cmd)
+    for comments in (True, False):
+        i, q = 0, None
+        while i < n:
+            ch = cmd[i]
+            if q:
+                if ch == "\\" and q == '"':
+                    i += 2
+                    continue
+                if ch == q:
+                    q = None
+                i += 1
+                continue
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == "$" and i + 1 < n and cmd[i + 1] == "'":
+                j = _ansi_c_end(cmd, i)
+                if j != -1:
+                    i = j + 1
+                    continue
+            if ch in "'\"":
+                q = ch
+                i += 1
+                continue
+            if comments and ch == "#" and (i == 0 or cmd[i - 1] in _WORD_BREAK):
+                j = cmd.find("\n", i)
+                i = n if j == -1 else j
+                continue
+            if ch == "<" and cmd.startswith("<<", i):
+                m = _HEREDOC.match(cmd, i)
+                if m:
+                    found.setdefault(m.start(), m)
+                    i = m.end()
+                    continue
+            i += 1
+    out, last_end = [], 0
+    for start in sorted(found):
+        if start >= last_end:
+            out.append(found[start])
+            last_end = found[start].end()
+    return tuple(out)
+
+
+def _strip_heredoc_bodies(cmd: str) -> str:
+    """cmd with every heredoc body cut and its opening line kept (was _HEREDOC.sub(r"\\1"))."""
+    out, last = [], 0
+    for m in _heredoc_matches(cmd):
+        out.append(cmd[last:m.start()])
+        out.append(m.group(1))
+        last = m.end()
+    out.append(cmd[last:])
+    return "".join(out)
+
+
 def _segments_tokens(cmd: str, comments: bool = True):
     """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve.
     comments: see _mask_subshell_markers (the send classifier reads BOTH ways)."""
     import shlex
-    lex = shlex.shlex(_mask_subshell_markers(_HEREDOC.sub(r"\1", cmd), comments),
+    lex = shlex.shlex(_mask_subshell_markers(_strip_heredoc_bodies(cmd), comments),
                       posix=True, punctuation_chars="();|&")
     lex.whitespace_split = True
     # QUOTEPARITY1018: comments are the mask's job (above); shlex's own '#' rule
@@ -420,8 +489,108 @@ _WRAPPERS = {
     # first count found all sat inside quoted remote (ssh) command strings or heredoc
     # bodies, and that pattern was not quote-aware (Marveen's correction, 2026-09-24).
     "setsid": ("", (), 0),
+    # Card 11f53410: more programs that run their trailing words. caffeinate -w/-t, stdbuf
+    # -i/-o/-e, doas -u/-C take a value; unbuffer's -p is a plain flag; busybox runs the
+    # next word as the applet; flock and script take one positional (the lock / log file)
+    # before the command. script's value flags are the union of the BSD and util-linux
+    # ones, and the `-c STR` of flock and script is a command string (see _command_heads).
+    "caffeinate": ("wt", (), 0),
+    "stdbuf": ("ioe", ("input", "output", "error"), 0),
+    "unbuffer": ("", (), 0),
+    "doas": ("uC", (), 0),
+    "busybox": ("", (), 0),
+    "flock": ("wE", ("timeout", "wait", "conflict-exit-code"), 1),
+    "script": ("FtcEIOBTmo", ("command", "log-in", "log-out", "log-io", "log-timing",
+                              "logging-format", "timing", "output-limit", "echo"), 1),
+    # watch hands its words, joined by spaces, to `sh -c`: the joined rest is judged as a string.
+    "watch": ("nq", ("interval", "equexit"), 0),
 }
+_JOIN_WRAPPERS = frozenset(("watch",))
+_COMMAND_STRING_WRAPPERS = frozenset(("flock", "script"))
+_FIND_EXEC = frozenset(("-exec", "-execdir", "-ok", "-okdir"))
 _HEAD_DEPTH = 8
+
+
+def _find_exec_heads(toks):
+    """The command of every -exec / -execdir / -ok / -okdir of a find line: the words up to the
+    `;` (a `\\;` is a `;` token once dequoted; the python segmenter has already split there)
+    or `+`, or to the end. Scanning resumes AFTER the terminator, so a head that itself
+    holds a find is that head's business, not a rescan of the same tail (no blow-up)."""
+    heads, i, n = [], 0, len(toks)
+    while i < n:
+        if toks[i] in _FIND_EXEC:
+            j = i + 1
+            while j < n and toks[j] not in (";", "+"):
+                j += 1
+            heads.append(toks[i + 1:j])
+            i = j + 1
+        else:
+            i += 1
+    return heads
+
+
+def _split_words(value: str):
+    """The words `env -S` makes of its string (shell quoting rules, no operators); an
+    unbalanced quote falls back to whitespace splitting."""
+    import shlex
+    try:
+        return shlex.split(value)
+    except ValueError:
+        return value.split()
+
+
+def _env_split_string(toks, i):
+    """(value, next index) when toks[i] is env's -S / -SSTR / --split-string[=STR] (any
+    unambiguous prefix of the long name, as getopt_long takes it), else None."""
+    t = toks[i]
+    if t.startswith("--"):
+        name, eq, val = t[2:].partition("=")
+        if name and "split-string".startswith(name):
+            if eq:
+                return val, i + 1
+            return (toks[i + 1] if i + 1 < len(toks) else ""), i + 2
+        return None
+    if t.startswith("-") and len(t) > 1:
+        k = next((x for x, ch in enumerate(t[1:], 1) if ch in "uCS"), -1)
+        if k != -1 and t[k] == "S":
+            if k < len(t) - 1:
+                return t[k + 1:], i + 1
+            return (toks[i + 1] if i + 1 < len(toks) else ""), i + 2
+    return None
+
+
+def _parallel_heads(toks):
+    """GNU parallel runs its command template through a shell; the template is every word up
+    to the first `:::` / `::::`. The options' value flags are not listed, so each word of the
+    option run that could be the template is judged (an unknown option errs toward
+    auditing); more than six candidates is an unreadable option run: audit (None)."""
+    starts, x, n, prev_dash = [], 1, len(toks), False
+    while x < n:
+        t = toks[x]
+        if t == "--":
+            starts.append(x + 1)
+            break
+        if t.startswith("-") and len(t) > 1:
+            prev_dash = True
+            x += 1
+            continue
+        starts.append(x)
+        if not prev_dash:
+            break
+        prev_dash = False
+        x += 1
+    heads = []
+    for s in starts[:6]:
+        words = []
+        for t in toks[s:]:
+            if t.startswith(":::"):
+                break
+            words.append(t)
+        if words:
+            heads.append(["sh", "-c", " ".join(words)])
+    if len(starts) > 6:
+        heads.append(None)
+    return heads
 
 # MAILGATEUV1020: a project launcher's `run` subcommand in front of the sender --
 # `uv run python .../send.py --to x`, `uv run send.py --to x`, `uv run -m send
@@ -534,7 +703,10 @@ def _command_heads(toks, _d: int = 0):
         # so it counts as a send (None) -- the bound errs toward auditing, like
         # an unknown flag does. It used to return the wrapper itself, and nine
         # nested wrappers + sendmail was silently skipped (Samu, #1521 review).
-        return [None] if (w in _WRAPPERS or w in _LAUNCHERS or w in ("function", "coproc")) else [toks]
+        # find with an -exec is a wrapper too: the command it runs is out of sight here
+        is_wrapper = (w in _WRAPPERS or w in _LAUNCHERS or w == "parallel" or w in ("function", "coproc")
+                      or ((w == "find" or toks[0] in _FIND_EXEC) and bool(_find_exec_heads(toks))))
+        return [None] if is_wrapper else [toks]
     if w == "function":
         return _command_heads(toks[2:], _d + 1)
     if w == "coproc":
@@ -542,16 +714,34 @@ def _command_heads(toks, _d: int = 0):
     launcher = _LAUNCHERS.get(w)
     if launcher is not None:
         return _launcher_heads(toks, launcher, _d)
+    if w == "find" or toks[0] in _FIND_EXEC:
+        # The find line itself stays a head (graph-mail words in its arguments are judged as
+        # before); every -exec / -execdir / -ok / -okdir command is a head of its own. A
+        # segment that STARTS with -exec is the tail of a `\;`-split find line (python only).
+        found = [toks]
+        for h in _find_exec_heads(toks):
+            found += _command_heads(h, _d + 1)
+        return found
+    if w == "parallel":
+        return [toks] + [x for h in _parallel_heads(toks) for x in ([None] if h is None else [h])]
     spec = _WRAPPERS.get(w)
     if spec is None:
         return [toks]
     short_val, long_val, positionals = spec
-    i, starts = 1, []
+    i, starts, extra = 1, [], []
     while i < len(toks):
         t = toks[i]
         if t == "--":
             i += 1
             break
+        if w == "env":
+            # env -S STR / -SSTR / --split-string=STR: STR is split into words that run as a
+            # command line, in front of the words after it (a command string, card 11f53410).
+            sv = _env_split_string(toks, i)
+            if sv is not None:
+                extra = _command_heads(["env"] + _split_words(sv[0]) + toks[sv[1]:], _d + 1)
+                i = len(toks)
+                break
         if t.startswith("--"):
             if "=" not in t and t[2:] in long_val:
                 i += 2
@@ -568,14 +758,67 @@ def _command_heads(toks, _d: int = 0):
             continue
         break
     starts.insert(0, i)
-    heads = []
+    heads = list(extra)
     for s in starts:
-        heads += _command_heads(toks[s + positionals:], _d + 1)
+        rest = toks[s + positionals:]
+        if w in _JOIN_WRAPPERS:
+            if rest:
+                heads.append(["sh", "-c", " ".join(rest)])
+        else:
+            heads += _command_heads(rest, _d + 1)
+    if w in _COMMAND_STRING_WRAPPERS:
+        # `flock FILE -c STR` / `script -c STR`: the option's value is a command string
+        seen = set()
+        for k, t in enumerate(toks[1:], 1):
+            cs = toks[k + 1] if t in ("-c", "--command") and k + 1 < len(toks) else (
+                t[10:] if t.startswith("--command=") else None)
+            if cs is not None and cs not in seen:
+                seen.add(cs)
+                heads.append(["sh", "-c", cs])
     return heads
 
 
-def _segment_is_send(toks, depth: int) -> bool:
-    return any(_head_is_send(h, depth) for h in _command_heads(toks))
+_VAR_WORD = re.compile(r"^\$(?:\{(\w+)\}|(\w+))$")
+_ASSIGN_PREFIX = frozenset(("export", "declare", "readonly", "local", "typeset"))
+
+
+def _segment_is_send(toks, depth: int, env=None) -> bool:
+    for h in _command_heads(toks):
+        if _head_is_send(h, depth):
+            return True
+        # Q4: a program word that is exactly $NAME / ${NAME}, with NAME assigned a literal
+        # earlier in the same line, is judged with that literal (word-split) as the program.
+        m = _VAR_WORD.match(h[0]) if env and h else None
+        if m:
+            for lit in env.get(m.group(1) or m.group(2), ()):
+                if any(_head_is_send(h2, depth) for h2 in _command_heads(lit.split() + h[1:], 1)):
+                    return True
+    return False
+
+
+def _collect_assignments(toks, env) -> None:
+    """Literal NAME=value words at the head of a segment (after export / declare ...) into env;
+    every earlier value of a name is kept (a branch may have taken either), at most 8 per name.
+    A value with a substitution or a glob is not a literal."""
+    i = 0
+    while i < len(toks) and toks[i] in _ASSIGN_PREFIX:
+        i += 1
+    while i < len(toks) and _ENV_ASSIGN.match(toks[i]):
+        name, _, val = toks[i].partition("=")
+        if val and not _UNDECIDABLE_PATH.search(val):
+            vals = env.setdefault(name, [])
+            if val not in vals and len(vals) < 8:
+                vals.append(val)
+        i += 1
+
+
+def _segments_send(segments, depth: int) -> bool:
+    env = {}
+    for toks in segments:
+        if _segment_is_send(toks, depth, env):
+            return True
+        _collect_assignments(toks, env)
+    return False
 
 
 # SUBAGENTMAILGATE1016: the sender was recognised only with the script as the
@@ -770,6 +1013,41 @@ def _python_head_sends(rest) -> bool:
     return False
 
 
+def _shell_command_strings(rest):
+    """The command strings a shell is given. Kept from the old rule: every `-c` followed by a
+    word. Added: the first non-option word after an option run holding a short cluster with
+    `c` (`-ec`, `-xc`, `-euc`), where `--` ends the options and the value of `-o x` / `+O x` /
+    `--rcfile F` is skipped; fish's `--command[=]STR`. Deduplicated (dict keeps the order)."""
+    out = {}
+    for i, t in enumerate(rest):
+        if t == "-c" and i + 1 < len(rest):
+            out[rest[i + 1]] = None
+    c_seen, i, n = False, 0, len(rest)
+    while i < n:
+        t = rest[i]
+        if t == "--":
+            i += 1
+            break
+        if t == "--command" and i + 1 < n:
+            out[rest[i + 1]] = None
+            break
+        if t.startswith("--command="):
+            out[t[10:]] = None
+            break
+        if t.startswith("--"):
+            i += 2 if t in ("--rcfile", "--init-file", "--init-command") else 1
+            continue
+        if len(t) > 1 and t[0] in "-+":
+            if t[0] == "-" and "c" in t[1:]:
+                c_seen = True
+            i += 2 if t[-1] in "oO" else 1
+            continue
+        break
+    if c_seen and i < n:
+        out[rest[i]] = None
+    return list(out)
+
+
 def _head_is_send(toks, depth: int) -> bool:
     if toks is None:  # the depth bound was hit on a wrapper: audit it
         return True
@@ -780,11 +1058,16 @@ def _head_is_send(toks, depth: int) -> bool:
     if _SENDER_PROG.match(prog):
         return True
     # burkolo hejj: a -c string-argumentum maga is parancs -- rekurzio
-    if _WRAPPER_SHELL.match(prog) and depth < 3:
-        for i, t in enumerate(rest):
-            if t == "-c" and i + 1 < len(rest):
-                if is_send_invocation(rest[i + 1], _depth=depth + 1):
-                    return True
+    # (card 11f53410: option clusters with c, `--`, option values; at the string-depth bound
+    # a command string is out of sight, so it counts as a send, like the head-depth bound)
+    if _WRAPPER_SHELL.match(prog):
+        for cs in _shell_command_strings(rest):
+            if depth >= 3 or is_send_invocation(cs, _depth=depth + 1):
+                return True
+    # eval joins its words with spaces and runs the result as a command string
+    if prog == "eval" and rest:
+        if depth >= 3 or is_send_invocation(" ".join(rest), _depth=depth + 1):
+            return True
     # interpreter kod-string: python -c / node -e / --eval, ami kuldest hiv
     if _PYTHON.match(prog) or _NODEISH.match(prog):
         for i, t in enumerate(rest):
@@ -893,13 +1176,13 @@ def _heredoc_body_sends(body: str) -> bool:
     return bool(_CODE_EXECISH.search(body) and _HEREDOC_SENDER_ARGV.search(body))
 
 
-_HEREDOC_SHELL = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:bash|sh|zsh|dash)\b[^\n<]*$", re.I)
+_HEREDOC_SHELL = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:bash|sh|zsh|dash|ksh|mksh|csh|tcsh|fish)\b[^\n<]*$", re.I)
 _HEREDOC_INTERP = re.compile(
     r"(?:^|[\s;&|(])(?:\S*/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun)\b[^\n<]*$", re.I
 )
 
 
-_HEREDOC_PIPE = re.compile(r"\|\s*(?:\S*/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun|bash|sh|zsh|dash)\b", re.I)
+_HEREDOC_PIPE = re.compile(r"\|\s*(?:\S*/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun|bash|sh|zsh|dash|ksh|mksh|csh|tcsh|fish)\b", re.I)
 _HEREDOC_REDIRECT = re.compile(r"(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a)?)\s*(['\"]?)([^\s'\"<>;&|]+)\1")
 
 
@@ -927,7 +1210,7 @@ def _written_then_run(cmd: str, written: dict, depth: int) -> bool:
 
 def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
     written = {}
-    for m in _HEREDOC.finditer(cmd):
+    for m in _heredoc_matches(cmd):
         opener = cmd[cmd.rfind("\n", 0, m.start()) + 1:m.start()] + m.group(1)
         w = _HEREDOC_REDIRECT.search(opener)
         if w:
@@ -975,7 +1258,7 @@ def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
             if _FALLBACK_LITERALS.search(cmd):
                 return True
             continue
-        if any(_segment_is_send(toks, _depth) for toks in segments):
+        if _segments_send(segments, _depth):
             return True
     # the same command with every substitution as one undecidable word
     # (flatten_substitutions): the outer command keeps the word it would run.
@@ -985,7 +1268,7 @@ def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
         return False
     for comments in (True, False):
         try:
-            if any(_segment_is_send(toks, _depth) for toks in _segments_tokens(flat, comments)):
+            if _segments_send(_segments_tokens(flat, comments), _depth):
                 return True
         except ValueError:
             if _FALLBACK_LITERALS.search(cmd):
