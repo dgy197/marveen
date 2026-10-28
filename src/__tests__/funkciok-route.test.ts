@@ -197,9 +197,9 @@ describe('S1-6: authentication and credential scope', () => {
   })
 })
 
-// Card d7b2d5c8 (S2-A): the decision log is the one write surface of this module.
+// Function page S2-A: the decision log is the one write surface of this module.
 describe('S2-A: /api/funkciok/:slug/decisions', () => {
-  const P = '/api/funkciok/levelkapu/decisions'
+  const P = '/api/funkciok/charlie-feature/decisions'
   const reqWith = (body: string) => Object.assign(Readable.from([Buffer.from(body)]), { headers: {} as Record<string, string> })
   const goodBody = JSON.stringify({ quote_short: 'igen', tg_msg_id: '1' })
 
@@ -208,10 +208,10 @@ describe('S2-A: /api/funkciok/:slug/decisions', () => {
     expect(await tryHandleFunkciok(r.ctx)).toBe(true)
     expect(r.out.status).toBe(200)
     expect(r.out.body).toEqual({ decisions: [{ id: 1 }] })
-    r = call(P, { method: 'POST', auth: { kind: 'token', agent: 'ezermester' }, req: reqWith(goodBody) })
+    r = call(P, { method: 'POST', auth: { kind: 'token', agent: 'agent-b' }, req: reqWith(goodBody) })
     expect(await tryHandleFunkciok(r.ctx)).toBe(true)
     expect(r.out.status).toBe(201)
-    expect(stub.recordDecision).toHaveBeenCalledWith('levelkapu', goodBody, { via: 'token', by: 'ezermester' })
+    expect(stub.recordDecision).toHaveBeenCalledWith('charlie-feature', goodBody, { via: 'token', by: 'agent-b' })
   })
 
   it('auth matrix: 401 without a principal, 403 for operator scope and federation, on GET and POST, and the service is not reached', async () => {
@@ -232,7 +232,7 @@ describe('S2-A: /api/funkciok/:slug/decisions', () => {
 
   it.each([
     ['dashboard token', { kind: 'token' }, 'token'],
-    ['token with an agent claim', { kind: 'token', agent: 'ezermester' }, 'ezermester'],
+    ['token with an agent claim', { kind: 'token', agent: 'agent-b' }, 'agent-b'],
     ['browser session', { kind: 'session', user: 'owner' }, 'session:owner'],
     ['full-scope device key', { kind: 'device', device: 'phone', deviceId: 2, scope: 'full' }, 'device:phone'],
   ] as [string, Auth, string][])('POST allowed: %s -> recorded as %s', async (_l, auth, by) => {
@@ -283,7 +283,7 @@ describe('S2-A: /api/funkciok/:slug/decisions', () => {
     [{ kind: 'bad_request', error: 'e' }, 400],
     [{ kind: 'unprocessable', error: 'e' }, 422],
     [{ kind: 'conflict', error: 'e' }, 409],
-    [{ kind: 'invalid', slug: 'levelkapu', error: 'broken' }, 422],
+    [{ kind: 'invalid', slug: 'charlie-feature', error: 'broken' }, 422],
     [{ kind: 'not_found' }, 404],
   ])('service answer %j is HTTP %i', async (answer, status) => {
     stub.recordDecision.mockResolvedValueOnce(answer)

@@ -13,7 +13,7 @@ import { createGitLogReader } from '../web/funkciok-git.js'
 import { setFunkciokServiceForTest, tryHandleFunkciok } from '../web/routes/funkciok.js'
 import type { RouteContext } from '../web/routes/types.js'
 
-// Card d7b2d5c8 (S2-A): the append-only decision log against an in-memory sqlite
+// Function page S2-A: the append-only decision log against an in-memory sqlite
 // and a temp registry. Acceptance S2-1 (no source -> 400), S2-2 (source check),
 // S2-3 (append-only, correction by a new row), spec 5.1 (write rights),
 // 5.4 (allowlisted keys, marker).
@@ -23,7 +23,7 @@ const T0 = 1_760_000_000
 const NOW = T0 + 1000
 const OWNER = '555'
 
-const TOKEN: DecisionActor = { via: 'token', by: 'ezermester' }
+const TOKEN: DecisionActor = { via: 'token', by: 'agent-b' }
 const keysOf = (o: object) => Object.keys(o).sort()
 const sorted = (a: readonly string[]) => [...a].sort()
 const E_ACUTE = String.fromCharCode(0xe9)
@@ -34,17 +34,17 @@ let svc: FunkciokService
 
 function writeRegistry(slug: string): void {
   writeFileSync(join(registryDir, `${slug}.json`), JSON.stringify({
-    slug, nev: `Funkcio ${slug}`, leiras: 'Leiras.', kartyak: ['4fbbb27c'], tagek: ['FUNKTAG1'], repok: [], tiltasok: [], specUtak: [],
+    slug, nev: `Funkcio ${slug}`, leiras: 'Leiras.', kartyak: ['3333aaaa'], tagek: ['FUNKTAG1'], repok: [], tiltasok: [], specUtak: [],
   }))
 }
 
-function inbound(chat: string, messageId: string, text = 'gyuri szavai', direction: 'in' | 'out' = 'in'): void {
+function inbound(chat: string, messageId: string, text = 'mallory szavai', direction: 'in' | 'out' = 'in'): void {
   getDb().prepare('INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .run('brainy', chat, direction, messageId, text, T0)
+    .run('agent-a', chat, direction, messageId, text, T0)
 }
 
 function busMessage(): number {
-  return Number(getDb().prepare("INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at) VALUES ('brainy', 'ezermester', 'x', 'done', ?)").run(T0).lastInsertRowid)
+  return Number(getDb().prepare("INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at) VALUES ('agent-a', 'agent-b', 'x', 'done', ?)").run(T0).lastInsertRowid)
 }
 
 const rec = (body: unknown, actor: DecisionActor = TOKEN, slug = 'f') =>
@@ -105,7 +105,7 @@ describe('S2-1: input validation', () => {
   })
 
   it('an unknown or forged key is refused (recorded_by / recorded_via / created_at / id cannot be sent)', async () => {
-    for (const extra of [{ recorded_by: 'gyuri' }, { recorded_via: 'session' }, { created_at: 1 }, { id: 9 }, { source_found: 1 }, { __proto__x: 1 }]) {
+    for (const extra of [{ recorded_by: 'mallory' }, { recorded_via: 'session' }, { created_at: 1 }, { id: 9 }, { source_found: 1 }, { __proto__x: 1 }]) {
       const r = await rec(JSON.stringify({ quote_short: 'igen', tg_msg_id: '1', ...extra }))
       expect(r.kind, JSON.stringify(extra)).toBe('bad_request')
     }
@@ -127,9 +127,9 @@ describe('S2-1: input validation', () => {
     expect((await rec({ quote_short: 'igen', tg_msg_id: '1', tg_chat: 'x' })).kind).toBe('bad_request')
     expect((await rec({ quote_short: 'igen', tg_chat: '555', msg_id: 1 })).kind).toBe('bad_request') // chat without a tg message
     expect((await rec({ quote_short: 'igen', tg_msg_id: '1', card_id: 'XYZ' })).kind).toBe('bad_request')
-    expect((await rec({ quote_short: 'igen', tg_msg_id: '1', card_id: '4FBBB27C' })).kind).toBe('bad_request')
+    expect((await rec({ quote_short: 'igen', tg_msg_id: '1', card_id: '3333AAAA' })).kind).toBe('bad_request')
     for (const m of [0, -1, 1.5, '3', true]) expect((await rec({ quote_short: 'igen', msg_id: m })).kind, String(m)).toBe('bad_request')
-    expect((await recOk({ quote_short: 'igen', tg_msg_id: '9', tg_chat: '-100123', card_id: '4fbbb27c' })).card_id).toBe('4fbbb27c')
+    expect((await recOk({ quote_short: 'igen', tg_msg_id: '9', tg_chat: '-100123', card_id: '3333aaaa' })).card_id).toBe('3333aaaa')
   })
 
   it('decided_at: unix seconds, not before 2020, not in the future; the default is the server clock', async () => {
@@ -211,7 +211,7 @@ describe('S2-2: the source check (found / not found, never the text)', () => {
   })
 
   it('the conversation_log text never leaves: marker in the text, absent from the write answer, the list and the page', async () => {
-    inbound(OWNER, '100', `${MARKER} gyuri titkos uzenete`)
+    inbound(OWNER, '100', `${MARKER} mallory titkos uzenete`)
     inbound(OWNER, '101', `${MARKER} masik`)
     const written = await rec({ quote_short: 'igen', tg_msg_id: '100' })
     await recOk({ quote_short: 'nem', tg_msg_id: '101' })
@@ -290,7 +290,7 @@ describe('S2-3: append-only, a correction is a new row', () => {
 describe('spec 5.4: allowlisted keys', () => {
   it('the write answer, every list row and every page row carry EXACTLY the DECISION_KEYS', async () => {
     inbound(OWNER, '100')
-    const w = await recOk({ quote_short: 'igen', tg_msg_id: '100', msg_id: busMessage(), card_id: '4fbbb27c' })
+    const w = await recOk({ quote_short: 'igen', tg_msg_id: '100', msg_id: busMessage(), card_id: '3333aaaa' })
     await recOk({ quote_short: 'masik', tg_msg_id: '101', supersedes: w.id })
     expect(keysOf(w)).toEqual(sorted(DECISION_KEYS))
     const list = await svc.decisions('f')
@@ -322,7 +322,7 @@ describe('spec 5.4: allowlisted keys', () => {
 
 describe('spec 5.1: who writes (decisionActor) and how it is recorded', () => {
   it('maps every credential kind', () => {
-    expect(decisionActor({ kind: 'token', agent: 'ezermester' })).toEqual({ via: 'token', by: 'ezermester' })
+    expect(decisionActor({ kind: 'token', agent: 'agent-b' })).toEqual({ via: 'token', by: 'agent-b' })
     expect(decisionActor({ kind: 'token' })).toEqual({ via: 'token', by: 'token' })
     expect(decisionActor({ kind: 'device', device: 'phone', scope: 'full' })).toEqual({ via: 'device', by: 'device:phone' })
     expect(decisionActor({ kind: 'session', user: 'owner' })).toEqual({ via: 'session', by: 'session:owner' })
@@ -333,11 +333,11 @@ describe('spec 5.1: who writes (decisionActor) and how it is recorded', () => {
   })
 
   it('stores recorded_by and recorded_via from the principal, never from the body', async () => {
-    const t = await recOk({ quote_short: 'a', tg_msg_id: '1' }, { via: 'token', by: 'ezermester' })
+    const t = await recOk({ quote_short: 'a', tg_msg_id: '1' }, { via: 'token', by: 'agent-b' })
     const n = await recOk({ quote_short: 'b', tg_msg_id: '2' }, { via: 'token', by: 'token' })
     const d = await recOk({ quote_short: 'c', tg_msg_id: '3' }, { via: 'device', by: 'device:phone' })
     const s = await recOk({ quote_short: 'd', tg_msg_id: '4' }, { via: 'session', by: 'session:owner' })
-    expect([t, n, d, s].map((x) => x.recorded_by)).toEqual(['ezermester', 'token', 'device:phone', 'session:owner'])
+    expect([t, n, d, s].map((x) => x.recorded_by)).toEqual(['agent-b', 'token', 'device:phone', 'session:owner'])
     const via = getDb().prepare('SELECT recorded_via FROM function_decisions ORDER BY id').all() as { recorded_via: string }[]
     expect(via.map((v) => v.recorded_via)).toEqual(['token', 'token', 'device', 'session'])
   })
@@ -365,10 +365,10 @@ describe('end to end through the route', () => {
 
   it('token with X-Agent-Id: 201, recorded_by is the agent, recorded_via token; the GET lists it', async () => {
     inbound(OWNER, '100', `${MARKER} szoveg`)
-    const r = post(P, body, { kind: 'token', agent: 'ezermester' })
+    const r = post(P, body, { kind: 'token', agent: 'agent-b' })
     expect(await tryHandleFunkciok(r.ctx)).toBe(true)
     expect(r.out.status).toBe(201)
-    expect(r.out.body.recorded_by).toBe('ezermester')
+    expect(r.out.body.recorded_by).toBe('agent-b')
     expect(r.out.body.source_status).toBe('verified')
     expect(JSON.stringify(r.out.body)).not.toContain(MARKER)
     expect((getDb().prepare('SELECT recorded_via FROM function_decisions').get() as { recorded_via: string }).recorded_via).toBe('token')

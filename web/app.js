@@ -20169,7 +20169,7 @@ async function toggleDevMessage(slug, id, full) {
 }
 
 // ============================================================
-// === Fejlesztes > Dontesek (card d7b2d5c8, S2) ===
+// === Fejlesztes > Dontesek (S2) ===
 // Decision log block, record form and the context package button. Same rules
 // as above: server strings only via textContent, slug encodeURIComponent'ed,
 // same-origin fetch (the global wrapper adds the token header).

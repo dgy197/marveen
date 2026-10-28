@@ -1,7 +1,7 @@
 import { maskSecrets } from './agent-transcript.js'
 import type { FunkcioPage } from './funkciok-page.js'
 
-// Card d7b2d5c8 (S2-B): the markdown context package a planner agent gets for a
+// Function page S2-B: the markdown context package a planner agent gets for a
 // new development on a function.
 //
 // Input is ONLY the already serialized page object (S1 allowlisted, masked
@@ -81,7 +81,7 @@ export function buildContext(page: FunkcioPage, nowMs: number): string {
     { title: 'Leiras', lines: [frameLine(page.leiras, LEIRAS_MAX)].filter((l) => l !== '') },
     { title: 'Tiltasok', lines: page.tiltasok.slice(0, TILTAS_MAX).map((t) => `- ${frameLine(t)}`) },
     {
-      title: `Utolso ${CONTEXT_DECISIONS} dontes (Gyuri idezete, a forras ellenorzese nem bizonyitek)`,
+      title: `Utolso ${CONTEXT_DECISIONS} dontes (az idezet a tulajdonostol van, a forras ellenorzese nem bizonyitek)`,
       lines: decisions.map((d) => {
         const src = d.tg_msg_id !== null ? `tg:${frameLine(d.tg_chat ?? '', 24)}/${frameLine(d.tg_msg_id, 24)}` : `msg:${d.msg_id}`
         return `${day(d.decided_at)} | ${src} | ${d.source_status} | "${frameLine(d.quote_short, 280)}"`

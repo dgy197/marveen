@@ -12,21 +12,21 @@ import { createGitLogReader } from '../web/funkciok-git.js'
 import { setFunkciokServiceForTest, tryHandleFunkciok } from '../web/routes/funkciok.js'
 import type { RouteContext } from '../web/routes/types.js'
 
-// Card d7b2d5c8 (S2-B): the markdown context package. Structure, the 8000 cap,
+// Function page S2-B: the markdown context package. Structure, the 8000 cap,
 // the data framing of untrusted strings, the marker (nothing outside the page
 // allowlist), and the HTTP surface (auth matrix, 404, content type).
 
 const MARKER = 'TITOK-MARKER'
 const T0 = 1_760_000_000
 const OWNER = '555'
-const TOKEN: DecisionActor = { via: 'token', by: 'ezermester' }
+const TOKEN: DecisionActor = { via: 'token', by: 'agent-b' }
 const FENCE = '`'.repeat(3)
 const LS = String.fromCodePoint(0x2028)
 const RLO = String.fromCodePoint(0x202e)
 
 function basePage(over: Partial<FunkcioPage> = {}): FunkcioPage {
   return {
-    slug: 'levelkapu', nev: 'Levelkapu', leiras: 'Leiras szoveg.', last_change: T0,
+    slug: 'charlie-feature', nev: 'Charlie feature', leiras: 'Leiras szoveg.', last_change: T0,
     open_cards: 0, commits_without_card: 0, commits_total: 0,
     cards: [], cards_missing: [], messages: [], commits: [], tests: [], repos: [],
     tiltasok: ['Ne kuldj levelet jovahagyas nelkul'], specUtak: [], decisions: [],
@@ -36,8 +36,8 @@ function basePage(over: Partial<FunkcioPage> = {}): FunkcioPage {
 
 function decision(i: number, over: Partial<DecisionOut> = {}): DecisionOut {
   return {
-    id: i, slug: 'levelkapu', quote_short: `dontes ${i}`, tg_chat: OWNER, tg_msg_id: String(1000 + i), msg_id: null, card_id: null,
-    decided_at: T0 + i, recorded_by: 'ezermester', supersedes: null, superseded_by: null, source_status: 'verified', created_at: T0 + i,
+    id: i, slug: 'charlie-feature', quote_short: `dontes ${i}`, tg_chat: OWNER, tg_msg_id: String(1000 + i), msg_id: null, card_id: null,
+    decided_at: T0 + i, recorded_by: 'agent-b', supersedes: null, superseded_by: null, source_status: 'verified', created_at: T0 + i,
     ...over,
   }
 }
@@ -47,7 +47,7 @@ function commit(i: number, subject = `commit ${i}`) {
 }
 
 function card(seq: number, title: string, status = 'in_progress') {
-  return { seq, id: `4fbbb2${String(seq).padStart(2, '0')}`, title, status, assignee: 'ezermester', parent_id: null, created_at: T0, last_status_at: T0, archived: false, events: [] }
+  return { seq, id: `3333aa${String(seq).padStart(2, '0')}`, title, status, assignee: 'agent-b', parent_id: null, created_at: T0, last_status_at: T0, archived: false, events: [] }
 }
 
 /** Number of fence lines (open + close): always even in a well-formed document. */
@@ -59,7 +59,7 @@ describe('structure', () => {
       decisions: [decision(1)], cards: [card(1, 'Nyitott kartya')], commits: [commit(1)],
       tests: [{ repo: 'marveen', path: 'src/__tests__/a.test.ts', last_commit: 'abc0001', last_date: T0 }],
     }), (T0 + 5) * 1000)
-    const order = ['# Funkcio-kontextus', DATA_NOTICE, 'nev: Levelkapu', 'slug: levelkapu', '## Leiras', '## Tiltasok', '## Utolso 20 dontes', '## Nyitott kartyak', '## Utolso 15 commit', '## Tesztfajlok']
+    const order = ['# Funkcio-kontextus', DATA_NOTICE, 'nev: Charlie feature', 'slug: charlie-feature', '## Leiras', '## Tiltasok', '## Utolso 20 dontes', '## Nyitott kartyak', '## Utolso 15 commit', '## Tesztfajlok']
     let at = -1
     for (const part of order) {
       const i = md.indexOf(part)
@@ -67,7 +67,7 @@ describe('structure', () => {
       at = i
     }
     expect(md).toContain('| tg:555/1001 | verified | "dontes 1"')
-    expect(md).toContain('#1 4fbbb201 | in_progress | ezermester | Nyitott kartya')
+    expect(md).toContain('#1 3333aa01 | in_progress | agent-b | Nyitott kartya')
     expect(md).toContain('marveen abc0001 ')
     expect(md).toContain('marveen: src/__tests__/a.test.ts')
     expect(md).toContain('generalva: 2025-')
@@ -174,7 +174,7 @@ describe('service: only the page allowlist reaches the package', () => {
     initDatabase(':memory:')
     registryDir = mkdtempSync(join(tmpdir(), 'funkciok-ctx-reg-'))
     writeFileSync(join(registryDir, 'f.json'), JSON.stringify({
-      slug: 'f', nev: 'Funkcio f', leiras: 'Leiras.', kartyak: ['4fbbb27c'], tagek: ['FUNKTAG1'], repok: [], tiltasok: ['Tiltas egy'], specUtak: [`/tmp/${MARKER}/spec.md`],
+      slug: 'f', nev: 'Funkcio f', leiras: 'Leiras.', kartyak: ['3333aaaa'], tagek: ['FUNKTAG1'], repok: [], tiltasok: ['Tiltas egy'], specUtak: [`/tmp/${MARKER}/spec.md`],
     }))
     writeFileSync(join(registryDir, 'broken.json'), '{nope')
     svc = createFunkciokService({
@@ -182,13 +182,13 @@ describe('service: only the page allowlist reaches the package', () => {
     })
     const db = getDb()
     db.prepare(`INSERT INTO kanban_cards (id, title, description, test_steps, status, assignee, sort_order, created_at, updated_at)
-                VALUES ('4fbbb27c', ?, ?, ?, 'in_progress', 'ezermester', 0, ?, ?)`).run(`Kartya ${FENCE} cim`, `${MARKER} description`, `${MARKER} steps`, T0, T0)
-    db.prepare('INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)').run('4fbbb27c', 'someone', `${MARKER} comment`, T0)
+                VALUES ('3333aaaa', ?, ?, ?, 'in_progress', 'agent-b', 0, ?, ?)`).run(`Kartya ${FENCE} cim`, `${MARKER} description`, `${MARKER} steps`, T0, T0)
+    db.prepare('INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)').run('3333aaaa', 'someone', `${MARKER} comment`, T0)
     db.prepare('INSERT INTO memories (chat_id, content, sector, created_at, accessed_at) VALUES (?, ?, ?, ?, ?)').run('c', `${MARKER} memory`, 'semantic', T0, T0)
-    db.prepare("INSERT INTO agent_messages (from_agent, to_agent, content, result, status, created_at) VALUES ('brainy', 'ezermester', ?, ?, 'done', ?)")
+    db.prepare("INSERT INTO agent_messages (from_agent, to_agent, content, result, status, created_at) VALUES ('agent-a', 'agent-b', ?, ?, 'done', ?)")
       .run(`FUNKTAG1 ${MARKER} full message body`, `${MARKER} result`, T0)
     db.prepare('INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run('brainy', OWNER, 'in', '100', `${MARKER} gyuri szavai`, T0)
+      .run('agent-a', OWNER, 'in', '100', `${MARKER} mallory szavai`, T0)
   })
   afterEach(() => { rmSync(registryDir, { recursive: true, force: true }) })
 
@@ -239,7 +239,7 @@ describe('HTTP surface', () => {
 
   beforeEach(() => {
     stub = {
-      context: vi.fn(async (slug: string) => (slug === 'levelkapu'
+      context: vi.fn(async (slug: string) => (slug === 'charlie-feature'
         ? { kind: 'ok', markdown: '# Funkcio-kontextus\n' }
         : slug === 'broken' ? { kind: 'invalid', slug, error: 'invalid JSON' } : { kind: 'not_found' })),
     }
@@ -248,7 +248,7 @@ describe('HTTP surface', () => {
   afterEach(() => { setFunkciokServiceForTest(null) })
 
   it('answers markdown, not cacheable, nosniff', async () => {
-    const r = call('/api/funkciok/levelkapu/context')
+    const r = call('/api/funkciok/charlie-feature/context')
     expect(await tryHandleFunkciok(r.ctx)).toBe(true)
     expect(r.out.status).toBe(200)
     expect(String(r.out.headers['Content-Type'])).toBe('text/markdown; charset=utf-8')
@@ -263,11 +263,11 @@ describe('HTTP surface', () => {
       [{ kind: 'device', scope: 'operator', device: 'd' } as Auth, 403],
       [{ kind: 'federation' } as Auth, 403],
       [{ kind: 'token' } as Auth, 200],
-      [{ kind: 'session', user: 'gyuri' } as Auth, 200],
+      [{ kind: 'session', user: 'mallory' } as Auth, 200],
       [{ kind: 'device', scope: 'full', device: 'd' } as Auth, 200],
     ]
     for (const [auth, status] of cases) {
-      const r = call('/api/funkciok/levelkapu/context', { auth })
+      const r = call('/api/funkciok/charlie-feature/context', { auth })
       await tryHandleFunkciok(r.ctx)
       expect(r.out.status, JSON.stringify(auth)).toBe(status)
     }
@@ -282,7 +282,7 @@ describe('HTTP surface', () => {
       expect(r.out.status, path).toBe(status)
     }
     for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
-      const r = call('/api/funkciok/levelkapu/context', { method })
+      const r = call('/api/funkciok/charlie-feature/context', { method })
       expect(await tryHandleFunkciok(r.ctx)).toBe(true)
       expect(r.out.status, method).toBe(405)
     }

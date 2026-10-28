@@ -2264,7 +2264,7 @@ window._i18n.hu = {
   'dev.col.file':                    'Fájl',
   'dev.col.last_commit':             'Utolsó commit',
 
-  // --- Fejlesztés > Döntések (card d7b2d5c8, S2)
+  // --- Fejlesztés > Döntések (S2)
   'dev.dec.title':                   'Döntések',
   'dev.dec.none':                    'Még nincs rögzített döntés.',
   'dev.dec.source':                  'Forrás',

@@ -8414,7 +8414,7 @@ body {
   .dev-layout { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* === Fejlesztes > Dontesek (card d7b2d5c8, S2) === */
+/* === Fejlesztes > Dontesek (S2) === */
 .dev-dec-block {
   background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm);
   padding: 12px 14px; margin-top: 14px; min-width: 0;

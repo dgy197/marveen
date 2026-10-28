@@ -1734,7 +1734,7 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
 
-  // --- Function decisions (card d7b2d5c8, S2) ---
+  // --- Function decisions (S2) ---
   // Append-only decision log of the dashboard's function pages ("Fejlesztes >
   // Funkciok"). The owner's words are quoted (max 280 characters, enforced here as
   // well as in the writer) with a source. A correction is a NEW row whose

@@ -1,26 +1,26 @@
-// Card d7b2d5c8, S2-C: the Dontesek block, the record form and the context
+// Function page S2-C: the Dontesek block, the record form and the context
 // package button on the function page. Same approach as funkciok-s1.spec.ts:
 // static web/, every /api call answered by routes, external hosts aborted.
 import { test, expect, type Page } from '@playwright/test'
 
 const XSS = '<img src=x onerror="window.__xss=1">'
 
-const LIST = { funkciok: [{ slug: 'levelkapu', nev: 'Levelkapu', last_change: 1761700000, open_cards: 0 }] }
+const LIST = { funkciok: [{ slug: 'charlie-feature', nev: 'Charlie feature', last_change: 1761700000, open_cards: 0 }] }
 
 const DECISIONS = [
-  { id: 4, slug: 'levelkapu', quote_short: 'Az uj dontes felulirja a regit', tg_chat: '1591883559', tg_msg_id: '3001', msg_id: null, card_id: 'aaaa1111', decided_at: 1761690000, recorded_by: 'session:gyuri', supersedes: 1, superseded_by: null, source_status: 'verified', created_at: 1761690001 },
-  { id: 3, slug: 'levelkapu', quote_short: `Ez XSS: ${XSS}`, tg_chat: '1591883559', tg_msg_id: '3000', msg_id: null, card_id: null, decided_at: 1761680000, recorded_by: 'brainy', supersedes: null, superseded_by: null, source_status: 'verified_at_record', created_at: 1761680001 },
-  { id: 2, slug: 'levelkapu', quote_short: 'Forras nem talalhato', tg_chat: '1591883559', tg_msg_id: '2999', msg_id: null, card_id: null, decided_at: 1761670000, recorded_by: 'brainy', supersedes: null, superseded_by: null, source_status: 'not_found', created_at: 1761670001 },
-  { id: 5, slug: 'levelkapu', quote_short: 'Belso uzenet a forras', tg_chat: null, tg_msg_id: null, msg_id: 4242, card_id: null, decided_at: 1761660000, recorded_by: 'brainy', supersedes: null, superseded_by: null, source_status: 'none', created_at: 1761660001 },
+  { id: 4, slug: 'charlie-feature', quote_short: 'Az uj dontes felulirja a regit', tg_chat: '1000000001', tg_msg_id: '3001', msg_id: null, card_id: 'aaaa1111', decided_at: 1761690000, recorded_by: 'session:mallory', supersedes: 1, superseded_by: null, source_status: 'verified', created_at: 1761690001 },
+  { id: 3, slug: 'charlie-feature', quote_short: `Ez XSS: ${XSS}`, tg_chat: '1000000001', tg_msg_id: '3000', msg_id: null, card_id: null, decided_at: 1761680000, recorded_by: 'agent-a', supersedes: null, superseded_by: null, source_status: 'verified_at_record', created_at: 1761680001 },
+  { id: 2, slug: 'charlie-feature', quote_short: 'Forras nem talalhato', tg_chat: '1000000001', tg_msg_id: '2999', msg_id: null, card_id: null, decided_at: 1761670000, recorded_by: 'agent-a', supersedes: null, superseded_by: null, source_status: 'not_found', created_at: 1761670001 },
+  { id: 5, slug: 'charlie-feature', quote_short: 'Belso uzenet a forras', tg_chat: null, tg_msg_id: null, msg_id: 4242, card_id: null, decided_at: 1761660000, recorded_by: 'agent-a', supersedes: null, superseded_by: null, source_status: 'none', created_at: 1761660001 },
 ]
 
 const PAGE = {
-  slug: 'levelkapu', nev: 'Levelkapu', leiras: 'Kapu', last_change: 1761700000, open_cards: 0,
+  slug: 'charlie-feature', nev: 'Charlie feature', leiras: 'Kapu', last_change: 1761700000, open_cards: 0,
   commits_without_card: 0, commits_total: 0, cards: [], cards_missing: [], messages: [], commits: [], tests: [],
   repos: [], tiltasok: [], specUtak: [], decisions: DECISIONS,
 }
 
-const MARKDOWN = `# Levelkapu\n\n\`\`\`text\n${XSS}\n\`\`\`\n`
+const MARKDOWN = `# Charlie feature\n\n\`\`\`text\n${XSS}\n\`\`\`\n`
 
 type Post = { body: unknown }
 
@@ -32,18 +32,18 @@ async function open(page: Page, postStatus = 201, postBody: unknown = { id: 6 })
   await page.route('**/api/**', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: '{}' }))
   const json = (body: unknown, status = 200) => ({ status, contentType: 'application/json', body: JSON.stringify(body) })
   await page.route('**/api/funkciok', (r) => r.fulfill(json(LIST)))
-  await page.route('**/api/funkciok/levelkapu', (r) => r.fulfill(json(PAGE)))
-  await page.route('**/api/funkciok/levelkapu/decisions', (r) => {
+  await page.route('**/api/funkciok/charlie-feature', (r) => r.fulfill(json(PAGE)))
+  await page.route('**/api/funkciok/charlie-feature/decisions', (r) => {
     const req = r.request()
     posts.push({ body: JSON.parse(req.postData() || '{}') })
     return r.fulfill(json(postBody, postStatus))
   })
-  await page.route('**/api/funkciok/levelkapu/context', (r) =>
+  await page.route('**/api/funkciok/charlie-feature/context', (r) =>
     r.fulfill({ status: 200, contentType: 'text/markdown; charset=utf-8', body: MARKDOWN }))
   await page.addInitScript(() => { try { localStorage.setItem('marveen.lang', 'hu') } catch { /* ignore */ } })
   await page.goto('/index.html#dev')
-  await page.locator('#devFunkciokList .dev-list-item[data-slug="levelkapu"]').click()
-  await expect(page.locator('#devFunkcioDetail h2')).toHaveText('Levelkapu')
+  await page.locator('#devFunkciokList .dev-list-item[data-slug="charlie-feature"]').click()
+  await expect(page.locator('#devFunkcioDetail h2')).toHaveText('Charlie feature')
   return { errors, posts }
 }
 
@@ -56,8 +56,8 @@ test.describe('S2-C Fejlesztes > Dontesek', () => {
     const row = (id: number) => block.locator(`.dev-dec-row[data-dec-id="${id}"]`)
     await expect(row(4)).toContainText('forrás ellenőrizve')
     await expect(row(4)).toContainText('javítja: #1')
-    await expect(row(4)).toContainText('tg 1591883559/3001')
-    await expect(row(4)).toContainText('session:gyuri')
+    await expect(row(4)).toContainText('tg 1000000001/3001')
+    await expect(row(4)).toContainText('session:mallory')
     await expect(row(3)).toContainText('forrás ellenőrizve a rögzítéskor')
     await expect(row(2)).toContainText('forrás nem található')
     await expect(row(5)).toContainText('nincs tg-forrás')
@@ -69,14 +69,14 @@ test.describe('S2-C Fejlesztes > Dontesek', () => {
   test('a page without a decisions key shows an empty block', async ({ page }) => {
     await page.route((u) => u.hostname !== '127.0.0.1', (r) => r.abort())
     await page.route('**/api/**', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: '{}' }))
-    await page.route('**/api/funkciok/levelkapu', (r) => {
+    await page.route('**/api/funkciok/charlie-feature', (r) => {
       const { decisions: _d, ...rest } = PAGE
       return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(rest) })
     })
     await page.route('**/api/funkciok', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(LIST) }))
     await page.addInitScript(() => { try { localStorage.setItem('marveen.lang', 'hu') } catch { /* ignore */ } })
     await page.goto('/index.html#dev')
-    await page.locator('#devFunkciokList .dev-list-item[data-slug="levelkapu"]').click()
+    await page.locator('#devFunkciokList .dev-list-item[data-slug="charlie-feature"]').click()
     await expect(page.locator('.dev-dec-block')).toContainText('Még nincs rögzített döntés')
   })
 
@@ -165,7 +165,7 @@ test.describe('S2-C Fejlesztes > Dontesek', () => {
     await expect(out).toBeHidden()
     await page.locator('.dev-dec-ctx-btn').click()
     await expect(out).toBeVisible()
-    await expect(out).toContainText('# Levelkapu')
+    await expect(out).toContainText('# Charlie feature')
     await expect(out).toContainText(XSS)
     expect(await out.evaluate((e) => e.tagName)).toBe('PRE')
     await expect(page.locator('#devPage img')).toHaveCount(0)

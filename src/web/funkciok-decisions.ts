@@ -1,7 +1,7 @@
 import { getDb } from '../db.js'
 import { maskSecrets } from './agent-transcript.js'
 
-// Card d7b2d5c8 (S2-A): the append-only decision log of the function pages.
+// Function page S2-A: the append-only decision log of the function pages.
 //
 //   - rows are written by recordDecision() and read by the two list functions;
 //     there is no UPDATE and no DELETE path (and the table has triggers that abort

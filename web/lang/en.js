@@ -2262,7 +2262,7 @@ window._i18n.en = {
   'dev.col.file':                    'File',
   'dev.col.last_commit':             'Last commit',
 
-  // --- Fejlesztés > Döntések (card d7b2d5c8, S2)
+  // --- Fejlesztés > Döntések (S2)
   'dev.dec.title':                   'Decisions',
   'dev.dec.none':                    'No recorded decisions yet.',
   'dev.dec.source':                  'Source',
