@@ -2702,12 +2702,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // the single-agent or whole-fleet importer.
       if (peekBundleKind(bundle) === 'fleet') {
         const result = importAllAgentsBundle(bundle, { overwrite, admit })
-        recordImport(`fleet ${result.imported.map((a) => a.name).join(',').slice(0, 200)}`)
         // An imported agent is a NEW agent on this machine: the bundle carries
         // the agent directory, never store/context-guard.json. Same rule as
         // creation (fleet policy, 2026-09-08) and idempotent, so re-importing over an
         // agent an operator has already configured leaves that row alone.
         for (const a of result.imported) seedContextGuardForNewAgent(a.name)
+        recordImport(`fleet ${result.imported.map((a) => a.name).join(',').slice(0, 200)}`)
         logger.info(
           { imported: result.imported.map((a) => a.name), skipped: result.skipped, secrets: result.includesSecrets },
           'Fleet imported from bundle',
