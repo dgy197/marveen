@@ -292,7 +292,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     // Card 89df7a00: command (run via bash -lc) and preCheck (a script run before
     // each tick) are code the scheduler runs later and they outlive a token
     // rotation. A gated caller (bare shared token, full device key) needs
-    // BEARER_CODE_EXEC_ADMIN_ENABLED to PLANT one: a command key in the body
+    // the code-exec admin switch to PLANT one: a command key in the body
     // (whatever its value), a switch of the type to 'command', or a preCheck that
     // differs from the stored one (null deletes count when something is stored).
     // Fields that do not change the exec surface (prompt, an unchanged preCheck,

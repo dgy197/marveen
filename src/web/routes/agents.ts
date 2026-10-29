@@ -2769,7 +2769,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
     // Card 89df7a00: a raw .mcp.json is a command the agent runs at its next
     // start and it outlives a token rotation, so a gated caller (bare shared
-    // token, full device key) needs BEARER_CODE_EXEC_ADMIN_ENABLED. Checked
+    // token, full device key) needs the code-exec admin switch. Checked
     // here, before the first write below: a refused request changes nothing,
     // not even a claudeMd/soulMd that rides in the same body.
     const mcpJsonGated = data.mcpJson !== undefined && execGateApplies(ctx.auth, req)
