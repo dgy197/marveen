@@ -95,6 +95,21 @@ describe('credential issuers under src/ (G7, D11)', () => {
     }
   })
 
+  it('routes/agents.ts pairs onto a sub-agent bot only through the gate (card 89df7a00 N4)', () => {
+    const code = codeLines(FILES.find(f => f.rel === 'web/routes/agents.ts')!.text).join('\n')
+    // One helper calls the gate, behind execGateApplies; the four actions go through it.
+    expect(code.match(/\badmitBearerCredentialAdmin\(/g)).toHaveLength(1)
+    expect(code).toMatch(/if \(!execGateApplies\(ctx\.auth, ctx\.req\)\) return true\n\s*return admitBearerCredentialAdmin\(ctx, action\) !== null/)
+    const actions = [...code.matchAll(/channelCredentialGate\(ctx, '([a-z_.]+)'\)/g)].map(m => m[1]).sort()
+    expect(actions).toEqual([
+      'channel.invite.create',
+      'channel.pairing.approve',
+      'channel.request.approve',
+      'channel.setup.allow_from', // telegram/slack/discord/teams setup (subset rule)
+      'channel.setup.allow_from', // googlechat setup (always)
+    ])
+  })
+
   it('the raw SQL writers of the credential tables are today\'s', () => {
     const writers: Record<string, number> = {}
     const re = /\b(INSERT\s+(OR\s+\w+\s+)?INTO|REPLACE\s+INTO)\s+(dashboard_users|device_keys|auth_sessions)\b|\bUPDATE\s+dashboard_users\s+SET\s+password_hash\b/gi

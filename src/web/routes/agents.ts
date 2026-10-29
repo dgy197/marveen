@@ -2,6 +2,7 @@ import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, 
 import { MAIN_CHANNEL_ADMIN_ENV, isMainChannelAdminEnabled, mainChannelWriteAction } from '../main-channel-admin.js'
 import { callerLabel } from '../admin-switch.js'
 import { execGateApplies, admitCodeExecAdmin, recordCodeExecAdmin } from '../code-exec-admin.js'
+import { admitBearerCredentialAdmin, type CredentialAdminAction } from '../credential-admin.js'
 import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
 import { execFile } from 'node:child_process'
@@ -489,6 +490,31 @@ function resolveAccessPath(name: string, provider: ChannelProviderType): string 
     ? channelStateDir(provider)
     : channelStateDir(provider, agentDir(name))
   return join(dir, 'access.json')
+}
+
+// Card 89df7a00 N4: pairing a sender onto a SUB-agent's bot (an invite, a
+// pairing approve, a Slack channel request, a setup with a foreign allowFrom)
+// is a channel credential that outlives a rotation of the shared token. A gated
+// caller (bare token or full device key, execGateApplies) goes through the
+// bearer-credential-admin switch, the same one that guards device-key minting;
+// everyone else passes. true -> continue; false -> the 403 is already written.
+// The main agent never gets here: the main-channel gate above decides first.
+function channelCredentialGate(ctx: RouteContext, action: CredentialAdminAction): boolean {
+  if (!execGateApplies(ctx.auth, ctx.req)) return true
+  return admitBearerCredentialAdmin(ctx, action) !== null
+}
+
+// H1 (Brainy K1=b): a setup allowFrom adds nobody new when every id is already
+// on the MAIN agent's allowFrom for the same provider (the uj-csapattag skill
+// wires a new bot to Gyuri's chat id this way). A missing, unreadable,
+// unparsable or shapeless main access.json is not a subset (fail closed).
+function allowFromWithinMain(ids: string[] | null, provider: ChannelProviderType): boolean {
+  if (!ids || ids.length === 0) return false
+  let main: unknown
+  try { main = JSON.parse(readFileSync(resolveAccessPath(MAIN_AGENT_ID, provider), 'utf-8')) } catch { return false }
+  const list = (main as { allowFrom?: unknown } | null)?.allowFrom
+  if (!Array.isArray(list)) return false
+  return ids.every(id => list.includes(id))
 }
 
 function extractBotId(token: string): string | null {
@@ -1554,6 +1580,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // token. Handle it on its own path: write the channel .env + identity
     // access.json, enable the plugin, and restart.
     if (provider === 'googlechat') {
+      // 89df7a00 N4 (H1): the owner / allowDomain pair is not comparable with
+      // the main agent's allowlist (a domain policy admits a whole domain), so
+      // a gated caller always goes through the switch here, before any parse.
+      if (!isMain && !channelCredentialGate(ctx, 'channel.setup.allow_from')) return true
       const { saKeyPath, projectId, subscription, owner, allowDomain } =
         JSON.parse(body.toString()) as { saKeyPath?: string; projectId?: string; subscription?: string; owner?: string; allowDomain?: string }
       if (!saKeyPath?.trim() || !projectId?.trim() || !subscription?.trim() || !owner?.trim()) {
@@ -1641,6 +1671,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
       accessAllowFrom = [...new Set(allowFrom as string[])]
     }
+    // 89df7a00 N4 (H1): a gated caller may wire a sub-agent's bot only to ids
+    // the main agent already allows; pairing mode (no allowFrom) or any new id
+    // goes through the switch. Before the token probe and every write.
+    if (!isMain && !allowFromWithinMain(accessAllowFrom, provider) && !channelCredentialGate(ctx, 'channel.setup.allow_from')) return true
 
     // Discord-specific channelId guard: the dashboard ships the channel where
     // the bot will post by default; without it the plugin spins up but cannot
@@ -2090,6 +2124,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { error: 'Agent not found' }, 404)
       return true
     }
+    // 89df7a00 N4: before the body is read.
+    if (name !== MAIN_AGENT_ID && !channelCredentialGate(ctx, 'channel.pairing.approve')) return true
 
     const body = await readBody(req)
     const { code } = JSON.parse(body.toString()) as { code: string }
@@ -2165,6 +2201,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { error: 'Agent not found' }, 404)
       return true
     }
+    // 89df7a00 N4: an open invite auto-approves ANY pending sender while it
+    // lives. Before the bot-name probe and the invites.json write.
+    if (name !== MAIN_AGENT_ID && !channelCredentialGate(ctx, 'channel.invite.create')) return true
     let botName: string | undefined
     if (provider === 'telegram') {
       botName = name === MAIN_AGENT_ID
@@ -2292,6 +2331,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const name = decodeURIComponent(chReqApproveMatch[1])
     const reqId = Number(chReqApproveMatch[2])
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    // 89df7a00 N4: before the body is read.
+    if (name !== MAIN_AGENT_ID && !channelCredentialGate(ctx, 'channel.request.approve')) return true
 
     const body = await readBody(req)
     let opts: { requireMention?: boolean; allowFromAll?: boolean } = {}

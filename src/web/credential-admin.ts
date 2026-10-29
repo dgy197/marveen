@@ -57,6 +57,12 @@ export type CredentialAdminAction =
   | 'auth.password.break_glass'
   | 'security.bridge_enroll'
   | 'bridge.service_ports.update'
+  // Card 89df7a00 N4: a sub-agent's channel pairing (invite, pairing approve,
+  // Slack channel request, setup with a foreign allowFrom), routes/agents.ts.
+  | 'channel.invite.create'
+  | 'channel.pairing.approve'
+  | 'channel.request.approve'
+  | 'channel.setup.allow_from'
 
 export const BEARER_CREDENTIAL_ADMIN_OFF = 'bearer_credential_admin_off'
 export const CREDENTIAL_WINDOW_HEADER = 'x-credential-window'
