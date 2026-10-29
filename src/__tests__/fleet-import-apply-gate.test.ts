@@ -372,6 +372,8 @@ describe('fleet import identity cannot write the protected install keys or forge
         // 053f4e66 B: the bearer-credential-admin trio, and its case/space variants.
         BEARER_CREDENTIAL_ADMIN_ENABLED: '1', ' bearer_credential_admin_enabled ': '1',
         BEARER_CREDENTIAL_ADMIN_UNTIL: '1800000000', BEARER_CREDENTIAL_ADMIN_NONCE: 'Ab3_-'.repeat(8) + 'xyz',
+        // 89df7a00: the code-exec switch, and its case/space variants.
+        BEARER_CODE_EXEC_ADMIN_ENABLED: '1', ' bearer_code_exec_admin_enabled ': '1',
       }),
     })
     expect(r.status).toBe(200)
@@ -380,12 +382,13 @@ describe('fleet import identity cannot write the protected install keys or forge
     expect(env).not.toMatch(/MAIN_CHANNEL_ADMIN_ENABLED/i)
     expect(env).not.toMatch(/MIGRATE_ROOTS/i)
     expect(env).not.toMatch(/BEARER_CREDENTIAL_ADMIN/i)
+    expect(env).not.toMatch(/BEARER_CODE_EXEC_ADMIN/i)
     expect(env.match(/FLEET_IMPORT_APPLY_ENABLED/g)).toHaveLength(1)
     const ov = JSON.parse(readFileSync(overridesPath(), 'utf8'))
-    expect(Object.keys(ov).filter(k => /admin|apply_enabled|migrate_roots|bearer_credential/i.test(k))).toEqual([])
+    expect(Object.keys(ov).filter(k => /admin|apply_enabled|migrate_roots|bearer_credential|bearer_code_exec/i.test(k))).toEqual([])
     expect((r.body?.warnings ?? []).join(' ')).toMatch(/MAIN_CHANNEL_ADMIN_ENABLED/)
     expect((r.body?.warnings ?? []).join(' ')).toMatch(/MIGRATE_ROOTS/)
-    for (const k of ['BEARER_CREDENTIAL_ADMIN_ENABLED', 'bearer_credential_admin_enabled', 'BEARER_CREDENTIAL_ADMIN_UNTIL', 'BEARER_CREDENTIAL_ADMIN_NONCE']) {
+    for (const k of ['BEARER_CREDENTIAL_ADMIN_ENABLED', 'bearer_credential_admin_enabled', 'BEARER_CREDENTIAL_ADMIN_UNTIL', 'BEARER_CREDENTIAL_ADMIN_NONCE', 'BEARER_CODE_EXEC_ADMIN_ENABLED', 'bearer_code_exec_admin_enabled']) {
       expect((r.body?.warnings ?? []).join(' ')).toContain(k)
     }
   })

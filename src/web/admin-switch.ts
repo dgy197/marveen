@@ -25,10 +25,20 @@ export const BEARER_CREDENTIAL_ADMIN_ENV = 'BEARER_CREDENTIAL_ADMIN_ENABLED'
 export const BEARER_CREDENTIAL_ADMIN_UNTIL_ENV = 'BEARER_CREDENTIAL_ADMIN_UNTIL'
 export const BEARER_CREDENTIAL_ADMIN_NONCE_ENV = 'BEARER_CREDENTIAL_ADMIN_NONCE'
 
+// Card 89df7a00: may the shared Bearer (or a full device key) create state that
+// runs code later and outlives a token rotation -- an MCP server entry, a cloned
+// repo with npm scripts, a scheduled command/preCheck, an agent .mcp.json? Same
+// "exactly 1 in the .env" rule, but no UNTIL/NONCE window mode. A separate
+// switch from the credential one on purpose: opening code execution for an
+// afternoon must not open pairing, and the other way round. The decision lives
+// in code-exec-admin.ts.
+export const BEARER_CODE_EXEC_ADMIN_ENV = 'BEARER_CODE_EXEC_ADMIN_ENABLED'
+
 /** Every protected install key. An import or any other Bearer-reachable writer must never set these. */
 export const ADMIN_SWITCH_KEYS: ReadonlySet<string> = new Set([
   FLEET_IMPORT_APPLY_ENV, MAIN_CHANNEL_ADMIN_ENV, MIGRATE_ROOTS_ENV,
   BEARER_CREDENTIAL_ADMIN_ENV, BEARER_CREDENTIAL_ADMIN_UNTIL_ENV, BEARER_CREDENTIAL_ADMIN_NONCE_ENV,
+  BEARER_CODE_EXEC_ADMIN_ENV,
 ])
 
 export function isAdminSwitchOn(key: string): boolean {

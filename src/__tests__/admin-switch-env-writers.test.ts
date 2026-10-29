@@ -1,7 +1,7 @@
 // Card 053f4e66: the protected install keys FLEET_IMPORT_APPLY_ENABLED,
 // MAIN_CHANNEL_ADMIN_ENABLED, MIGRATE_ROOTS and (053f4e66 B) the
 // bearer-credential-admin trio BEARER_CREDENTIAL_ADMIN_ENABLED / _UNTIL / _NONCE
-// live in the .env and are read from there per request. So no .env writer
+// and (89df7a00) BEARER_CODE_EXEC_ADMIN_ENABLED live in the .env and are read from there per request. So no .env writer
 // reachable with the shared Bearer may be able to write them. The writers of the install .env (PROJECT_ROOT/.env):
 //   1. env.ts updateEnvFile -- callers: fleet import identity (fleet-transfer.ts,
 //      covered in fleet-import-apply-gate.test.ts) and main-model.ts (/model keep,
@@ -71,6 +71,7 @@ const BASE = 'MAIN_AGENT_ID=mainbot\nBOT_NAME=Brainy\n'
 const SWITCHES = [
   'FLEET_IMPORT_APPLY_ENABLED', 'MAIN_CHANNEL_ADMIN_ENABLED', 'MIGRATE_ROOTS',
   'BEARER_CREDENTIAL_ADMIN_ENABLED', 'BEARER_CREDENTIAL_ADMIN_UNTIL', 'BEARER_CREDENTIAL_ADMIN_NONCE',
+  'BEARER_CODE_EXEC_ADMIN_ENABLED',
 ]
 const OAT = 'sk-ant-oat01-' + 'Ab_9-'.repeat(20)
 const API = 'sk-ant-api03-' + 'Zz0_-'.repeat(19) + 'AA'
@@ -123,6 +124,11 @@ describe('updateEnvFile refuses a forged line (053f4e66, from fec6335f)', () => 
       { ' BEARER_CREDENTIAL_ADMIN_ENABLED': '1' },
       { 'BEARER_CREDENTIAL_ADMIN_NONCE ': 'x' },
       { bearer_credential_admin_until: '1800000000' },
+      { ' BEARER_CODE_EXEC_ADMIN_ENABLED': '1' },
+      { 'BEARER_CODE_EXEC_ADMIN_ENABLED ': '1' },
+      { bearer_code_exec_admin_enabled: '1' },
+      { BOT_NAME: 'x\nBEARER_CODE_EXEC_ADMIN_ENABLED=1' },
+      { BOT_NAME: 'x\rBEARER_CODE_EXEC_ADMIN_ENABLED=1' },
       { BOT_NAME: 'x\nBEARER_CREDENTIAL_ADMIN_ENABLED=1' },
       { 'A-B': 'x' },
       { '1ABC': 'x' },
@@ -229,6 +235,15 @@ describe('model-fallback-runner writes only a valid model id (053f4e66)', () => 
 })
 
 describe('the bearer-credential-admin keys are protected install keys (053f4e66 B, S4)', () => {
+  it('the code-exec key (89df7a00, SW2) is one too, in every spelling', () => {
+    expect(ADMIN_SWITCH_KEYS.has('BEARER_CODE_EXEC_ADMIN_ENABLED')).toBe(true)
+    for (const k of ['BEARER_CODE_EXEC_ADMIN_ENABLED', 'bearer_code_exec_admin_enabled', ' BEARER_CODE_EXEC_ADMIN_ENABLED ', 'Bearer_Code_Exec_Admin_Enabled\t']) {
+      expect(isAdminSwitchKey(k), JSON.stringify(k)).toBe(true)
+    }
+    expect(isAdminSwitchKey('BEARER_CODE_EXEC_ADMIN_ENABLED_X')).toBe(false)
+  })
+
+
   it('all three are in ADMIN_SWITCH_KEYS', () => {
     for (const k of ['BEARER_CREDENTIAL_ADMIN_ENABLED', 'BEARER_CREDENTIAL_ADMIN_UNTIL', 'BEARER_CREDENTIAL_ADMIN_NONCE']) {
       expect(ADMIN_SWITCH_KEYS.has(k), k).toBe(true)
