@@ -14,6 +14,7 @@ import { atomicWriteFileSync } from '../atomic-write.js'
 import { readFileOr, AGENTS_BASE_DIR, listAgentNames , readJsonObjectForWrite } from '../agent-config.js'
 import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../mcp-list.js'
 import { readBody, json } from '../http-helpers.js'
+import { execGateApplies, admitCodeExecAdmin, recordCodeExecAdmin, type CodeExecAction } from '../code-exec-admin.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars, parseRunScriptsFlag } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
 import { logVaultRead, isSshPrivateKeyId, principalOf, readVaultAcl, vaultReadRefused, vaultAclMode } from '../vault-acl.js'
@@ -54,6 +55,19 @@ function serializeClaudeMcp<T>(op: () => Promise<T>): Promise<T> {
 
 function runClaudeMcp(args: string[], timeout: number): Promise<void> {
   return serializeClaudeMcp(() => execClaudeMcp(args, timeout))
+}
+
+// Card 89df7a00: after a SUCCESSFUL install by a gated caller (bare token or full
+// device key whose switch is open) the audit row and the owner notification. The
+// install is already done, so a failure to record it is logged and must not turn
+// the answer into an error.
+function auditGatedInstall(gated: boolean, action: CodeExecAction, subject: string, auth: RouteContext['auth']): void {
+  if (!gated) return
+  try {
+    recordCodeExecAdmin(action, subject, auth)
+  } catch (err) {
+    logger.error({ err, action }, 'Failed to record a code-exec admin install')
+  }
 }
 
 // The catalog is the union of the committed mcp-catalog.json (the MCPs the
@@ -323,6 +337,10 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/connectors/github-repos' && method === 'POST') {
+    // Card 89df7a00: a clone becomes a project path the fleet can assign, and its
+    // package.json may run npm scripts; gated whatever runScripts says, before the body.
+    const gated = execGateApplies(ctx.auth, req)
+    if (gated && !admitCodeExecAdmin(ctx, 'connectors.github_repo.add')) return true
     const body = await readBody(req)
     const { url, env, runScripts } = JSON.parse(body.toString()) as { url: string, env?: Record<string, string>, runScripts?: unknown }
     if (!url?.trim()) { json(res, { error: 'URL is required' }, 400); return true }
@@ -345,6 +363,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       { runScripts: runScriptsFlag.value === true },
     )
     if (result.error) { json(res, { error: result.error }, 400); return true }
+    auditGatedInstall(gated, 'connectors.github_repo.add', `${result.repo?.name ?? 'unknown'} runScripts=${runScriptsFlag.value === true}`, ctx.auth)
     json(res, { ok: true, repo: result.repo, requiredEnvVars: result.requiredEnvVars, installWarning: result.installWarning, scriptsSkipped: result.scriptsSkipped })
     return true
   }
@@ -360,6 +379,10 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
   if (githubRepoMatch && method === 'PATCH') {
     const name = decodeURIComponent(githubRepoMatch[1])
+    // Card 89df7a00: even a body-less PATCH is a `git pull` that brings new code into a
+    // repo that may already run scripts, so the gate does not look at the body.
+    const gated = execGateApplies(ctx.auth, req)
+    if (gated && !admitCodeExecAdmin(ctx, 'connectors.github_repo.update')) return true
     // The body is optional (older clients send none); only `runScripts` is read.
     const raw = (await readBody(req)).toString().trim()
     let parsedBody: { runScripts?: unknown } = {}
@@ -370,6 +393,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     if (runScriptsFlag.error) { json(res, { error: runScriptsFlag.error }, 400); return true }
     const result = updateGitHubRepo(name, runScriptsFlag.value === undefined ? {} : { runScripts: runScriptsFlag.value })
     if (result.error) { json(res, { error: result.error }, 400); return true }
+    auditGatedInstall(gated, 'connectors.github_repo.update', name, ctx.auth)
     json(res, { ok: true, scriptsSkipped: result.scriptsSkipped })
     return true
   }
@@ -439,6 +463,10 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/connectors' && method === 'POST') {
+    // Card 89df7a00: every type (stdio, http, sse) leaves an MCP server entry that
+    // outlives a token rotation; gated before the body is read.
+    const gated = execGateApplies(ctx.auth, req)
+    if (gated && !admitCodeExecAdmin(ctx, 'connectors.add')) return true
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as {
       name: string
@@ -508,6 +536,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         logger.error({ err }, 'Failed to persist MCP into mcp-catalog.local.json')
       }
 
+      auditGatedInstall(gated, 'connectors.add', sanitizedName, ctx.auth)
       json(res, { ok: true, name: sanitizedName, nameChanged })
     } catch (err: any) {
       json(res, { error: err.message || 'Failed to add connector' }, 500)
@@ -694,6 +723,10 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   const catalogInstallMatch = path.match(/^\/api\/mcp-catalog\/([^/]+)\/install$/)
   if (catalogInstallMatch && method === 'POST') {
     const id = decodeURIComponent(catalogInstallMatch[1])
+    // Card 89df7a00: decided before the catalog is read, so a gated caller gets the
+    // same 403 for every id and learns nothing about the catalog (no 404 vs 403).
+    const gated = execGateApplies(ctx.auth, req)
+    if (gated && !admitCodeExecAdmin(ctx, 'mcp_catalog.install')) return true
     try {
       const catalog = loadMcpCatalog()
       const item = catalog.find(c => c.id === id)
@@ -738,6 +771,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         message = `Telepítve. ${item.authNote}`
       }
 
+      auditGatedInstall(gated, 'mcp_catalog.install', cliName, ctx.auth)
       json(res, { ok: true, message })
     } catch (err: any) {
       logger.error({ err }, 'Failed to install MCP from catalog')

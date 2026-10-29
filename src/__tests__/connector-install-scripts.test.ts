@@ -6,6 +6,11 @@
 // the git executable or switch to a global install), and the dangerous keys
 // are pinned on the command line. Skipped scripts are reported back
 // (`scriptsSkipped`) so the UI can offer the opt-in.
+//
+// Card 89df7a00: the route calls below use the shared token, which the code-exec
+// gate refuses unless the install's .env opens BEARER_CODE_EXEC_ADMIN_ENABLED, so
+// this throwaway install opens it (the gate itself is pinned in
+// code-exec-connectors-gate.test.ts, never here).
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync, chmodSync, symlinkSync, lstatSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -16,6 +21,15 @@ import type http from 'node:http'
 import type { RouteContext } from '../web/routes/types.js'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'connector-install-'))
+// Before any app module loads (env.ts reads CLAUDECLAW_ENV_DIR at import).
+process.env.CLAUDECLAW_ENV_DIR = tmpRoot
+delete process.env.BEARER_CODE_EXEC_ADMIN_ENABLED
+writeFileSync(join(tmpRoot, '.env'), 'BEARER_CODE_EXEC_ADMIN_ENABLED=1\n')
+// No owner notification may leave the suite from the opened switch.
+vi.mock('../notify.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../notify.js')>()),
+  notifySecurityEvent: vi.fn(async () => {}),
+}))
 
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
