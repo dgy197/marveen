@@ -63,6 +63,8 @@ export type CredentialAdminAction =
   | 'channel.pairing.approve'
   | 'channel.request.approve'
   | 'channel.setup.allow_from'
+  // Card 89df7a00 N5: an agent bundle import that carries .claude/channels state.
+  | 'agents.import.channel'
 
 export const BEARER_CREDENTIAL_ADMIN_OFF = 'bearer_credential_admin_off'
 export const CREDENTIAL_WINDOW_HEADER = 'x-credential-window'

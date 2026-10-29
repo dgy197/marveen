@@ -102,6 +102,7 @@ describe('credential issuers under src/ (G7, D11)', () => {
     expect(code).toMatch(/if \(!execGateApplies\(ctx\.auth, ctx\.req\)\) return true\n\s*return admitBearerCredentialAdmin\(ctx, action\) !== null/)
     const actions = [...code.matchAll(/channelCredentialGate\(ctx, '([a-z_.]+)'\)/g)].map(m => m[1]).sort()
     expect(actions).toEqual([
+      'agents.import.channel', // bundle import carrying channel state (N5)
       'channel.invite.create',
       'channel.pairing.approve',
       'channel.request.approve',

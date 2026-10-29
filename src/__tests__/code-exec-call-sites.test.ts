@@ -197,3 +197,43 @@ describe('schedules.ts / agents.ts: the exec-field and .mcp.json writers are gat
     expect(text).toMatch(/data\.mcpJson !== undefined && execGateApplies\(ctx\.auth, req\)/)
   })
 })
+
+describe('agents.ts: the bundle import replaces a whole agent dir behind the gate (N5, BE B1)', () => {
+  it('bundle importers are called under web/routes/ only from agents.ts, once each, both with the admit callback', () => {
+    const routeFiles = FILES.filter(f => f.rel.startsWith('web/routes/'))
+    const where = routeFiles.filter(f => /\bimport(AgentBundle|AllAgentsBundle)\(/.test(codeLines(f.text).join('\n'))).map(f => f.rel)
+    expect(where).toEqual(['web/routes/agents.ts'])
+    const text = codeLines(file('web/routes/agents.ts').text).join('\n')
+    expect(text.match(/\bimportAgentBundle\(bundle, \{[^}]*\badmit\b[^}]*\}\)/g)).toHaveLength(1)
+    expect(text.match(/\bimportAllAgentsBundle\(bundle, \{[^}]*\badmit\b[^}]*\}\)/g)).toHaveLength(1)
+    expect(text.match(/\bimport(AgentBundle|AllAgentsBundle)\(/g)).toHaveLength(2)
+  })
+
+  it('the importer asks admit before it removes or writes any agent dir', () => {
+    const lines = codeLines(file('web/agent-bundle.ts').text)
+    const idx = (re: RegExp, from = 0) => lines.findIndex((l, i) => i >= from && re.test(l))
+    const single = idx(/^export function importAgentBundle\(/)
+    const singleAdmit = idx(/opts\.admit\(\{ channelState: hasChannelState\(stagedAgentDir\) \}\)/, single)
+    const singleRm = idx(/rmSync\(dest, /, single)
+    expect(singleAdmit).toBeGreaterThan(single)
+    expect(singleRm).toBeGreaterThan(singleAdmit)
+    const fleet = idx(/^export function importAllAgentsBundle\(/)
+    const fleetAdmit = idx(/opts\.admit\(\{ channelState \}\)/, fleet)
+    const fleetRm = idx(/rmSync\(dest, /, fleet)
+    expect(fleetAdmit).toBeGreaterThan(fleet)
+    expect(fleetRm).toBeGreaterThan(fleetAdmit)
+  })
+
+  it('the import handler gates once under its own action, behind execGateApplies, before the body is read', () => {
+    const c = codeLines(file('web/routes/agents.ts').text)
+    const text = c.join('\n')
+    expect(text.match(/admitCodeExecAdmin\(ctx, 'agents\.import'\)/g)).toHaveLength(1)
+    expect(text).toMatch(/const importGated = execGateApplies\(ctx\.auth, req\)/)
+    const head = c.findIndex(l => l.includes("path === '/api/agents/import' && method === 'POST'"))
+    const gate = c.findIndex(l => l.includes("admitCodeExecAdmin(ctx, 'agents.import')"))
+    const read = c.findIndex((l, i) => i > head && /readBody\(req\)/.test(l))
+    expect(head).toBeGreaterThan(-1)
+    expect(gate).toBeGreaterThan(head)
+    expect(read).toBeGreaterThan(gate)
+  })
+})

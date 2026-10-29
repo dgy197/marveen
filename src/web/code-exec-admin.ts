@@ -41,6 +41,7 @@ export type CodeExecAction =
   | 'connectors.github_repo.update'
   | 'schedules.exec_fields'
   | 'agents.mcp_json'
+  | 'agents.import'
 
 export const BEARER_CODE_EXEC_ADMIN_OFF = 'bearer_code_exec_admin_off'
 

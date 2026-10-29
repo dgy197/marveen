@@ -171,6 +171,7 @@ import {
   peekBundleKind,
   bundleFilename,
   fleetBundleFilename,
+  BundleImportRefused,
 } from '../agent-bundle.js'
 import type { RouteContext } from './types.js'
 import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
@@ -496,7 +497,8 @@ function resolveAccessPath(name: string, provider: ChannelProviderType): string 
 // pairing approve, a Slack channel request, a setup with a foreign allowFrom)
 // is a channel credential that outlives a rotation of the shared token. A gated
 // caller (bare token or full device key, execGateApplies) goes through the
-// bearer-credential-admin switch, the same one that guards device-key minting;
+// bearer-credential-admin switch, the same one that guards device-key minting
+// (N5: also a bundle import that carries channel state);
 // everyone else passes. true -> continue; false -> the 403 is already written.
 // The main agent never gets here: the main-channel gate above decides first.
 function channelCredentialGate(ctx: RouteContext, action: CredentialAdminAction): boolean {
@@ -2659,6 +2661,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   }
 
   if (path === '/api/agents/import' && method === 'POST') {
+    // 89df7a00 N5 (BE B1): a bundle replaces a whole sub-agent directory, with
+    // its own .mcp.json, settings, hooks (code that runs at the next start) and
+    // channel state. A gated caller (bare token or full device key) goes through
+    // the code-exec switch BEFORE the body is read; a bundle that also carries
+    // .claude/channels state needs the credential switch too, checked by the
+    // importer after the bundle is listed and before anything is written.
+    const importGated = execGateApplies(ctx.auth, req)
+    if (importGated && !admitCodeExecAdmin(ctx, 'agents.import')) return true
     const body = await readBody(req)
     const contentType = req.headers['content-type'] || ''
     let bundle: Buffer | undefined
@@ -2678,11 +2688,21 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       overwrite = /[?&]overwrite=(1|true)\b/.test(url)
     }
     if (!bundle || bundle.length === 0) { json(res, { error: 'No bundle uploaded' }, 400); return true }
+    const admit = (info: { channelState: boolean }): boolean =>
+      !info.channelState || channelCredentialGate(ctx, 'agents.import.channel')
+    const recordImport = (subject: string): void => {
+      if (!importGated) return
+      // Already written: a failure to record it must not turn the answer into an error.
+      try { recordCodeExecAdmin('agents.import', subject, ctx.auth) } catch (err) {
+        logger.error({ err }, 'Failed to record a code-exec admin agent import')
+      }
+    }
     try {
       // One endpoint accepts either format: peek the manifest, then dispatch to
       // the single-agent or whole-fleet importer.
       if (peekBundleKind(bundle) === 'fleet') {
-        const result = importAllAgentsBundle(bundle, { overwrite })
+        const result = importAllAgentsBundle(bundle, { overwrite, admit })
+        recordImport(`fleet ${result.imported.map((a) => a.name).join(',').slice(0, 200)}`)
         // An imported agent is a NEW agent on this machine: the bundle carries
         // the agent directory, never store/context-guard.json. Same rule as
         // creation (fleet policy, 2026-09-08) and idempotent, so re-importing over an
@@ -2706,7 +2726,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         return true
       }
 
-      const result = importAgentBundle(bundle, { overrideName: overrideName || undefined, overwrite })
+      const result = importAgentBundle(bundle, { overrideName: overrideName || undefined, overwrite, admit })
+      recordImport(result.name)
       seedContextGuardForNewAgent(result.name)
       logger.info({ name: result.name, overwritten: result.overwritten, secrets: result.manifest.includesSecrets }, 'Agent imported from bundle')
       json(res, {
@@ -2717,6 +2738,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         includedSecrets: result.manifest.includesSecrets,
       })
     } catch (err) {
+      // The channel gate already wrote its 403; nothing was installed.
+      if (err instanceof BundleImportRefused) return true
       const msg = err instanceof Error ? err.message : String(err)
       // A name collision without overwrite is a 409 the UI can offer to resolve;
       // everything else (malformed bundle, bad name) is a 400.

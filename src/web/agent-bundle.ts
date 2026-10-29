@@ -8,6 +8,7 @@ import {
   cpSync,
   readdirSync,
   statSync,
+  lstatSync,
 } from 'node:fs'
 import { join, basename } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -235,6 +236,29 @@ export interface ImportResult {
   overwritten: boolean
 }
 
+// Card 89df7a00 N5: what the staged bundle holds that the caller may need a
+// switch for. Passed to the optional `admit` callback of the importers, which
+// runs after the bundle is extracted and listed but BEFORE any file lands in an
+// agent dir (and before an existing dir is removed). Returning false aborts the
+// import with BundleImportRefused; the caller has already written its answer.
+export interface BundleImportInfo {
+  // Any .claude/channels entry (bot token, allowFrom, invites) in any agent dir.
+  channelState: boolean
+}
+export type BundleImportAdmit = (info: BundleImportInfo) => boolean
+
+export class BundleImportRefused extends Error {
+  constructor() {
+    super('Bundle import refused')
+    this.name = 'BundleImportRefused'
+  }
+}
+
+// lstat, not existsSync: a dangling symlink at .claude/channels still counts.
+function hasChannelState(stagedAgentDir: string): boolean {
+  try { lstatSync(join(stagedAgentDir, CHANNEL_STATE_ROOT)); return true } catch { return false }
+}
+
 // Import an agent bundle (a .tar.gz buffer or file) into agents/<name>/.
 //   - overrideName: install under this name instead of the manifest's
 //     (rename-on-import / collision resolution). Re-sanitized.
@@ -246,7 +270,7 @@ export interface ImportResult {
 // Returns the final installed name + the bundle manifest.
 export function importAgentBundle(
   bundle: Buffer,
-  opts: { overrideName?: string; overwrite?: boolean; resolveDest?: (name: string) => string } = {},
+  opts: { overrideName?: string; overwrite?: boolean; resolveDest?: (name: string) => string; admit?: BundleImportAdmit } = {},
 ): ImportResult {
   const resolveDest = opts.resolveDest ?? agentDir
   const work = makeTempDir('marveen-agent-import-')
@@ -275,6 +299,8 @@ export function importAgentBundle(
     // Same reservation as POST /api/agents: the main agent is not under agents/.
     if (name === MAIN_AGENT_ID) throw new Error(`Agent name "${name}" is reserved for the main agent`)
     if (RESERVED_AGENT_IDS.includes(name)) throw new Error(`Agent name "${name}" is reserved by the system`)
+
+    if (opts.admit && !opts.admit({ channelState: hasChannelState(stagedAgentDir) })) throw new BundleImportRefused()
 
     sanitizeImportedConfig(stagedAgentDir)
 
@@ -438,7 +464,7 @@ export interface FleetImportResult {
 // A malformed bundle (bad archive / wrong kind) throws as a whole.
 export function importAllAgentsBundle(
   bundle: Buffer,
-  opts: { overwrite?: boolean; resolveDest?: (name: string) => string } = {},
+  opts: { overwrite?: boolean; resolveDest?: (name: string) => string; admit?: BundleImportAdmit } = {},
 ): FleetImportResult {
   const resolveDest = opts.resolveDest ?? agentDir
   const work = makeTempDir('marveen-fleet-import-')
@@ -457,6 +483,15 @@ export function importAllAgentsBundle(
     const agentsRoot = join(extractRoot, 'agents')
     if (!existsSync(agentsRoot) || !statSync(agentsRoot).isDirectory()) {
       throw new Error('Invalid bundle: agents/ directory missing')
+    }
+
+    // One admission for the whole bundle, before the first agent dir is touched.
+    if (opts.admit) {
+      let channelState = false
+      for (const entry of readdirSync(agentsRoot)) {
+        if (hasChannelState(join(agentsRoot, entry))) { channelState = true; break }
+      }
+      if (!opts.admit({ channelState })) throw new BundleImportRefused()
     }
 
     const imported: { name: string; overwritten: boolean }[] = []
