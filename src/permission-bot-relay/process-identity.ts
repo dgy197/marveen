@@ -9,7 +9,7 @@
 // Node has no API for another process's start time on macOS (no /proc), so the
 // default probe asks /bin/ps. This is the ONLY child process anywhere in the
 // relay, and it is spawned with a fixed argv and a minimal, explicit
-// environment (PATH and LC_ALL only): the bot token is never in process.env and
+// environment (PATH and LC_ALL only): the bot token is never in the process environment and
 // never in argv, and this child gets neither. When ps is unavailable (e.g. under
 // sandbox-exec it fails with EPERM), the probe returns null and the lock fails
 // CLOSED: it refuses to start rather than guess (see lock.ts).
