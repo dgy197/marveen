@@ -127,3 +127,73 @@ describe('connectors.ts: every route that reaches `claude mcp add` or a clone is
     expect(c).not.toMatch(/isAdminSwitchOn|BEARER_CODE_EXEC|readEnvFile/)
   })
 })
+
+describe('schedules.ts / agents.ts: the exec-field and .mcp.json writers are gated (N3, G2/G3/G10)', () => {
+  const routeFiles = () => FILES.filter(f => f.rel.startsWith('web/routes/'))
+
+  it('writeScheduledTask is called under web/routes/ only from schedules.ts, from exactly two sites (create: fixed fields; update: gated)', () => {
+    const where = routeFiles().filter(f => /\bwriteScheduledTask\(/.test(codeLines(f.text).join('\n'))).map(f => f.rel)
+    expect(where).toEqual(['web/routes/schedules.ts'])
+    expect(codeLines(file('web/routes/schedules.ts').text).join('\n').match(/\bwriteScheduledTask\(/g)).toHaveLength(2)
+  })
+
+  it('the create handler passes no command/preCheck, so POST needs no gate', () => {
+    const lines = codeLines(file('web/routes/schedules.ts').text)
+    const start = lines.findIndex(l => l.includes("path === '/api/schedules' && method === 'POST'"))
+    const end = lines.findIndex((l, i) => i > start && l.includes('scheduleUpdateMatch = '))
+    expect(start).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    const create = lines.slice(start, end).join('\n')
+    expect(create).toMatch(/writeScheduledTask\(name, \{/)
+    expect(create).not.toMatch(/\bcommand\b|preCheck/)
+  })
+
+  it('the schedule PUT gates once, under its own action, after the body checks and before refuseIfForeign and the write', () => {
+    const c = codeLines(file('web/routes/schedules.ts').text)
+    const text = c.join('\n')
+    expect(text.match(/admitCodeExecAdmin\(/g)).toHaveLength(1)
+    expect(text).toMatch(/admitCodeExecAdmin\(ctx, 'schedules\.exec_fields'\)/)
+    expect(text.match(/execGateApplies\(ctx\.auth, req\)/g)).toHaveLength(1)
+    const idx = (re: RegExp) => c.findIndex(l => re.test(l))
+    const preCheckType = idx(/preCheck must be a string/)
+    const gate = idx(/admitCodeExecAdmin\(ctx, 'schedules\.exec_fields'\)/)
+    const foreign = idx(/if \(refuseIfForeign\(res, name\)\) return true/)
+    const write = idx(/const written = writeScheduledTask\(name, data\)/)
+    expect(preCheckType).toBeGreaterThan(-1)
+    expect(gate).toBeGreaterThan(preCheckType)
+    expect(foreign).toBeGreaterThan(gate)
+    expect(write).toBeGreaterThan(foreign)
+  })
+
+  it('the three exec triggers are all in the diff expression (command key, type -> command, preCheck change)', () => {
+    const text = codeLines(file('web/routes/schedules.ts').text).join('\n')
+    expect(text).toMatch(/hasKey\('command'\)/)
+    expect(text).toMatch(/data\.type === 'command' && current\?\.type !== 'command'/)
+    expect(text).toMatch(/hasKey\('preCheck'\) && normPre\(data\.preCheck\) !== normPre\(current\?\.preCheck\)/)
+  })
+
+  it('the only writer of a .mcp.json under web/routes/ is the agents PUT, behind the gate', () => {
+    const writers = routeFiles().flatMap(f =>
+      codeLines(f.text).filter(l => /\.mcp\.json/.test(l) && /atomicWriteFileSync|writeFileSync|renameSync|copyFileSync/.test(l)).map(l => `${f.rel}: ${l.trim()}`))
+    expect(writers).toEqual(["web/routes/agents.ts: if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)"])
+  })
+
+  it('the agents PUT gates mcpJson once, before the first write of the handler', () => {
+    const c = codeLines(file('web/routes/agents.ts').text)
+    const text = c.join('\n')
+    expect(text.match(/admitCodeExecAdmin\(ctx, 'agents\.mcp_json'\)/g)).toHaveLength(1)
+    const idx = (re: RegExp) => c.findIndex(l => re.test(l))
+    const fields = idx(/checkAgentPutFields\(name, data\)/)
+    const keyRefusal = idx(/interactiveKeyRefusalForAgentChange\(name, data\)/)
+    const gate = idx(/admitCodeExecAdmin\(ctx, 'agents\.mcp_json'\)/)
+    const firstWrite = idx(/writeAgentMemoryIsolation\(name, data\.memoryIsolation === true\)/)
+    const mcpWrite = idx(/atomicWriteFileSync\(join\(agentDir\(name\), '\.mcp\.json'\)/)
+    expect(fields).toBeGreaterThan(-1)
+    expect(keyRefusal).toBeGreaterThan(-1)
+    expect(gate).toBeGreaterThan(fields)
+    expect(gate).toBeGreaterThan(keyRefusal)
+    expect(firstWrite).toBeGreaterThan(gate)
+    expect(mcpWrite).toBeGreaterThan(gate)
+    expect(text).toMatch(/data\.mcpJson !== undefined && execGateApplies\(ctx\.auth, req\)/)
+  })
+})

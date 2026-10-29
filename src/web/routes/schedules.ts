@@ -23,6 +23,7 @@ import {
   registerScheduledTask, unregisterScheduledTask, verifyScheduledTask, describeVerdict,
 } from '../schedule-registry.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
+import { execGateApplies, admitCodeExecAdmin, recordCodeExecAdmin } from '../code-exec-admin.js'
 import type { RouteContext } from './types.js'
 
 // Resolve a URL-supplied schedule name to an on-disk dir, blocking path
@@ -288,8 +289,33 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       json(res, { error: 'Invalid cron expression' }, 400)
       return true
     }
+    // Card 89df7a00: command (run via bash -lc) and preCheck (a script run before
+    // each tick) are code the scheduler runs later and they outlive a token
+    // rotation. A gated caller (bare shared token, full device key) needs
+    // BEARER_CODE_EXEC_ADMIN_ENABLED to PLANT one: a command key in the body
+    // (whatever its value), a switch of the type to 'command', or a preCheck that
+    // differs from the stored one (null deletes count when something is stored).
+    // Fields that do not change the exec surface (prompt, an unchanged preCheck,
+    // type:'command' on a task that already is one) pass ungated. Sits after the
+    // body checks and before refuseIfForeign and every write: a refused request
+    // changes nothing.
+    const current = readScheduledTask(name)
+    const normPre = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
+    // A non-object body (JSON string/number) has no keys; `in` would throw on it.
+    const hasKey = (k: string): boolean => typeof data === 'object' && data !== null && k in data
+    const execChange = hasKey('command')
+      || (data.type === 'command' && current?.type !== 'command')
+      || (hasKey('preCheck') && normPre(data.preCheck) !== normPre(current?.preCheck))
+    const execGated = execChange && execGateApplies(ctx.auth, req)
+    if (execGated && !admitCodeExecAdmin(ctx, 'schedules.exec_fields')) return true
     if (refuseIfForeign(res, name)) return true
     const written = writeScheduledTask(name, data)
+    if (execGated) {
+      // Already written: a failure to record it must not turn the answer into an error.
+      try { recordCodeExecAdmin('schedules.exec_fields', name, ctx.auth) } catch (err) {
+        logger.error({ err, name }, 'Failed to record a code-exec admin schedule write')
+      }
+    }
     if (!registerAfterWrite(res, name, 'api:update', written)) return true
     logger.info({ name }, 'Scheduled task updated')
     json(res, { ok: true })

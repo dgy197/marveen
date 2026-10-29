@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync, renameSync } from 'node:fs'
 import { MAIN_CHANNEL_ADMIN_ENV, isMainChannelAdminEnabled, mainChannelWriteAction } from '../main-channel-admin.js'
 import { callerLabel } from '../admin-switch.js'
+import { execGateApplies, admitCodeExecAdmin, recordCodeExecAdmin } from '../code-exec-admin.js'
 import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
 import { execFile } from 'node:child_process'
@@ -2725,6 +2726,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
 
+    // Card 89df7a00: a raw .mcp.json is a command the agent runs at its next
+    // start and it outlives a token rotation, so a gated caller (bare shared
+    // token, full device key) needs BEARER_CODE_EXEC_ADMIN_ENABLED. Checked
+    // here, before the first write below: a refused request changes nothing,
+    // not even a claudeMd/soulMd that rides in the same body.
+    const mcpJsonGated = data.mcpJson !== undefined && execGateApplies(ctx.auth, req)
+    if (mcpJsonGated && !admitCodeExecAdmin(ctx, 'agents.mcp_json')) return true
+
     if (data.memoryIsolation !== undefined) {
       // The main agent's cwd IS the install repo root, which is already a git
       // root: a memory boundary there is meaningless, and exposing the knob
@@ -2745,6 +2754,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
+    if (mcpJsonGated) {
+      // Already written: a failure to record it must not turn the answer into an error.
+      try { recordCodeExecAdmin('agents.mcp_json', name, ctx.auth) } catch (err) {
+        logger.error({ err, name }, 'Failed to record a code-exec admin .mcp.json write')
+      }
+    }
     if (data.model !== undefined) {
       // PICKERCLIKAPU923: same gate as the picker and the POST, fresh probe.
       const cliGate = await refuseIfCliCannotLaunch(String(data.model))
