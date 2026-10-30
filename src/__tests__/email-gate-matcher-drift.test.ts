@@ -146,6 +146,43 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
     }
   })
 
+  it('the github review/issue tools stay out of scope, the gmail server names stay in (card 2f835ee4 r5, AC9)', () => {
+    // The classifier keeps `reply` on a gmail-less server as a send on purpose
+    // (the golden says so); the SCOPE of the mail gates is the matcher. This
+    // pins that scope for the two sides of the boundary, on the canonical
+    // constant and on every email-hook matcher in the committed settings.
+    const notMail = [
+      'mcp__github__reply_to_review_comment',
+      'mcp__github__add_issue_comment',
+      'mcp__github__create_pull_request_review',
+      'mcp__github__create_issue',
+    ]
+    const mail = [
+      'mcp__gmail__replyAll',
+      'mcp__gmail__fwd_message',
+      'mcp__gmail__send_reply',
+      'mcp__gmail-v2__v2_send_draft',
+    ]
+    const canonical = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
+    for (const tool of notMail) expect(canonical.test(tool), `EMAIL_GATE_MATCHER fires on ${tool}`).toBe(false)
+    for (const tool of mail) expect(canonical.test(tool), `EMAIL_GATE_MATCHER misses ${tool}`).toBe(true)
+    const entries = (SETTINGS.hooks?.PreToolUse ?? []).filter((e) =>
+      (e.hooks ?? []).some((h) => EMAIL_HOOKS.some((s) => (h.command ?? '').includes(s))))
+    expect(entries.length).toBeGreaterThan(0)
+    for (const script of EMAIL_HOOKS) {
+      const own = entries.filter((e) => (e.hooks ?? []).some((h) => (h.command ?? '').includes(script)))
+      expect(own.length, `${script} is not wired in .claude/settings.json`).toBeGreaterThan(0)
+      for (const tool of notMail) {
+        const fired = own.filter((e) => new RegExp(`^(${e.matcher ?? ''})$`).test(tool)).map((e) => e.matcher)
+        expect(fired, `${script} matcher fires on ${tool}`).toEqual([])
+      }
+      for (const tool of mail) {
+        const fires = own.some((e) => new RegExp(`^(${e.matcher ?? ''})$`).test(tool))
+        expect(fires, `${script} matcher misses ${tool}`).toBe(true)
+      }
+    }
+  })
+
   it('a harder-mail create_draft does NOT ask for approval on the main agent; send_mail does', () => {
     // Owner decision (tg 6349): approval is for the actual send only.
     const td = mkdtempSync(join(tmpdir(), 'hm-gate-'))
