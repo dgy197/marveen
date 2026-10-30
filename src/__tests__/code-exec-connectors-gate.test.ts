@@ -274,7 +274,11 @@ describe('G6/G8: switch open, the gated caller gets today\'s answer plus one WAR
         expect(w).toHaveLength(1)
         expect(w[0][0]).toMatchObject({ action: r.action, kind: auth!.kind, via: 'switch' })
         expect(warns(REFUSED)).toHaveLength(0)
-        expect(auditRows()).toEqual([{ actor, new_value: `${r.action} ${r.subject}` }])
+        // N6: the start row (before the first write) and the outcome row; only the start notifies.
+        expect(auditRows()).toEqual([
+          { actor, new_value: `${r.action} ${r.subject}` },
+          { actor, new_value: `${r.action} ${r.subject} -> ok` },
+        ])
         expect(notified).toHaveLength(1)
         expect(notified[0]).toContain(r.action)
         // The subject is metadata only: no command, argument or URL path in the text.
@@ -300,13 +304,17 @@ describe('G6/G8: switch open, the gated caller gets today\'s answer plus one WAR
     expect(ds.updateGitHubRepo).toHaveBeenCalledTimes(1)
   })
 
-  it('a failing install by a gated caller writes no audit row and no notification', async () => {
+  it('N6: a failing install by a gated caller keeps its start row and ends with a failed row and a second notification', async () => {
     setEnv('BEARER_CODE_EXEC_ADMIN_ENABLED=1')
-    vi.mocked(ds.installGitHubRepo).mockResolvedValueOnce({ error: 'clone failed' } as any)
+    vi.mocked(ds.installGitHubRepo).mockResolvedValueOnce({ error: 'clone failed MARKER-CLONE-ERR' } as any)
     const res = await callRoute(ROUTES[5], TOKEN)
     expect(res.status).toBe(400)
-    expect(auditRows()).toEqual([])
-    expect(notified).toEqual([])
+    expect(auditRows().map(r => r.new_value)).toEqual([
+      'connectors.github_repo.add gate-repo runScripts=false',
+      'connectors.github_repo.add gate-repo runScripts=false -> failed (Error)',
+    ])
+    expect(notified).toHaveLength(2)
+    expect(notified.join('\n')).not.toContain('MARKER-CLONE-ERR')
   })
 
   it('the switch is read per request: closing the .env again refuses the next call', async () => {
@@ -314,6 +322,118 @@ describe('G6/G8: switch open, the gated caller gets today\'s answer plus one WAR
     expect((await callRoute(ROUTES[1], TOKEN)).status).toBe(200)
     setEnv('BEARER_CODE_EXEC_ADMIN_ENABLED=true')
     expect((await callRoute(ROUTES[1], TOKEN)).status).toBe(403)
+  })
+})
+
+// N6 (BE E3, B2 class): the audit row and the notification come BEFORE the first write; the
+// outcome closes the pair in a catch/finally path. Error messages, commands, env values
+// and URLs never reach a row or a notification.
+describe('N6: start before the first write, outcome after (ok / failed)', () => {
+  const MARK = 'MARKER-ERR-7f3a'
+  const ENV_VALUE = 'env-value-9c1e'
+  const rows = () => auditRows().map(r => r.new_value)
+  const noLeak = () => {
+    const all = JSON.stringify(auditRows()) + notified.join('\n')
+    for (const bad of [MARK, ENV_VALUE, 'secret-arg', 'example.test', 'node']) expect(all, bad).not.toContain(bad)
+  }
+
+  it('A stdio: the env vaulting throws after `claude mcp add` -> start + failed, 2 notifications, 500 stays', async () => {
+    setEnv('BEARER_CODE_EXEC_ADMIN_ENABLED=1')
+    const vault = await import('../web/vault.js')
+    vi.mocked(vault.setSecret).mockImplementationOnce(() => { throw new Error(`vault write failed ${MARK} ${ENV_VALUE}`) })
+    const res = await call('POST', '/api/connectors', {
+      auth: TOKEN,
+      body: { name: 'gate-a', type: 'stdio', command: 'node', args: 'secret-arg.js', env: { API_KEY: ENV_VALUE } },
+    })
+    expect(res.status).toBe(500)
+    expect(claudeCalls()).toBe(1) // the write really happened before the throw
+    expect(rows()).toEqual(['connectors.add gate-a', 'connectors.add gate-a -> failed (Error)'])
+    expect(notified).toHaveLength(2)
+    expect(notified[1]).toContain('connectors.add')
+    noLeak()
+  })
+
+  it('B local: the env vaulting throws -> start + failed, 2 notifications, 500 stays', async () => {
+    setEnv('BEARER_CODE_EXEC_ADMIN_ENABLED=1')
+    const vault = await import('../web/vault.js')
+    vi.mocked(vault.setSecret).mockImplementationOnce(() => { throw new Error(`vault write failed ${MARK} ${ENV_VALUE}`) })
+    const res = await call('POST', '/api/mcp-catalog/fake-local/install', { auth: TOKEN, body: { env: { API_KEY: ENV_VALUE } } })
+    expect(res.status).toBe(500)
+    expect(rows()).toEqual(['mcp_catalog.install fake-local', 'mcp_catalog.install fake-local -> failed (Error)'])
+    expect(notified).toHaveLength(2)
+    noLeak()
+  })
+
+  it('A stdio, no secrets: success -> start + ok, one notification', async () => {
+    setEnv('BEARER_CODE_EXEC_ADMIN_ENABLED=1')
+    const res = await call('POST', '/api/connectors', { auth: TOKEN, body: { name: 'gate-a', type: 'stdio', command: 'node', args: 'secret-arg.js' } })
+    expect(res.status).toBe(200)
+    expect(rows()).toEqual(['connectors.add gate-a', 'connectors.add gate-a -> ok'])
+    expect(notified).toHaveLength(1)
+    noLeak()
+  })
+
+  it('A: a body that is refused as invalid (400) before any write leaves no row and no notification', async () => {
+    setEnv('BEARER_CODE_EXEC_ADMIN_ENABLED=1')
+    const res = await call('POST', '/api/connectors', { auth: TOKEN, body: { name: 'gate-x', type: 'stdio' } })
+    expect(res.status).toBe(400)
+    expect(claudeCalls()).toBe(0)
+    expect(auditRows()).toEqual([])
+    expect(notified).toEqual([])
+  })
+
+  it('C: the start row is already there when the clone runs; a throw is recorded and still propagates', async () => {
+    setEnv('BEARER_CODE_EXEC_ADMIN_ENABLED=1')
+    let rowsAtClone = -1
+    vi.mocked(ds.installGitHubRepo).mockImplementationOnce(async () => {
+      rowsAtClone = auditRows().length
+      const e = new Error(`clone exploded ${MARK}`)
+      e.name = 'CloneBoomError'
+      throw e
+    })
+    await expect(callRoute(ROUTES[5], TOKEN)).rejects.toThrow('clone exploded')
+    expect(rowsAtClone).toBe(1)
+    expect(rows()).toEqual([
+      'connectors.github_repo.add gate-repo runScripts=false',
+      'connectors.github_repo.add gate-repo runScripts=false -> failed (CloneBoomError)',
+    ])
+    expect(notified).toHaveLength(2)
+    noLeak()
+  })
+
+  it('C: the audit subject comes from the URL\'s last segment, never the URL (no user, host or token)', async () => {
+    setEnv('BEARER_CODE_EXEC_ADMIN_ENABLED=1')
+    vi.mocked(ds.installGitHubRepo).mockResolvedValueOnce({ error: 'x' } as any)
+    await call('POST', '/api/connectors/github-repos', { auth: TOKEN, body: { url: 'https://user:tok-secret@example.test/o/my-repo.git?x=1' } })
+    expect(rows()[0]).toBe('connectors.github_repo.add my-repo runScripts=false')
+    expect(notified.join('\n')).not.toMatch(/tok-secret|example\.test/)
+  })
+
+  it('D: the start row is already there when the pull runs; a throw is recorded and still propagates', async () => {
+    setEnv('BEARER_CODE_EXEC_ADMIN_ENABLED=1')
+    let rowsAtPull = -1
+    vi.mocked(ds.updateGitHubRepo).mockImplementationOnce(() => {
+      rowsAtPull = auditRows().length
+      throw new Error(`pull exploded ${MARK}`)
+    })
+    await expect(callRoute(ROUTES[7], TOKEN)).rejects.toThrow('pull exploded')
+    expect(rowsAtPull).toBe(1)
+    expect(rows()).toEqual(['connectors.github_repo.update gate-repo', 'connectors.github_repo.update gate-repo -> failed (Error)'])
+    expect(notified).toHaveLength(2)
+    noLeak()
+  })
+
+  it('a recording failure is logged and does not change the answer', async () => {
+    setEnv('BEARER_CODE_EXEC_ADMIN_ENABLED=1')
+    getDb().exec("CREATE TRIGGER n6_fail_insert BEFORE INSERT ON config_change_log BEGIN SELECT RAISE(ABORT, 'n6 audit down'); END")
+    try {
+      const res = await callRoute(ROUTES[1], TOKEN)
+      expect(res.status).toBe(200)
+      expect(res.json().ok).toBe(true)
+      expect(log.error).toHaveBeenCalled()
+    } finally {
+      getDb().exec('DROP TRIGGER IF EXISTS n6_fail_insert')
+    }
   })
 })
 

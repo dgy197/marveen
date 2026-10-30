@@ -14,7 +14,7 @@ import { atomicWriteFileSync } from '../atomic-write.js'
 import { readFileOr, AGENTS_BASE_DIR, listAgentNames , readJsonObjectForWrite } from '../agent-config.js'
 import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../mcp-list.js'
 import { readBody, json } from '../http-helpers.js'
-import { execGateApplies, admitCodeExecAdmin, recordCodeExecAdmin, type CodeExecAction } from '../code-exec-admin.js'
+import { execGateApplies, admitCodeExecAdmin, codeExecAuditTrail } from '../code-exec-admin.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars, parseRunScriptsFlag } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
 import { logVaultRead, isSshPrivateKeyId, principalOf, readVaultAcl, vaultReadRefused, vaultAclMode } from '../vault-acl.js'
@@ -57,17 +57,19 @@ function runClaudeMcp(args: string[], timeout: number): Promise<void> {
   return serializeClaudeMcp(() => execClaudeMcp(args, timeout))
 }
 
-// Card 89df7a00: after a SUCCESSFUL install by a gated caller (bare token or full
-// device key whose switch is open) the audit row and the owner notification. The
-// install is already done, so a failure to record it is logged and must not turn
-// the answer into an error.
-function auditGatedInstall(gated: boolean, action: CodeExecAction, subject: string, auth: RouteContext['auth']): void {
-  if (!gated) return
-  try {
-    recordCodeExecAdmin(action, subject, auth)
-  } catch (err) {
-    logger.error({ err, action }, 'Failed to record a code-exec admin install')
-  }
+// Card 89df7a00 (N6, BE E3): a gated caller (bare token or full device key whose
+// switch is open) gets its audit row and owner notification BEFORE the first
+// write of an install (trail.start), and the outcome (ok / failed) on the way
+// out. An install that writes (a `claude mcp add`, a clone, a vaulted secret)
+// and then throws would otherwise leave no trace. A failure to record is logged
+// by the trail and never changes the answer.
+
+// A repo name for the audit subject, taken from the clone URL: the last path
+// segment cut to a plain identifier, never the URL itself (no host, user, token).
+function repoNameForAudit(url: string): string {
+  const seg = url.trim().replace(/[?#].*$/, '').replace(/\/+$/, '').replace(/\.git$/, '').split(/[/:]/).pop() ?? ''
+  const safe = seg.replace(/[^A-Za-z0-9._-]/g, '').slice(0, 60)
+  return safe || 'unknown'
 }
 
 // The catalog is the union of the committed mcp-catalog.json (the MCPs the
@@ -347,24 +349,33 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const runScriptsFlag = parseRunScriptsFlag(runScripts)
     if (runScriptsFlag.error) { json(res, { error: runScriptsFlag.error }, 400); return true }
 
-    const envVarMapping: Record<string, string> = {}
-    if (env) {
-      for (const [key, value] of Object.entries(env)) {
-        const vaultId = `github-env-${key.toLowerCase()}-${Date.now()}`
-        setSecret(vaultId, `${key} (GitHub repo)`, value)
-        envVarMapping[key] = vaultId
+    // N6: the first write is the vaulted env secret, then the clone itself.
+    const trail = codeExecAuditTrail(gated, 'connectors.github_repo.add', ctx.auth)
+    trail.start(`${repoNameForAudit(url)} runScripts=${runScriptsFlag.value === true}`)
+    let result: Awaited<ReturnType<typeof installGitHubRepo>>
+    try {
+      const envVarMapping: Record<string, string> = {}
+      if (env) {
+        for (const [key, value] of Object.entries(env)) {
+          const vaultId = `github-env-${key.toLowerCase()}-${Date.now()}`
+          setSecret(vaultId, `${key} (GitHub repo)`, value)
+          envVarMapping[key] = vaultId
+        }
       }
-    }
 
-    const result = await installGitHubRepo(
-      url.trim(),
-      Object.keys(envVarMapping).length > 0 ? envVarMapping : undefined,
-      undefined,
-      { runScripts: runScriptsFlag.value === true },
-    )
-    if (result.error) { json(res, { error: result.error }, 400); return true }
-    auditGatedInstall(gated, 'connectors.github_repo.add', `${result.repo?.name ?? 'unknown'} runScripts=${runScriptsFlag.value === true}`, ctx.auth)
-    json(res, { ok: true, repo: result.repo, requiredEnvVars: result.requiredEnvVars, installWarning: result.installWarning, scriptsSkipped: result.scriptsSkipped })
+      result = await installGitHubRepo(
+        url.trim(),
+        Object.keys(envVarMapping).length > 0 ? envVarMapping : undefined,
+        undefined,
+        { runScripts: runScriptsFlag.value === true },
+      )
+    } catch (err) {
+      trail.failed(err)
+      throw err
+    }
+    if (result.error) { trail.failed(); json(res, { error: result.error }, 400); return true }
+    trail.ok(`${result.repo?.name ?? 'unknown'} runScripts=${runScriptsFlag.value === true}`)
+    json(res,{ ok: true, repo: result.repo, requiredEnvVars: result.requiredEnvVars, installWarning: result.installWarning, scriptsSkipped: result.scriptsSkipped })
     return true
   }
 
@@ -391,9 +402,18 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     }
     const runScriptsFlag = parseRunScriptsFlag(parsedBody.runScripts)
     if (runScriptsFlag.error) { json(res, { error: runScriptsFlag.error }, 400); return true }
-    const result = updateGitHubRepo(name, runScriptsFlag.value === undefined ? {} : { runScripts: runScriptsFlag.value })
-    if (result.error) { json(res, { error: result.error }, 400); return true }
-    auditGatedInstall(gated, 'connectors.github_repo.update', name, ctx.auth)
+    // N6: the update is a `git pull` (and possibly npm scripts) that can die half-way.
+    const trail = codeExecAuditTrail(gated, 'connectors.github_repo.update', ctx.auth)
+    trail.start(name)
+    let result: ReturnType<typeof updateGitHubRepo>
+    try {
+      result = updateGitHubRepo(name, runScriptsFlag.value === undefined ? {} : { runScripts: runScriptsFlag.value })
+    } catch (err) {
+      trail.failed(err)
+      throw err
+    }
+    if (result.error) { trail.failed(); json(res, { error: result.error }, 400); return true }
+    trail.ok()
     json(res, { ok: true, scriptsSkipped: result.scriptsSkipped })
     return true
   }
@@ -487,6 +507,9 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const nameChanged = sanitizedName !== rawName
+    // N6 (BE E3): started right before the first write (`claude mcp add`) of each
+    // valid branch, so a later throw (the env vaulting) still leaves its trace.
+    const trail = codeExecAuditTrail(gated, 'connectors.add', ctx.auth)
 
     try {
       const scope = data.scope === 'project' ? 'project' : 'user'
@@ -502,6 +525,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
       if ((data.type === 'http' || data.type === 'sse') && data.url) {
         const transport = data.type === 'sse' ? 'sse' : 'http'
+        trail.start(sanitizedName)
         await runClaudeMcp(['mcp', 'add', '--transport', transport, '-s', scope, sanitizedName, data.url], 15000)
         catalogEntry.type = 'remote'
         catalogEntry.url = data.url
@@ -513,6 +537,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
           Object.entries(data.env || {}).filter(([, v]) => v !== ''),
         ) as Record<string, string>
         const argList = data.args ? data.args.split(/\s+/).filter(Boolean) : []
+        trail.start(sanitizedName)
         await runClaudeMcp(['mcp', 'add', '-s', scope, sanitizedName, '--', data.command, ...argList], 15000)
         catalogEntry.type = 'local'
         catalogEntry.command = data.command
@@ -536,10 +561,11 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         logger.error({ err }, 'Failed to persist MCP into mcp-catalog.local.json')
       }
 
-      auditGatedInstall(gated, 'connectors.add', sanitizedName, ctx.auth)
+      trail.ok()
       json(res, { ok: true, name: sanitizedName, nameChanged })
     } catch (err: any) {
-      json(res, { error: err.message || 'Failed to add connector' }, 500)
+      trail.failed(err)
+      json(res,{ error: err.message || 'Failed to add connector' }, 500)
     }
     return true
   }
@@ -727,6 +753,9 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     // same 403 for every id and learns nothing about the catalog (no 404 vs 403).
     const gated = execGateApplies(ctx.auth, req)
     if (gated && !admitCodeExecAdmin(ctx, 'mcp_catalog.install')) return true
+    // N6 (BE E3): started right before the first write (`claude mcp add`) of each
+    // installable item type, so a later throw (the env vaulting) leaves its trace.
+    const trail = codeExecAuditTrail(gated, 'mcp_catalog.install', ctx.auth)
     try {
       const catalog = loadMcpCatalog()
       const item = catalog.find(c => c.id === id)
@@ -753,6 +782,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
           Object.entries(item.env || {}).filter(([k, v]) => v !== '' && !(k in userSecrets)),
         ) as Record<string, string>
         const envArgs = Object.entries(defaultEnv).flatMap(([k, v]) => ['-e', `${k}=${v as string}`])
+        trail.start(cliName)
         await runClaudeMcp(['mcp', 'add', '--scope', 'user', cliName, ...envArgs, '--', item.command, ...(item.args || [])], 30000)
         if (Object.keys(userSecrets).length) {
           vaultAndBindEnvSecrets(cliName, join(homedir(), '.claude.json'), userSecrets)
@@ -763,6 +793,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         // Respect the catalog item's transport (http/sse) instead of forcing sse,
         // so one-click remote installs can use streamable-http (e.g. n8n).
         const transport = item.transport === 'http' ? 'http' : 'sse'
+        trail.start(cliName)
         await runClaudeMcp(['mcp', 'add', '--transport', transport, '--scope', 'user', cliName, url], 30000)
       }
 
@@ -771,9 +802,10 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         message = `Telepítve. ${item.authNote}`
       }
 
-      auditGatedInstall(gated, 'mcp_catalog.install', cliName, ctx.auth)
+      trail.ok()
       json(res, { ok: true, message })
     } catch (err: any) {
+      trail.failed(err)
       logger.error({ err }, 'Failed to install MCP from catalog')
       json(res, { error: err.message || 'Failed to install' }, 500)
     }

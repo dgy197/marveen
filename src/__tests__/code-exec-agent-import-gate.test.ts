@@ -15,7 +15,7 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, rmSync, existsSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, rmSync, existsSync, symlinkSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -132,12 +132,13 @@ function writeFiles(root: string, withChannels: boolean): void {
   }
 }
 let bundleSeq = 0
-function makeBundle(opts: { channels: boolean; fleet?: boolean }): Buffer {
+function makeBundle(opts: { channels: boolean; fleet?: boolean; names?: string[] }): Buffer {
   const stage = join(H.root, 'bundles', `b${++bundleSeq}`)
   mkdirSync(stage, { recursive: true })
   if (opts.fleet) {
-    writeFileSync(join(stage, 'manifest.json'), JSON.stringify({ schemaVersion: 1, kind: 'fleet', agents: [NAME], includesSecrets: opts.channels }))
-    writeFiles(join(stage, 'agents', NAME), opts.channels)
+    const names = opts.names ?? [NAME]
+    writeFileSync(join(stage, 'manifest.json'), JSON.stringify({ schemaVersion: 1, kind: 'fleet', agents: names, includesSecrets: opts.channels }))
+    for (const n of names) writeFiles(join(stage, 'agents', n), opts.channels)
   } else {
     writeFileSync(join(stage, 'manifest.json'), JSON.stringify({ schemaVersion: 1, agentName: NAME, includesSecrets: opts.channels }))
     writeFiles(join(stage, 'agent'), opts.channels)
@@ -270,7 +271,11 @@ describe('B1: code-exec switch open, bundle without channel state -> imported, a
       expect(w[0][0]).toMatchObject({ action: ACTION, kind: auth!.kind, via: 'switch' })
       expect(warns(CRED_REFUSED)).toHaveLength(0)
       expect(warns(CRED_ADMITTED)).toHaveLength(0)
-      expect(auditRows()).toEqual([{ actor, new_value: `${ACTION} ${NAME}` }])
+      // N6: the start row (before the first write) and the outcome row; only the start notifies.
+      expect(auditRows()).toEqual([
+        { actor, new_value: `${ACTION} ${NAME}` },
+        { actor, new_value: `${ACTION} ${NAME} -> ok` },
+      ])
       expect(notified).toHaveLength(1)
       expect(notified[0]).not.toMatch(/evil|curl|mcpServers/)
       expect(importTempDirs()).toEqual([])
@@ -283,7 +288,11 @@ describe('B1: code-exec switch open, bundle without channel state -> imported, a
     expect(res.status).toBe(200)
     expect(res.json()).toMatchObject({ ok: true, kind: 'fleet' })
     expect(readFileSync(join(agentDirPath(), 'CLAUDE.md'), 'utf8')).toBe('bundle claude\n')
-    expect(auditRows()).toEqual([{ actor: 'token', new_value: `${ACTION} fleet ${NAME}` }])
+    expect(auditRows()).toEqual([
+      { actor: 'token', new_value: `${ACTION} fleet ${NAME}` },
+      { actor: 'token', new_value: `${ACTION} fleet ${NAME} -> ok` },
+    ])
+    expect(notified).toHaveLength(1)
   })
 })
 
@@ -318,7 +327,8 @@ describe('B1: a bundle carrying channel state also needs the credential switch',
         const w = warns(CRED_ADMITTED)
         expect(w).toHaveLength(1)
         expect(w[0][0]).toMatchObject({ action: CHANNEL_ACTION, via: 'switch' })
-        expect(auditRows()).toHaveLength(1)
+        expect(auditRows()).toHaveLength(2) // start + ok
+        expect(notified).toHaveLength(1)
         expect(importTempDirs()).toEqual([])
       })
     }
@@ -353,5 +363,111 @@ describe('B1: the owner\'s session is never gated', () => {
     expect(warns(EXEC_REFUSED)).toHaveLength(0)
     expect(warns(CRED_REFUSED)).toHaveLength(0)
     expect(auditRows()).toEqual([])
+  })
+})
+
+// N6 (BE B2): the start row and notification come before the first write (inside
+// the importer's admit callback), the outcome closes the pair. An importer that
+// dies after it started used to leave no trace at all.
+describe('N6: an import that dies after it started is audited (start + failed)', () => {
+  // A non-empty dir that cannot be emptied: the importer's rmSync of the old
+  // agent dir fails with EACCES, i.e. AFTER admit and (fleet) possibly after
+  // other agents were already copied. Permissions are restored in finally.
+  const LOCKED_FLEET_PEER = 'zzz-peer'
+  function lock(dir: string): void {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'keep.txt'), 'old\n')
+    chmodSync(dir, 0o500)
+  }
+  function unlock(dir: string): void {
+    if (existsSync(dir)) { chmodSync(dir, 0o700); rmSync(dir, { recursive: true, force: true }) }
+  }
+  const noLeak = () => {
+    const all = JSON.stringify(auditRows()) + notified.join('\n')
+    expect(all).not.toMatch(/EACCES|permission denied|keep\.txt|code-exec-import-|evil|curl|mcpServers/i)
+  }
+  const runsAsRoot = typeof process.getuid === 'function' && process.getuid() === 0
+
+  for (const [who, auth, actor] of GATED) {
+    it.skipIf(runsAsRoot)(`${who}: single, the old agent dir cannot be replaced -> start + failed, 2 notifications, 400 stays`, async () => {
+      setEnv(EXEC_ON)
+      lock(agentDirPath())
+      try {
+        const res = await importBundle(makeBundle({ channels: false }), auth)
+        expect(res.status).toBe(400)
+        expect(auditRows()).toEqual([
+          { actor, new_value: `${ACTION} ${NAME}` },
+          { actor, new_value: `${ACTION} ${NAME} -> failed (Error)` },
+        ])
+        expect(notified).toHaveLength(2)
+        expect(notified[1]).toContain(ACTION)
+        noLeak()
+        expect(importTempDirs()).toEqual([])
+      } finally {
+        unlock(agentDirPath())
+      }
+    })
+
+    it.skipIf(runsAsRoot)(`${who}: fleet, one agent dir cannot be replaced -> start + failed with both names, 2 notifications, 400 stays`, async () => {
+      setEnv(EXEC_ON)
+      lock(agentDirPath(LOCKED_FLEET_PEER))
+      try {
+        const res = await importBundle(makeBundle({ channels: false, fleet: true, names: [NAME, LOCKED_FLEET_PEER] }), auth)
+        expect(res.status).toBe(400)
+        // readdirSync is sorted (libuv scandir), so NAME is copied first and the
+        // locked peer fails second: a real mid-copy failure that used to leave no trace.
+        expect(readFileSync(join(agentDirPath(), 'CLAUDE.md'), 'utf8')).toBe('bundle claude\n')
+        expect(auditRows()).toEqual([
+          { actor, new_value: `${ACTION} fleet ${NAME},${LOCKED_FLEET_PEER}` },
+          { actor, new_value: `${ACTION} fleet ${NAME},${LOCKED_FLEET_PEER} -> failed (Error)` },
+        ])
+        expect(notified).toHaveLength(2)
+        noLeak()
+        expect(importTempDirs()).toEqual([])
+      } finally {
+        unlock(agentDirPath(LOCKED_FLEET_PEER))
+      }
+    })
+  }
+
+  it.skipIf(runsAsRoot)('an ungated caller (the owner\'s session) whose import dies leaves no row and no notification', async () => {
+    lock(agentDirPath())
+    try {
+      const res = await importBundle(makeBundle({ channels: false }), SESSION)
+      expect(res.status).toBe(400)
+      expect(auditRows()).toEqual([])
+      expect(notified).toEqual([])
+    } finally {
+      unlock(agentDirPath())
+    }
+  })
+
+  it('a bundle that is rejected before the importer asks admit (malformed) leaves no row and no notification', async () => {
+    setEnv(EXEC_ON)
+    const res = await importBundle(Buffer.from('this is not a tar.gz'), TOKEN)
+    expect(res.status).toBe(400)
+    expect(auditRows()).toEqual([])
+    expect(notified).toEqual([])
+  })
+
+  it('a refusal by the channel credential gate leaves no row (the gate already logged), even though the switch is open', async () => {
+    setEnv(EXEC_ON)
+    const res = await importBundle(makeBundle({ channels: true }), TOKEN)
+    expect(res.status).toBe(403)
+    expect(auditRows()).toEqual([])
+    expect(notified).toEqual([])
+  })
+
+  it('a recording failure is logged and does not change the answer', async () => {
+    setEnv(EXEC_ON)
+    getDb().exec("CREATE TRIGGER n6_fail_insert BEFORE INSERT ON config_change_log BEGIN SELECT RAISE(ABORT, 'n6 audit down'); END")
+    try {
+      const res = await importBundle(makeBundle({ channels: false }), TOKEN)
+      expect(res.status).toBe(200)
+      expect(res.json()).toMatchObject({ ok: true, kind: 'agent', name: NAME })
+      expect(log.error).toHaveBeenCalled()
+    } finally {
+      getDb().exec('DROP TRIGGER IF EXISTS n6_fail_insert')
+    }
   })
 })

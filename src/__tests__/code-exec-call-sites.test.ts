@@ -213,12 +213,12 @@ describe('agents.ts: the bundle import replaces a whole agent dir behind the gat
     const lines = codeLines(file('web/agent-bundle.ts').text)
     const idx = (re: RegExp, from = 0) => lines.findIndex((l, i) => i >= from && re.test(l))
     const single = idx(/^export function importAgentBundle\(/)
-    const singleAdmit = idx(/opts\.admit\(\{ channelState: hasChannelState\(stagedAgentDir\) \}\)/, single)
+    const singleAdmit = idx(/opts\.admit\(\{ channelState: hasChannelState\(stagedAgentDir\), names: \[name\] \}\)/, single)
     const singleRm = idx(/rmSync\(dest, /, single)
     expect(singleAdmit).toBeGreaterThan(single)
     expect(singleRm).toBeGreaterThan(singleAdmit)
     const fleet = idx(/^export function importAllAgentsBundle\(/)
-    const fleetAdmit = idx(/opts\.admit\(\{ channelState \}\)/, fleet)
+    const fleetAdmit = idx(/opts\.admit\(\{ channelState, names \}\)/, fleet)
     const fleetRm = idx(/rmSync\(dest, /, fleet)
     expect(fleetAdmit).toBeGreaterThan(fleet)
     expect(fleetRm).toBeGreaterThan(fleetAdmit)
@@ -235,5 +235,72 @@ describe('agents.ts: the bundle import replaces a whole agent dir behind the gat
     expect(head).toBeGreaterThan(-1)
     expect(gate).toBeGreaterThan(head)
     expect(read).toBeGreaterThan(gate)
+  })
+})
+
+// N6 (BE B2 / E3): the audit row and the notification are written BEFORE the first
+// write of a gated operation (trail.start), and the outcome after (ok / failed). A
+// recorder placed after the write is what left a half-done install without a trace.
+describe('the audit start stands before the first write, the outcome after (N6, BE B2/E3)', () => {
+  it('the importer admit starts the trail only after the channel gate, and the old post-hoc recordImport is gone', () => {
+    const c = codeLines(file('web/routes/agents.ts').text)
+    const text = c.join('\n')
+    const idx = (re: RegExp, from = 0) => c.findIndex((l, i) => i >= from && re.test(l))
+    expect(text).not.toMatch(/recordImport/)
+    const head = idx(/path === '\/api\/agents\/import' && method === 'POST'/)
+    const channelGate = idx(/channelCredentialGate\(ctx, 'agents\.import\.channel'\)/, head)
+    const start = idx(/trail\.start\(/, head)
+    const single = idx(/importAgentBundle\(bundle, /, head)
+    expect(head).toBeGreaterThan(-1)
+    expect(channelGate).toBeGreaterThan(head)
+    expect(start).toBeGreaterThan(channelGate)
+    expect(single).toBeGreaterThan(start)
+    expect(text.match(/trail\.start\(/g)).toHaveLength(1)
+    // ok only after the context-guard seed (both shapes), failed in the catch, a net in finally
+    expect(text.match(/trail\.ok\(/g)).toHaveLength(2)
+    const seeds = c.map((l, i) => (/seedContextGuardForNewAgent\(/.test(l) && i > head ? i : -1)).filter(i => i > -1)
+    const oks = c.map((l, i) => (/trail\.ok\(/.test(l) ? i : -1)).filter(i => i > -1)
+    expect(oks.every(o => seeds.some(s => s < o && o - s < 4))).toBe(true)
+    expect(text.match(/trail\.failed\(/g)).toHaveLength(2)
+  })
+
+  it('connectors.ts records through the trail only: no direct recordCodeExecAdmin, no after-the-fact audit helper', () => {
+    const text = codeLines(file('web/routes/connectors.ts').text).join('\n')
+    expect(text).not.toMatch(/recordCodeExecAdmin|auditGatedInstall/)
+    expect(text.match(/codeExecAuditTrail\(/g)).toHaveLength(4)
+  })
+
+  it('every `claude mcp add` of the install routes has trail.start on the line before it', () => {
+    const c = codeLines(file('web/routes/connectors.ts').text)
+    const adds = c.map((l, i) => (/await runClaudeMcp\(\['mcp', 'add'/.test(l) ? i : -1)).filter(i => i > -1)
+    expect(adds).toHaveLength(4)
+    for (const i of adds) expect(c[i - 1], c[i]).toMatch(/trail\.start\(/)
+  })
+
+  it('github add: the start stands before the first write (the vaulted env secret and the clone)', () => {
+    const c = codeLines(file('web/routes/connectors.ts').text)
+    const idx = (re: RegExp, from = 0) => c.findIndex((l, i) => i >= from && re.test(l))
+    const head = idx(/path === '\/api\/connectors\/github-repos' && method === 'POST'/)
+    const start = idx(/trail\.start\(/, head)
+    const secret = idx(/setSecret\(vaultId/, head)
+    const clone = idx(/installGitHubRepo\(/, head)
+    expect(start).toBeGreaterThan(head)
+    expect(secret).toBeGreaterThan(start)
+    expect(clone).toBeGreaterThan(start)
+  })
+
+  it('github update: the start stands before the pull', () => {
+    const c = codeLines(file('web/routes/connectors.ts').text)
+    const idx = (re: RegExp, from = 0) => c.findIndex((l, i) => i >= from && re.test(l))
+    const head = idx(/githubRepoMatch && method === 'PATCH'/)
+    const start = idx(/trail\.start\(name\)/, head)
+    const pull = idx(/updateGitHubRepo\(name/, head)
+    expect(start).toBeGreaterThan(head)
+    expect(pull).toBeGreaterThan(start)
+  })
+
+  it('the trail never takes an error message: the outcome recorder reads only the error class', () => {
+    const text = codeLines(file('web/code-exec-admin.ts').text).join('\n')
+    expect(text).not.toMatch(/\.message\b|String\(err\)|\$\{err\}/)
   })
 })

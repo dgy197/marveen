@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync, renameSync } from 'node:fs'
 import { MAIN_CHANNEL_ADMIN_ENV, isMainChannelAdminEnabled, mainChannelWriteAction } from '../main-channel-admin.js'
 import { callerLabel } from '../admin-switch.js'
-import { execGateApplies, admitCodeExecAdmin, recordCodeExecAdmin } from '../code-exec-admin.js'
+import { execGateApplies, admitCodeExecAdmin, recordCodeExecAdmin, codeExecAuditTrail } from '../code-exec-admin.js'
 import { admitBearerCredentialAdmin, type CredentialAdminAction } from '../credential-admin.js'
 import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
@@ -2688,26 +2688,32 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       overwrite = /[?&]overwrite=(1|true)\b/.test(url)
     }
     if (!bundle || bundle.length === 0) { json(res, { error: 'No bundle uploaded' }, 400); return true }
-    const admit = (info: { channelState: boolean }): boolean =>
-      !info.channelState || channelCredentialGate(ctx, 'agents.import.channel')
-    const recordImport = (subject: string): void => {
-      if (!importGated) return
-      // Already written: a failure to record it must not turn the answer into an error.
-      try { recordCodeExecAdmin('agents.import', subject, ctx.auth) } catch (err) {
-        logger.error({ err }, 'Failed to record a code-exec admin agent import')
-      }
+    // 89df7a00 N6 (BE B2): the audit row and the owner notification are written
+    // when the import is about to start (right after the channel gate, before
+    // the first file lands), and the outcome (ok / failed) closes the pair. An
+    // importer that dies mid-copy has already replaced earlier agent dirs, and
+    // used to leave no trace. Nothing is recorded for an ungated caller, nor
+    // for a channel-gate refusal (that gate already logged).
+    const trail = codeExecAuditTrail(importGated, 'agents.import', ctx.auth)
+    let importIsFleet = false
+    const admit = (info: { channelState: boolean; names: string[] }): boolean => {
+      if (info.channelState && !channelCredentialGate(ctx, 'agents.import.channel')) return false
+      trail.start(importIsFleet ? fleetSubject(info.names) : (info.names[0] ?? 'agent'))
+      return true
     }
+    const fleetSubject = (names: string[]): string => `fleet ${names.join(',').slice(0, 200)}`
     try {
       // One endpoint accepts either format: peek the manifest, then dispatch to
       // the single-agent or whole-fleet importer.
-      if (peekBundleKind(bundle) === 'fleet') {
+      importIsFleet = peekBundleKind(bundle) === 'fleet'
+      if (importIsFleet) {
         const result = importAllAgentsBundle(bundle, { overwrite, admit })
         // An imported agent is a NEW agent on this machine: the bundle carries
         // the agent directory, never store/context-guard.json. Same rule as
         // creation (fleet policy, 2026-09-08) and idempotent, so re-importing over an
         // agent an operator has already configured leaves that row alone.
         for (const a of result.imported) seedContextGuardForNewAgent(a.name)
-        recordImport(`fleet ${result.imported.map((a) => a.name).join(',').slice(0, 200)}`)
+        trail.ok(fleetSubject(result.imported.map((a) => a.name)))
         logger.info(
           { imported: result.imported.map((a) => a.name), skipped: result.skipped, secrets: result.includesSecrets },
           'Fleet imported from bundle',
@@ -2727,8 +2733,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
 
       const result = importAgentBundle(bundle, { overrideName: overrideName || undefined, overwrite, admit })
-      recordImport(result.name)
       seedContextGuardForNewAgent(result.name)
+      trail.ok(result.name)
       logger.info({ name: result.name, overwritten: result.overwritten, secrets: result.manifest.includesSecrets }, 'Agent imported from bundle')
       json(res, {
         ok: true,
@@ -2740,11 +2746,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     } catch (err) {
       // The channel gate already wrote its 403; nothing was installed.
       if (err instanceof BundleImportRefused) return true
+      // After the start row: a failure here may have left a partial import.
+      trail.failed(err)
       const msg = err instanceof Error ? err.message : String(err)
       // A name collision without overwrite is a 409 the UI can offer to resolve;
       // everything else (malformed bundle, bad name) is a 400.
       const status = /already exists/.test(msg) ? 409 : 400
       json(res, { error: msg }, status)
+    } finally {
+      // Safety net: a throw out of the catch above still closes the pair.
+      trail.failed()
     }
     return true
   }

@@ -46,7 +46,7 @@ vi.mock('../notify.js', async (importOriginal) => ({
   notifySecurityEvent: async (text: string) => { notified.push(text) },
 }))
 
-const { admitCodeExecAdmin, execGateApplies, recordCodeExecAdmin, BEARER_CODE_EXEC_ADMIN_OFF } = await import('../web/code-exec-admin.js')
+const { admitCodeExecAdmin, execGateApplies, recordCodeExecAdmin, recordCodeExecOutcome, codeExecAuditTrail, BEARER_CODE_EXEC_ADMIN_OFF } = await import('../web/code-exec-admin.js')
 const { BEARER_CODE_EXEC_ADMIN_ENV, isAdminSwitchOn, ADMIN_SWITCH_KEYS, isAdminSwitchKey } = await import('../web/admin-switch.js')
 const { initDatabase, getDb, createDashboardUser } = await import('../db.js')
 const { createSession, revokeSession, _clearSessionCacheForTest } = await import('../web/auth-sessions.js')
@@ -351,5 +351,106 @@ describe('recordCodeExecAdmin: one audit row, one notification', () => {
     expect(html).toContain('line_two')
     // Exactly the three intended code spans (action, subject, switch name).
     expect(html.match(/<code>/g)).toHaveLength(3)
+  })
+})
+
+// Card 89df7a00 N6 (BE B2 / E3): the start is recorded before the first write, the
+// outcome (ok / failed) after it.
+describe('recordCodeExecOutcome / codeExecAuditTrail: start before the write, outcome after', () => {
+  function auditRows(): Array<{ new_value: string; actor: string }> {
+    return getDb().prepare("SELECT new_value, actor FROM config_change_log WHERE key = 'security.bearer_code_exec_admin' ORDER BY id").all() as Array<{ new_value: string; actor: string }>
+  }
+
+  it('ok: one row, NO notification', () => {
+    recordCodeExecOutcome('agents.import', 'sub1', 'ok', TOKEN)
+    expect(auditRows()).toEqual([{ new_value: 'agents.import sub1 -> ok', actor: 'token' }])
+    expect(notified).toEqual([])
+  })
+
+  it('failed: one row with the error CLASS and one notification; a full device key is actor "device"', () => {
+    class BoomError extends Error { constructor(m: string) { super(m); this.name = 'BoomError' } }
+    recordCodeExecOutcome('agents.import', 'sub1', 'failed', DEVICE_FULL, new BoomError('/secret/path curl evil.example'))
+    expect(auditRows()).toEqual([{ new_value: 'agents.import sub1 -> failed (BoomError)', actor: 'device' }])
+    expect(notified).toHaveLength(1)
+    expect(notified[0]).toContain('BoomError')
+    expect(notified[0]).toContain('agents.import')
+    expect(notified[0]).not.toMatch(/secret|curl|evil/)
+  })
+
+  it('the error class is a plain identifier: a hostile or missing name collapses to "Error"', () => {
+    const odd = new Error('x'); odd.name = 'bad name; rm -rf /'
+    recordCodeExecOutcome('agents.import', 'a', 'failed', TOKEN, odd)
+    recordCodeExecOutcome('agents.import', 'b', 'failed', TOKEN, 'a thrown string with a path /etc/x')
+    recordCodeExecOutcome('agents.import', 'c', 'failed', TOKEN)
+    expect(auditRows().map(r => r.new_value)).toEqual([
+      'agents.import a -> failed (Error)',
+      'agents.import b -> failed (Error)',
+      'agents.import c -> failed (Error)',
+    ])
+    expect(notified.join('\n')).not.toMatch(/rm -rf|\/etc\/x|bad name/)
+  })
+
+  it('the failed text keeps the underscore-safe code spans (formatForTelegram: no <i>)', () => {
+    recordCodeExecOutcome('mcp_catalog.install', 'my_key_name', 'failed', TOKEN, new TypeError('x'))
+    const html = formatForTelegram(notified[0]!)
+    expect(html).toContain('mcp_catalog.install')
+    expect(html).toContain('my_key_name')
+    expect(html).toContain('TypeError')
+    expect(html).not.toMatch(/<\/?i>/)
+  })
+
+  it('trail: start, then ok -> two rows, one notification; the ok subject may differ from the start subject', () => {
+    const t = codeExecAuditTrail(true, 'agents.import', TOKEN)
+    t.start('fleet a,b')
+    t.ok('fleet a')
+    expect(auditRows().map(r => r.new_value)).toEqual(['agents.import fleet a,b', 'agents.import fleet a -> ok'])
+    expect(notified).toHaveLength(1)
+  })
+
+  it('trail: start, then failed -> two rows, two notifications', () => {
+    const t = codeExecAuditTrail(true, 'connectors.add', TOKEN)
+    t.start('srv')
+    t.failed(new RangeError('boom'))
+    expect(auditRows().map(r => r.new_value)).toEqual(['connectors.add srv', 'connectors.add srv -> failed (RangeError)'])
+    expect(notified).toHaveLength(2)
+  })
+
+  it('trail: start and the close each count once (a second start, ok or failed is a no-op)', () => {
+    const t = codeExecAuditTrail(true, 'connectors.add', TOKEN)
+    t.start('srv')
+    t.start('srv-again')
+    t.ok()
+    t.failed(new Error('late'))
+    t.ok()
+    expect(auditRows().map(r => r.new_value)).toEqual(['connectors.add srv', 'connectors.add srv -> ok'])
+    expect(notified).toHaveLength(1)
+  })
+
+  it('trail: an operation that never started records nothing on close (e.g. refused by a later gate)', () => {
+    const t = codeExecAuditTrail(true, 'agents.import', TOKEN)
+    t.failed(new Error('x'))
+    t.ok()
+    expect(auditRows()).toEqual([])
+    expect(notified).toEqual([])
+  })
+
+  it('trail: an ungated caller records nothing at all', () => {
+    const t = codeExecAuditTrail(false, 'agents.import', SESSION)
+    t.start('sub1')
+    t.ok()
+    t.failed(new Error('x'))
+    expect(auditRows()).toEqual([])
+    expect(notified).toEqual([])
+  })
+
+  it('trail: a recording failure is logged, never thrown, and the outcome is still tried', () => {
+    getDb().exec("CREATE TRIGGER n6_unit_fail BEFORE INSERT ON config_change_log BEGIN SELECT RAISE(ABORT, 'audit down'); END")
+    try {
+      const t = codeExecAuditTrail(true, 'connectors.add', TOKEN)
+      expect(() => { t.start('srv'); t.failed(new Error('x')) }).not.toThrow()
+      expect(log.error).toHaveBeenCalledTimes(2)
+    } finally {
+      getDb().exec('DROP TRIGGER IF EXISTS n6_unit_fail')
+    }
   })
 })

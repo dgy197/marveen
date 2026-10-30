@@ -244,6 +244,10 @@ export interface ImportResult {
 export interface BundleImportInfo {
   // Any .claude/channels entry (bot token, allowFrom, invites) in any agent dir.
   channelState: boolean
+  // The agent names this import would install (sanitized; overrideName applied
+  // for a single agent). Metadata only, for the audit trail written before the
+  // first write (card 89df7a00 N6).
+  names: string[]
 }
 export type BundleImportAdmit = (info: BundleImportInfo) => boolean
 
@@ -300,7 +304,7 @@ export function importAgentBundle(
     if (name === MAIN_AGENT_ID) throw new Error(`Agent name "${name}" is reserved for the main agent`)
     if (RESERVED_AGENT_IDS.includes(name)) throw new Error(`Agent name "${name}" is reserved by the system`)
 
-    if (opts.admit && !opts.admit({ channelState: hasChannelState(stagedAgentDir) })) throw new BundleImportRefused()
+    if (opts.admit && !opts.admit({ channelState: hasChannelState(stagedAgentDir), names: [name] })) throw new BundleImportRefused()
 
     sanitizeImportedConfig(stagedAgentDir)
 
@@ -488,10 +492,13 @@ export function importAllAgentsBundle(
     // One admission for the whole bundle, before the first agent dir is touched.
     if (opts.admit) {
       let channelState = false
+      const names: string[] = []
       for (const entry of readdirSync(agentsRoot)) {
-        if (hasChannelState(join(agentsRoot, entry))) { channelState = true; break }
+        if (hasChannelState(join(agentsRoot, entry))) channelState = true
+        const n = sanitizeAgentName(entry)
+        if (n) names.push(n)
       }
-      if (!opts.admit({ channelState })) throw new BundleImportRefused()
+      if (!opts.admit({ channelState, names })) throw new BundleImportRefused()
     }
 
     const imported: { name: string; overwritten: boolean }[] = []
