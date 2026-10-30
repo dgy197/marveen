@@ -233,7 +233,29 @@ _SEND_TOOL = _SendToolMatcher()
 # passes, drafts included (MANAGEDRAFT905). Fail-closed on doubt: a missing or
 # unreadable operation counts as a send, because that is the case where we
 # cannot prove it is not one. `send_email` needs no such test -- it only sends.
+#
+# Which operations those are is decided by email_extract.manage_email_op_outbound,
+# the ONE rule shared with the copy gate and mirrored by the JS gate (card
+# 2f835ee4 r5). The local set below is the pre-r5 test: it also decides alone
+# when email_extract.py does not load or predates the function, so the gate is
+# never narrower than it was.
 _MANAGE_EMAIL_SEND_OPS = {"send", "reply", "reply_all", "replyall", "forward"}
+
+
+def _manage_email_op_outbound(op: str) -> bool:
+    """manage_email_op_outbound from the shared module, lazily and guarded (the
+    module is not loaded for any other call, HOOKDEPLOAD1008). On any load
+    problem the local pre-r5 test decides. The pre-r5 test is also OR-ed in when
+    the module loads: Python strip() takes Unicode whitespace that the shared
+    ASCII strip does not, and this gate must never be narrower than it was (AC3)."""
+    if op.strip().lower().replace("-", "_") in _MANAGE_EMAIL_SEND_OPS:
+        return True
+    try:
+        sys.path.insert(0, _HERE)
+        from email_extract import manage_email_op_outbound
+    except Exception:  # noqa: BLE001 -- SyntaxError, ImportError, anything: local fallback
+        return False
+    return manage_email_op_outbound(op)
 
 
 def _is_explicit_draft(tool_input: dict) -> bool:
@@ -419,7 +441,7 @@ def manage_email_is_send(tool_input: dict) -> bool:
     op = tool_input.get("operation")
     if not isinstance(op, str) or not op.strip():
         return True
-    if op.strip().lower().replace("-", "_") not in _MANAGE_EMAIL_SEND_OPS:
+    if not _manage_email_op_outbound(op):
         return False
     return not _is_explicit_draft(tool_input)
 

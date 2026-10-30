@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, mailToolAction } from '../../scripts/email-send-gate.mjs'
+import { gateDecision, mailToolAction, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
 
 // graph-forward N1b (spec G1-G7): the mail tools are recognised by their
 // ACTION, whatever the server name or version prefix. The gap it closes: the
@@ -68,6 +68,104 @@ describe('mail-tool action: python and JS agree with the shared contract', () =>
       expect(VECTORS.cases.some((c) => c.expected === cls), cls).toBe(true)
     }
     expect(VECTORS.classifier_edges.length).toBeGreaterThanOrEqual(20)
+  })
+})
+
+// card 2f835ee4 r5 (AC1-AC7): the manage_email multiplexer is classified by its OPERATION. One
+// normalisation (ASCII-whitespace strip, ASCII lower-case, "-" and "_" removed, exact match on
+// send / reply / replyall / forward) lives twice: manageEmailOpOutbound here and
+// manage_email_op_outbound in email_extract.py. Every row of the manage_email_ops block goes
+// through BOTH, and the sub-agent gate and the python entry points must follow.
+const OPS = (VECTORS as unknown as { manage_email_ops: Array<{ op: string; outbound: boolean; note: string }> })
+  .manage_email_ops
+
+function pythonOps(ops: unknown[]): boolean[] {
+  const out = execFileSync('python3', ['-I', '-c', `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(EXTRACT_DIR)})
+from email_extract import manage_email_op_outbound
+print(json.dumps([manage_email_op_outbound(o) for o in json.load(sys.stdin)]))
+`], { encoding: 'utf-8', input: JSON.stringify(ops) })
+  return JSON.parse(out.trim())
+}
+
+describe('manage_email operations: python and JS agree on the shared block', () => {
+  // Rows plus non-string values: neither side may throw, neither takes them for outbound.
+  const NON_STRINGS: unknown[] = [null, 123, ['send'], { op: 'send' }, true]
+  const py = pythonOps([...OPS.map((r) => r.op), ...NON_STRINGS])
+
+  it('the block is non-trivial: >= 20 rows, outbound and not', () => {
+    expect(OPS.length).toBeGreaterThanOrEqual(20)
+    expect(new Set(OPS.map((r) => r.outbound))).toEqual(new Set([true, false]))
+  })
+
+  OPS.forEach((r, i) => {
+    it(`${JSON.stringify(r.op)} -> outbound=${r.outbound} (${r.note})`, () => {
+      expect(manageEmailOpOutbound(r.op), 'JS').toBe(r.outbound)
+      expect(py[i], 'python').toBe(r.outbound)
+    })
+  })
+
+  NON_STRINGS.forEach((v, i) => {
+    it(`a non-string operation ${JSON.stringify(v)} is not outbound and does not throw`, () => {
+      expect(manageEmailOpOutbound(v)).toBe(false)
+      expect(py[OPS.length + i]).toBe(false)
+    })
+  })
+
+  it('the key strips ASCII whitespace only: NBSP and BOM stay (trim() would take them)', () => {
+    expect(manageEmailOpKey(' Re-Ply_ALL\t')).toBe('replyall')
+    expect(manageEmailOpKey(' send')).toBe(' send')
+    expect(manageEmailOpKey('send﻿')).toBe('send﻿')
+    expect(manageEmailOpKey('İ')).toBe('İ')
+  })
+
+  it('AC3: nothing a gate took for outbound before the change is narrower now', () => {
+    // The pre-r5 JS set was lower-case only (no strip, no separator drop); the approval gate's
+    // aliases add "reply_all" and "-" for "_". Spelled out, not imported.
+    const PRE_R5 = ['send', 'reply', 'replyall', 'forward', 'reply_all']
+    for (const base of PRE_R5) {
+      for (const form of [base, base.toUpperCase(), base.replace('_', '-'), ` ${base} `]) {
+        expect(manageEmailOpOutbound(form), form).toBe(true)
+      }
+    }
+  })
+
+  it('timing: a 50 000 character operation string is judged in well under a second', () => {
+    const t0 = Date.now()
+    for (const op of [' '.repeat(50_000) + 'x', 'x'.repeat(50_000), '_'.repeat(50_000), ' '.repeat(50_000)]) {
+      manageEmailOpOutbound(op)
+    }
+    expect(Date.now() - t0).toBeLessThan(1000)
+  })
+})
+
+describe('manage_email operations: the sub-agent gate follows the block', () => {
+  const ME = 'mcp__google-workspace__manage_email'
+  OPS.forEach((r) => {
+    it(`${JSON.stringify(r.op)}: ${r.outbound ? 'draft-required' : 'passes'}`, () => {
+      const v = gateDecision(ME, { operation: r.op, to: ['a@b.hu'], body: 'Kedves Ugyfelunk!' }, () => true)
+      expect(v).toEqual(r.outbound ? { deny: true, kind: 'draft-required' } : { deny: false })
+    })
+  })
+
+  it('AC5: reply_all with draft:true passes for a sourced recipient, an unsourced one is denied', () => {
+    for (const op of ['reply', 'reply_all', 'REPLY-ALL']) {
+      expect(gateDecision(ME, { operation: op, draft: true, to: ['a@b.hu'] }, () => true), op).toEqual({ deny: false })
+      expect(gateDecision(ME, { operation: op, draft: 'true', to: ['a@b.hu'] }, () => true), op).toEqual({ deny: false })
+      expect(gateDecision(ME, { operation: op, draft: true, to: ['a@b.hu'] }, () => false).kind, op)
+        .toBe('unverified-recipient')
+      expect(gateDecision(ME, { operation: op, draft: 'yes', to: ['a@b.hu'] }, () => true).kind, op)
+        .toBe('draft-required')
+    }
+  })
+
+  it('a missing or non-string operation keeps the pre-r5 reading (String(), not outbound unless it spells one)', () => {
+    for (const v of [undefined, null, 123, {}, true]) {
+      expect(gateDecision(ME, { operation: v, to: ['a@b.hu'] }, () => true), String(v)).toEqual({ deny: false })
+    }
+    // String(['reply_all']) is 'reply_all': an array holding one outbound name was outbound before, too.
+    expect(gateDecision(ME, { operation: ['reply_all'], to: ['a@b.hu'] }, () => true).kind).toBe('draft-required')
   })
 })
 

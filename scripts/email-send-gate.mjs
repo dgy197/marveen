@@ -1280,9 +1280,32 @@ export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScript
   return bothReadings(cmd).some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth)))
 }
 
-// Outbound-shaped operations of the multiplexed manage_email tool. Each of
-// these sends for real unless the call explicitly asks for a draft.
+// Outbound-shaped operations of the multiplexed manage_email tool, in NORMALISED
+// form (see manageEmailOpKey). Each of these sends for real unless the call
+// explicitly asks for a draft.
 const MANAGE_EMAIL_SEND_OPS = new Set(['send', 'reply', 'replyall', 'forward'])
+
+// JS twin of email_extract.manage_email_op_outbound (scripts/hooks/email_extract.py,
+// the main agent's gates), bound by the manage_email_ops block of
+// scripts/hooks/mail-tool-action-cases.json (card 2f835ee4 r5). ASCII-whitespace
+// strip (explicit, NOT trim(): trim() takes NBSP, U+FEFF... that Python's strip()
+// does not), ASCII lower-case, every "-" and "_" removed, then an EXACT match.
+// A non-ASCII character is never folded to ASCII. Pure, never throws; a missing
+// or non-string operation is simply not outbound here (the caller owns that policy).
+// Index loops, not a /^\s+|\s+$/ regex: the trailing-run pattern backtracks
+// quadratically on a long run of spaces that does not end the string.
+const ASCII_WS = ' \t\r\n\f\v'
+export function manageEmailOpKey(op) {
+  if (typeof op !== 'string') return ''
+  let start = 0
+  let end = op.length
+  while (start < end && ASCII_WS.includes(op[start])) start++
+  while (end > start && ASCII_WS.includes(op[end - 1])) end--
+  return op.slice(start, end).replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32)).replace(/[-_]/g, '')
+}
+export function manageEmailOpOutbound(op) {
+  return MANAGE_EMAIL_SEND_OPS.has(manageEmailOpKey(op))
+}
 
 // --- tool-name classification ------------------------------------------------
 // JS twin of email_extract.classify_mail_tool (scripts/hooks/email_extract.py,
@@ -1726,8 +1749,9 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
   // on ctx.operation alone and never looks at draft:true, so with it enabled the
   // mailbox is effectively read-only (verified live, 2026-08-10).
   if (mailKind === 'manage_email') {
-    const op = String(toolInput?.operation ?? '').toLowerCase()
-    if (!MANAGE_EMAIL_SEND_OPS.has(op)) return { deny: false }
+    // String() keeps the pre-r5 reading of a non-string operation (["send"] is
+    // "send"); the normalisation itself is manageEmailOpOutbound.
+    if (!manageEmailOpOutbound(String(toolInput?.operation ?? ''))) return { deny: false }
     // The address check runs before the draft rule, so it applies to the send
     // AND to the draft the deny message would send us back to write.
     const unparseable = unparseableRecipients(toolInput)

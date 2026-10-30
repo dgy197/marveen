@@ -48,6 +48,8 @@ CASES = VECTORS["cases"]
 EDGES = VECTORS["classifier_edges"]
 AS_CLASS = {"send": "send", "draft": "draft", "nonsend": None}
 EM_DASH = chr(0x2014)
+NBSP = chr(0xA0)
+DOTTED_I = chr(0x130)  # lower() of it is NOT one ASCII letter
 # Vector class 'draft', ranked a send by the stricter name classifier (Brainy 4952).
 STRICTER_THAN_VECTOR = {"mcp__gmail__create_draft_reply"}
 NOW_S = "CAST(strftime('%s','now') AS INTEGER)"
@@ -220,6 +222,58 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
         code, _, err = run(COPY, s1, tool, ti)
         check(f"copy gate: {tool} with no text of ours passes untouched", code == 0, f"exit={code} err={err[:160]!r}")
 
+    # --- 3b. manage_email operations (card 2f835ee4 r5, AC1-AC7) ---------------
+    print("manage_email operations")
+    OPS = VECTORS["manage_email_ops"]
+    ME = "mcp__google-workspace__manage_email"
+    check("the manage_email_ops block has >= 20 rows, outbound and not", len(OPS) >= 20
+          and {r["outbound"] for r in OPS} == {True, False})
+    for r in OPS:
+        got = ee.manage_email_op_outbound(r["op"])
+        check(f"function: {r['op']!r} -> outbound={r['outbound']} ({r['note']})", got is r["outbound"], f"got {got!r}")
+    for v in (None, 123, ["send"], {"op": "send"}, True, b"send"):
+        check(f"function: a non-string operation {v!r} is not outbound and does not raise",
+              ee.manage_email_op_outbound(v) is False)
+    check("the key drops - and _, strips ASCII whitespace only, lower-cases ASCII only",
+          ee.manage_email_op_key(" Re-Ply_ALL\t") == "replyall"
+          and ee.manage_email_op_key(NBSP + "send") == NBSP + "send" and ee.manage_email_op_key(DOTTED_I) == DOTTED_I)
+
+    # The gates, row by row. The oracles are the PRE-r5 tests spelled out here (AC3: never narrower):
+    # the approval gate lower-cased, stripped, mapped "-" to "_" and took a missing or blank
+    # operation for a send; the copy gate stripped and lower-cased.
+    pre_approval = {"send", "reply", "reply_all", "replyall", "forward"}
+    pre_copy = {"send", "reply", "replyall", "forward"}
+    for r in OPS:
+        op = r["op"]
+        code, _, err = run(GATE, s1, ME, {"operation": op, "to": ["a@b.hu"], "body": "Kedves Ügyfelünk! Törzs."})
+        want = r["outbound"] or op.strip().lower().replace("-", "_") in pre_approval or not op.strip()
+        check(f"approval gate L1: operation {op!r} -> {'DENIED' if want else 'passes'}",
+              (code == 2 and "szint 1" in err) if want else code == 0, f"exit={code} err={err[:120]!r}")
+        code, _, err = run(COPY, s1, ME, {"operation": op, "body": "Szia " + EM_DASH + " vége."})
+        want = r["outbound"] or op.strip().lower() in pre_copy
+        check(f"copy gate: operation {op!r} -> {'audited (exit 2)' if want else 'not audited (exit 0)'}",
+              code == (2 if want else 0), f"exit={code} err={err[:120]!r}")
+    # AC5: the draft flag is honoured for the new alias exactly as for reply.
+    for op in ("reply", "reply_all", "REPLY-ALL"):
+        code, _, err = run(GATE, s1, ME, {"operation": op, "draft": True, "body": "Törzs."})
+        check(f"approval gate L1: {op!r} with draft:true passes (a draft puts nothing on the wire)", code == 0,
+              f"exit={code} err={err[:120]!r}")
+        code, _, err = run(GATE, s1, ME, {"operation": op, "draft": "yes", "body": "Törzs."})
+        check(f"approval gate L1: {op!r} with draft:'yes' is still a send", code == 2 and "szint 1" in err,
+              f"exit={code}")
+    # A missing or non-string operation keeps the approval gate's policy (a send) and never crashes a gate.
+    for v in (None, 123, ["reply_all"], {}, True):
+        code, _, err = run(GATE, s1, ME, {"operation": v, "body": "Törzs."})
+        check(f"approval gate L1: operation {v!r} is taken for a send, as before", code == 2 and "szint 1" in err,
+              f"exit={code}")
+        code, _, err = run(COPY, s1, ME, {"operation": v, "body": "Szia " + EM_DASH + " vége."})
+        check(f"copy gate: operation {v!r} is not audited, as before", code == 0, f"exit={code} err={err[:120]!r}")
+    code, _, err = run(GATE, s1, ME, {"body": "Törzs."})
+    check("approval gate L1: no operation key at all is taken for a send, as before",
+          code == 2 and "szint 1" in err, f"exit={code}")
+    code, _, err = run(COPY, s1, ME, {"action": "reply_all", "body": "Szia " + EM_DASH + " vége."})
+    check("copy gate: the `action` key is read like `operation` (exit 2)", code == 2, f"exit={code}")
+
     # --- 4. G5: envelope and anchor at level 2 --------------------------------
     print("G5")
     s2 = make_store(os.path.join(td, "g5"), 2)
@@ -343,6 +397,37 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     code, _, err = run(c_old, s1, *bash_send)
     check("email_extract without the classifier: a clean Bash send is still read and passes the copy gate",
           code == 0, f"exit={code} err={err[:160]!r}")
+
+    # --- 7. manage_email_op_outbound missing or broken (card 2f835ee4 r5, AC6) --
+    print("manage_email fail-closed (disposable copies)")
+    g_nf, c_nf, x_nf = copy_tree(os.path.join(td, "old-me"))
+    with open(x_nf, encoding="utf-8") as fh:
+        src = fh.read()
+    src3 = src.replace("def manage_email_op_outbound(", "def _gone_manage_email_op_outbound(")
+    with open(x_nf, "w", encoding="utf-8") as fh:
+        fh.write(src3)
+    check("old-module copy really lacks manage_email_op_outbound",
+          src3 != src and re.search(r"(?<!\w)def manage_email_op_outbound\(", src3) is None)
+    reply_all = {"operation": "reply_all", "body": "Kedves Ügyfelünk! Törzs."}
+    code, _, err = run(g_nf, s1, ME, reply_all)
+    check("no shared op function: approval gate L1 still denies reply_all (local pre-r5 set)",
+          code == 2 and "szint 1" in err, f"exit={code} err={err[:120]!r}")
+    code, _, err = run(g_nf, s1, ME, {"operation": "search", "query": "x"})
+    check("no shared op function: approval gate L1 still lets a search through", code == 0, f"exit={code}")
+    code, _, err = run(g_nf, s1, ME, {"operation": "re_ply_all", "body": "Törzs."})
+    check("no shared op function: approval gate falls back to the pre-r5 set (re_ply_all is not in it, exit 0)",
+          code == 0, f"exit={code}")
+    code, _, err = run(c_nf, s1, ME, {"operation": "reply_all", "body": "Szia " + EM_DASH + " vége."})
+    check("no shared op function: copy gate counts every non-empty operation outbound (exit 2)", code == 2, f"exit={code}")
+    code, _, err = run(c_nf, s1, ME, {"operation": "search", "query": "x"})
+    check("no shared op function: copy gate, even a search blocks (the stub is closed, exit 2)", code == 2, f"exit={code}")
+    code, _, err = run(c_nf, s1, ME, {"operation": "", "body": "x"})
+    check("no shared op function: copy gate, an empty operation keeps the old policy (exit 0)", code == 0, f"exit={code}")
+    # Control, so the line above is the stub and not the gate: the intact copy lets a search through.
+    code, _, err = run(c_ok, s1, ME, {"operation": "search", "query": "x"})
+    check("control: the intact copy lets a search through the copy gate (exit 0)", code == 0, f"exit={code}")
+    code, _, err = run(g_br, s1, ME, reply_all)
+    check("broken email_extract: approval gate L1 denies reply_all (exit 2)", code == 2, f"exit={code}")
 
 if failed:
     print(f"\n{len(failed)} FAILED: {failed}", file=sys.stderr)

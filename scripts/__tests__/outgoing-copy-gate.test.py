@@ -579,6 +579,99 @@ def main():
                             tool="mcp__google_workspace__draft_gmail_message")
         check("another server's body_format=html: audited raw, no harder-mail render (exit 0)", code, 0)
 
+    # --- manage_email operation family (card 2f835ee4 r5): AC2, AC3, AC4, AC5, AC6 ---
+    with tempfile.TemporaryDirectory() as tmp:
+        active = rules_path(tmp, "me.json")
+        write_rules(active, {"bad_name_patterns": [r"\bTeszt[- ]?Elek\b"], "correction": "x"})
+        EM = "—"
+        BAD_BODY = CLEAN_HU_OK + " " + EM + " mégis."
+
+        def me(op, key="operation", **kw):
+            return {"tool_name": "mcp__google-workspace__manage_email", "tool_input": {key: op, **kw}}
+
+        # AC3: every operation ANY gate took for outbound before the change (the pre-r5 copy-gate
+        # set, the JS gate's set, and the approval gate's "-" -> "_" alias set, in every case the
+        # old tests lowered) is still audited. The set is spelled out here, not imported.
+        PRE_R5 = ["send", "reply", "replyall", "forward", "reply_all"]
+        for base in PRE_R5:
+            for form in (base, base.upper(), base.title(), " " + base + " ", base.replace("_", "-")):
+                code, out, err = run_hook(me(form, body=BAD_BODY), rules_file=active)
+                check(f"AC3: pre-r5 outbound op {form!r} is still audited (exit 2)", code, 2)
+
+        # AC2: the six spellings of reply-all are audited; a clean body passes.
+        for form in ("reply_all", "REPLY_ALL", " reply_all ", "reply-all", "replyAll", "Reply_All"):
+            code, out, err = run_hook(me(form, body=BAD_BODY), rules_file=active)
+            check(f"AC2: reply-all spelled {form!r} with an em dash blocks (exit 2)", code, 2)
+            code, out, err = run_hook(me(form, body=CLEAN_HU_OK), rules_file=active)
+            check(f"AC2: reply-all spelled {form!r}, clean body passes (exit 0)", code, 0)
+        code, out, err = run_hook(me("reply_all", key="action", body=BAD_BODY), rules_file=active)
+        check("AC2: the `action` key is read like `operation` (exit 2)", code, 2)
+
+        # AC4: reads and mailbox changes stay untouched, and the match is exact, not a substring.
+        for form in ("search", "read", "get", "list", "trash", "label", "modify", "getAttachment",
+                     "get_reply_all_settings", "replyall_recipients", "reply_alls", "forwarding_rules", "", "reply all"):
+            code, out, err = run_hook(me(form, body=BAD_BODY), rules_file=active)
+            check(f"AC4: non-outbound op {form!r} is not audited (exit 0)", code, 0)
+
+        # AC5: the draft flag changes nothing here: a draft is audited like a send.
+        code, out, err = run_hook(me("reply_all", draft=True, body=BAD_BODY), rules_file=active)
+        check("AC5: reply_all with draft:true is audited (exit 2)", code, 2)
+        code, out, err = run_hook(me("reply_all", draft=True, body=CLEAN_HU_OK), rules_file=active)
+        check("AC5: reply_all with draft:true, clean body passes (exit 0)", code, 0)
+
+        # The bare-forward exemption reads the NORMALISED operation.
+        for form in ("forward", "FORWARD", "for-ward", " forward "):
+            code, out, err = run_hook(me(form, message_id="x"), rules_file=active)
+            check(f"bare forward spelled {form!r} passes (exit 0)", code, 0)
+            code, out, err = run_hook(me(form, message_id="x", body=BAD_BODY), rules_file=active)
+            check(f"forward spelled {form!r} with an em dash note blocks (exit 2)", code, 2)
+
+        # A non-string operation: the policy is the pre-r5 one (str() of it is not outbound) and
+        # nothing raises (exit 0 or 2 only, never a Python traceback exit 1).
+        for form in (["reply_all"], 123, None, {}, True):
+            code, out, err = run_hook(me(form, body=BAD_BODY), rules_file=active)
+            check_true(f"non-string op {form!r}: exit 0 or 2, no crash", code in (0, 2) and "Traceback" not in err,
+                       f"exit={code} err={err[:200]!r}")
+            check(f"non-string op {form!r}: not audited, as before (exit 0)", code, 0)
+
+        # AC6: fail-closed stub when email_extract.py does not load, on a disposable copy of the tree.
+        import shutil
+        root = os.path.dirname(os.path.dirname(HERE))
+        copy_root = os.path.join(tmp, "tree")
+        skip = shutil.ignore_patterns("__pycache__")
+        shutil.copytree(os.path.join(root, "scripts", "hooks"), os.path.join(copy_root, "scripts", "hooks"), ignore=skip)
+        shutil.copytree(os.path.join(root, "scripts", "lib"), os.path.join(copy_root, "scripts", "lib"), ignore=skip)
+        hook_copy = os.path.join(copy_root, "scripts", "hooks", "outgoing-copy-gate.py")
+        extract_copy = os.path.join(copy_root, "scripts", "hooks", "email_extract.py")
+
+        def run_copy(payload):
+            env = dict(os.environ, OUTGOING_COPY_GATE_RULES=active)
+            p = subprocess.run([sys.executable, hook_copy], input=json.dumps(payload),
+                               capture_output=True, text=True, env=env, timeout=20)
+            return p.returncode, p.stdout, p.stderr
+
+        code, out, err = run_copy(me("search", query="x"))
+        check("AC6 control: the intact copy lets a search through (exit 0)", code, 0)
+        code, out, err = run_copy(me("reply_all", body=BAD_BODY))
+        check("AC6 control: the intact copy audits reply_all (exit 2)", code, 2)
+
+        with open(extract_copy, "a", encoding="utf-8") as fh:
+            fh.write("\n" + "<" * 7 + " Updated upstream\n")
+        code, out, err = run_copy(me("reply_all", body=CLEAN_HU_OK))
+        check_true("AC6: email_extract does not load -> reply_all with a clean body blocks (exit 2, unreadable)",
+                   code == 2 and "megvizsgalni" in err, f"exit={code} err={err[:200]!r}")
+        code, out, err = run_copy(me("send", body=CLEAN_HU_OK))
+        check("AC6: email_extract does not load -> send blocks (exit 2)", code, 2)
+        code, out, err = run_copy(me("forward", message_id="x"))
+        check("AC6: email_extract does not load -> the bare-forward exemption cannot fire (exit 2)", code, 2)
+        code, out, err = run_copy(me("replyAll", body=CLEAN_HU_OK))
+        check("AC6: email_extract does not load -> any non-empty operation counts as outbound (exit 2)", code, 2)
+        code, out, err = run_copy(me("", body=CLEAN_HU_OK))
+        check("AC6: email_extract does not load -> an EMPTY operation keeps the old policy (exit 0)", code, 0)
+        code, out, err = run_copy(me(["reply_all"], body=CLEAN_HU_OK))
+        check_true("AC6: email_extract does not load -> a non-string operation never crashes (exit 0 or 2)",
+                   code in (0, 2) and "Traceback" not in err, f"exit={code} err={err[:200]!r}")
+
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)
         sys.exit(1)

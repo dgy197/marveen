@@ -993,6 +993,38 @@ def mail_tool_action(tool_name):
     return None
 
 
+# Outbound-shaped operations of the multiplexed manage_email tool, in NORMALISED
+# form (see manage_email_op_key): everything else it does (search, read, labels,
+# trash, getAttachment...) puts no text of ours on the wire. JS twin:
+# manageEmailOpOutbound in scripts/email-send-gate.mjs, bound by the manage_email_ops
+# block of mail-tool-action-cases.json (card 2f835ee4 r5).
+MANAGE_EMAIL_OUTBOUND_OPS = frozenset({"send", "reply", "replyall", "forward"})
+
+# Explicit ASCII whitespace, NOT str.strip(): Python's strip() and JS trim() take
+# different sets (NBSP, U+001C-1F, U+FEFF...), and the two twins must agree.
+_ASCII_WS = " \t\r\n\f\v"
+_ASCII_LOWER = {c: c + 32 for c in range(ord("A"), ord("Z") + 1)}
+_OP_SEPARATORS = {ord("-"): None, ord("_"): None}
+
+
+def manage_email_op_key(op) -> str:
+    """The normalised form of a manage_email `operation`: ASCII-whitespace strip,
+    ASCII lower-case, every "-" and "_" removed ("Reply-All" and "reply_all" both
+    give "replyall"). A non-ASCII character is never folded to ASCII (a Cyrillic
+    "a" stays a Cyrillic "a"). "" for anything that is not a string. Pure, never raises."""
+    if not isinstance(op, str):
+        return ""
+    return op.strip(_ASCII_WS).translate(_ASCII_LOWER).translate(_OP_SEPARATORS)
+
+
+def manage_email_op_outbound(op) -> bool:
+    """Is this manage_email `operation` an outbound one (send, reply, reply all,
+    forward)? EXACT match on the normalised key, so "reply_all_settings" or
+    "forwarding_rules" are not. The caller owns the policy for a missing or
+    non-string operation; here it is simply not outbound. Pure, never raises."""
+    return manage_email_op_key(op) in MANAGE_EMAIL_OUTBOUND_OPS
+
+
 def _stored_content_reason(tool_name: str, tool_input: dict):
     """Why a send by the action classifier cannot be anchored, or None (G5).
     A send of a stored draft (a draft word in the action, or a draft id in the

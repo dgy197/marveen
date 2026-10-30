@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared vectors for the mail-tool ACTION classifier (graph-forward card, spec G1-G7, Brainy 2958). Each case is a tool name plus a representative tool_input and the class every gate must give it, whatever the server name or version prefix: expected=send -> the main-agent approval gate is in scope (level logic runs), the copy gate audits the text, the sub-agent JS gate denies unconditionally; expected=draft -> the approval gate is NOT in scope, the copy gate audits, the JS gate ledger-checks the recipients; expected=nonsend -> all three pass the call untouched. today_spec=true marks the rows the spec says today's name patterns already recognise (the observed base verdicts are in golden-base.json, section g7_observed_base). extra=true rows are additions that are unambiguous under G1/G4 but are not in the spec list. get_send_as is an accepted false positive (any send token is fail-closed). Written by build_vectors.py; ASCII only. classifier_edges (added in N1b): name-only edge cases of the classifier, expected 'send', 'draft' or null, checked against both implementations (python mail_tool_action, JS mailToolAction).",
+  "_comment": "Shared vectors for the mail-tool ACTION classifier (graph-forward card, spec G1-G7, Brainy 2958). Each case is a tool name plus a representative tool_input and the class every gate must give it, whatever the server name or version prefix: expected=send -> the main-agent approval gate is in scope (level logic runs), the copy gate audits the text, the sub-agent JS gate denies unconditionally; expected=draft -> the approval gate is NOT in scope, the copy gate audits, the JS gate ledger-checks the recipients; expected=nonsend -> all three pass the call untouched. today_spec=true marks the rows the spec says today's name patterns already recognise (the observed base verdicts are in golden-base.json, section g7_observed_base). extra=true rows are additions that are unambiguous under G1/G4 but are not in the spec list. get_send_as is an accepted false positive (any send token is fail-closed). Written by build_vectors.py; ASCII only. classifier_edges (added in N1b): name-only edge cases of the classifier, expected 'send', 'draft' or null, checked against both implementations (python mail_tool_action, JS mailToolAction). manage_email_ops (card 2f835ee4 r5): operation strings of the multiplexed manage_email tool and whether the shared normalisation (email_extract.manage_email_op_outbound / manageEmailOpOutbound in email-send-gate.mjs) takes them for an outbound operation; both twins must agree on every row.",
   "cases": [
     {
       "name": "gmail-v2 v2_send_draft",
@@ -551,6 +551,183 @@
       "tool": 42,
       "expected": null,
       "note": "not a string"
+    }
+  ],
+  "manage_email_ops": [
+    {
+      "op": "reply_all",
+      "outbound": true,
+      "note": "reply-all, snake case (the spelling the approval gate already knew)"
+    },
+    {
+      "op": "REPLY_ALL",
+      "outbound": true,
+      "note": "upper case"
+    },
+    {
+      "op": " reply_all ",
+      "outbound": true,
+      "note": "ASCII spaces around"
+    },
+    {
+      "op": "reply-all",
+      "outbound": true,
+      "note": "hyphen"
+    },
+    {
+      "op": "replyAll",
+      "outbound": true,
+      "note": "camel case"
+    },
+    {
+      "op": "Reply_All",
+      "outbound": true,
+      "note": "mixed case"
+    },
+    {
+      "op": "send",
+      "outbound": true,
+      "note": "plain"
+    },
+    {
+      "op": "SEND",
+      "outbound": true,
+      "note": "upper case"
+    },
+    {
+      "op": "reply",
+      "outbound": true,
+      "note": "plain"
+    },
+    {
+      "op": "replyall",
+      "outbound": true,
+      "note": "no separator"
+    },
+    {
+      "op": "forward",
+      "outbound": true,
+      "note": "plain"
+    },
+    {
+      "op": "for-ward",
+      "outbound": true,
+      "note": "separator inside the word is dropped"
+    },
+    {
+      "op": "re_ply_all",
+      "outbound": true,
+      "note": "separators anywhere are dropped (fail-closed direction)"
+    },
+    {
+      "op": "\treply\n",
+      "outbound": true,
+      "note": "tab and newline are ASCII whitespace"
+    },
+    {
+      "op": "\u000b\fforward\r",
+      "outbound": true,
+      "note": "VT, FF, CR are ASCII whitespace"
+    },
+    {
+      "op": "search",
+      "outbound": false,
+      "note": "read"
+    },
+    {
+      "op": "read",
+      "outbound": false,
+      "note": "read"
+    },
+    {
+      "op": "get",
+      "outbound": false,
+      "note": "read"
+    },
+    {
+      "op": "list",
+      "outbound": false,
+      "note": "read"
+    },
+    {
+      "op": "trash",
+      "outbound": false,
+      "note": "mailbox change, nothing of ours on the wire"
+    },
+    {
+      "op": "label",
+      "outbound": false,
+      "note": "mailbox change"
+    },
+    {
+      "op": "modify",
+      "outbound": false,
+      "note": "mailbox change"
+    },
+    {
+      "op": "getAttachment",
+      "outbound": false,
+      "note": "read"
+    },
+    {
+      "op": "get_reply_all_settings",
+      "outbound": false,
+      "note": "contains reply_all but is a read: the match is exact"
+    },
+    {
+      "op": "replyall_recipients",
+      "outbound": false,
+      "note": "starts with replyall but is a read: the match is exact"
+    },
+    {
+      "op": "reply_alls",
+      "outbound": false,
+      "note": "not the operation, exact match"
+    },
+    {
+      "op": "forwarding_rules",
+      "outbound": false,
+      "note": "settings read, exact match"
+    },
+    {
+      "op": "reply all",
+      "outbound": false,
+      "note": "an inner space is not removed"
+    },
+    {
+      "op": "",
+      "outbound": false,
+      "note": "empty string: the callers own the missing-operation policy"
+    },
+    {
+      "op": "   ",
+      "outbound": false,
+      "note": "ASCII spaces only: empty after the strip"
+    },
+    {
+      "op": "reply_\u0430ll",
+      "outbound": false,
+      "note": "Cyrillic a: not folded to ASCII, not outbound on either side"
+    },
+    {
+      "op": "\u00a0reply_all",
+      "outbound": false,
+      "note": "NBSP in front: not ASCII whitespace, so not stripped on either side (py = js)"
+    },
+    {
+      "op": "reply_all\u00a0",
+      "outbound": false,
+      "note": "NBSP behind: same"
+    },
+    {
+      "op": "reply_all\ufeff",
+      "outbound": false,
+      "note": "BOM behind: JS trim() would take it, the shared strip does not (py = js)"
+    },
+    {
+      "op": "\uff52\uff45\uff50\uff4c\uff59",
+      "outbound": false,
+      "note": "full-width letters are not ASCII"
     }
   ]
 }

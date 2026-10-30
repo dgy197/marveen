@@ -2031,6 +2031,32 @@ except Exception:  # noqa: BLE001 -- deliberate fail-closed stub
             return None
         return "send"
 
+# card 2f835ee4 r5 (AC1, AC6): which manage_email operations are outbound, ONE
+# function shared with the approval gate and mirrored by the JS gate. A separate
+# guarded import, like mail_tool_action above, so a module that predates it only
+# loses this decision. The stub is fail-closed: with no shared rule every
+# non-empty operation string counts as outbound (a search blocks too, which is
+# deliberate and only ever happens when email_extract.py does not load), and
+# manage_email_op_key gives no normalised form, so the bare-forward exemption
+# below cannot fire either.
+try:
+    from email_extract import manage_email_op_key, manage_email_op_outbound  # noqa: E402
+except Exception:  # noqa: BLE001 -- deliberate fail-closed stub
+    def manage_email_op_key(op):
+        return ""
+
+    def manage_email_op_outbound(op):
+        return isinstance(op, str) and op != ""
+
+
+# The pre-r5 test (Python strip() takes Unicode whitespace that the shared ASCII
+# strip does not), OR-ed in so this gate is never narrower than it was (AC3).
+_PRE_R5_OUTBOUND_OPS = {"send", "reply", "replyall", "forward"}
+
+
+def _manage_email_outbound(op):
+    return manage_email_op_outbound(op) or op.strip().lower() in _PRE_R5_OUTBOUND_OPS
+
 
 # --- Telegram reply (GATETG816) ---------------------------------------------
 # The reply tool sends MarkdownV2, where every special char arrives escaped
@@ -2355,11 +2381,11 @@ def audit(text: str):
     return problems
 
 
-# Outbound-shaped operations of the multiplexed manage_email tool. Everything
-# else it does (search, read, labels, trash, getAttachment...) produces no text
-# of ours, so the gate must not touch it -- classifying those as sends is how
-# the sibling email gate once denied plain mailbox READS (MANAGEOP904).
-MANAGE_EMAIL_OUTBOUND_OPS = {"send", "reply", "replyall", "forward"}
+# Outbound-shaped operations of the multiplexed manage_email tool are decided by
+# email_extract.manage_email_op_outbound (imported above). Everything else it
+# does (search, read, labels, trash, getAttachment...) produces no text of ours,
+# so the gate must not touch it -- classifying those as sends is how the
+# sibling email gate once denied plain mailbox READS (MANAGEOP904).
 
 # Dedicated (non-multiplexed) outbound tools: the draft tools and the Gmail
 # connector's three separate send-shaped tools. Kept in step with the matcher
@@ -2620,13 +2646,13 @@ def main():
     # its name, only by the operation it was asked to perform.
     mail_kind = classify_mail_tool(tool)
     if mail_kind == "manage_email":
-        op = str(tool_input.get("operation") or tool_input.get("action") or "").strip().lower()
-        if op not in MANAGE_EMAIL_OUTBOUND_OPS:
+        op = str(tool_input.get("operation") or tool_input.get("action") or "")
+        if not _manage_email_outbound(op):
             sys.exit(0)  # search/read/labels/trash...: no outgoing text of ours
         # A bare forward carries someone else's text and an EMPTY note: there is
         # nothing of ours to audit, and the fail-closed "unreadable" branch below
         # would block it for no reason.
-        if op == "forward" and not str(tool_input.get("body") or "").strip():
+        if manage_email_op_key(op) == "forward" and not str(tool_input.get("body") or "").strip():
             sys.exit(0)
         text, unreadable = collect_mcp_body(tool_input), None
     elif mail_kind in _AUDITED_MAIL_KINDS:
