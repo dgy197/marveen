@@ -404,7 +404,9 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     if (runScriptsFlag.error) { json(res, { error: runScriptsFlag.error }, 400); return true }
     // N6: the update is a `git pull` (and possibly npm scripts) that can die half-way.
     const trail = codeExecAuditTrail(gated, 'connectors.github_repo.update', ctx.auth)
-    trail.start(name)
+    // The path name is caller text and is not yet known to exist (BE B4): the
+    // same plain-identifier cut as the clone URL, never the raw string.
+    trail.start(repoNameForAudit(name))
     let result: ReturnType<typeof updateGitHubRepo>
     try {
       result = updateGitHubRepo(name, runScriptsFlag.value === undefined ? {} : { runScripts: runScriptsFlag.value })

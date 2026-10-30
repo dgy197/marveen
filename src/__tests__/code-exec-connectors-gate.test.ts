@@ -409,6 +409,16 @@ describe('N6: start before the first write, outcome after (ok / failed)', () => 
     expect(notified.join('\n')).not.toMatch(/tok-secret|example\.test/)
   })
 
+  it('D: the update subject from the path is cut to a plain identifier (BE B4)', async () => {
+    setEnv('BEARER_CODE_EXEC_ADMIN_ENABLED=1')
+    vi.mocked(ds.updateGitHubRepo).mockReturnValueOnce({ ok: false, error: 'Repo not found' } as any)
+    const raw = 'evil`\n*name' + 'x'.repeat(200)
+    await call('PATCH', `/api/connectors/github-repos/${encodeURIComponent(raw)}`, { auth: TOKEN })
+    const subject = ('evilname' + 'x'.repeat(200)).slice(0, 60)
+    expect(rows()).toEqual([`connectors.github_repo.update ${subject}`, `connectors.github_repo.update ${subject} -> failed (Error)`])
+    expect(notified.join('\n')).not.toMatch(/`\n|\*name/)
+  })
+
   it('D: the start row is already there when the pull runs; a throw is recorded and still propagates', async () => {
     setEnv('BEARER_CODE_EXEC_ADMIN_ENABLED=1')
     let rowsAtPull = -1

@@ -293,7 +293,7 @@ describe('the audit start stands before the first write, the outcome after (N6, 
     const c = codeLines(file('web/routes/connectors.ts').text)
     const idx = (re: RegExp, from = 0) => c.findIndex((l, i) => i >= from && re.test(l))
     const head = idx(/githubRepoMatch && method === 'PATCH'/)
-    const start = idx(/trail\.start\(name\)/, head)
+    const start = idx(/trail\.start\(repoNameForAudit\(name\)\)/, head)
     const pull = idx(/updateGitHubRepo\(name/, head)
     expect(start).toBeGreaterThan(head)
     expect(pull).toBeGreaterThan(start)
