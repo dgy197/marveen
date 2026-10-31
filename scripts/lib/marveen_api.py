@@ -10,7 +10,9 @@ line carries no substitution, and every payload comes from a FILE, never from sh
 interpolation of the agent's text.
 
 The token never appears in an argv: it is read here and sent in a request header by urllib, so
-`ps` (which shows other users' argv on this host) cannot see it.
+`ps` (which shows other users' argv on this host) cannot see it. The same holds for the per-agent
+send key (card 0d7e2c04): when MARVEEN_AGENT_KEY_FILE names a valid key file it goes out as the
+X-Agent-Key header; otherwise the call is unsigned, as before.
 
 Entry point: scripts/marveen-api.sh (the allow-listed command), which runs this file. The
 `message` verb is handled there, by the existing scripts/agent-msg.sh.
@@ -128,6 +130,32 @@ def read_token():
         print(f'FAIL: the token file at {path} is empty; nothing was sent.', file=sys.stderr)
         sys.exit(2)
     return token
+
+
+KEY_LINE_RE = re.compile(r'^X-Agent-Key: ([A-Za-z0-9_.~-]{1,128})$')
+
+
+def read_agent_key():
+    """This agent's send key (card 0d7e2c04), or None to send unsigned as before.
+
+    The path comes ONLY from MARVEEN_AGENT_KEY_FILE, never from an argument or an agent name, so a
+    sender cannot pick another agent's file. The file must be a regular file holding exactly one
+    "X-Agent-Key: <key>" line; unset, missing, unreadable or malformed all give None, never an
+    error. The key is sent as a request header by urllib: it is in no argv."""
+    path = os.environ.get('MARVEEN_AGENT_KEY_FILE')
+    if not path:
+        return None
+    try:
+        if not os.path.isfile(path):
+            return None
+        with open(path, 'rb') as f:
+            raw = f.read(300).decode('ascii')
+    except (OSError, UnicodeDecodeError):
+        return None
+    if raw.endswith('\n'):
+        raw = raw[:-1]
+    m = KEY_LINE_RE.match(raw)  # '$' would also accept a trailing newline: the strip above is the only one
+    return m.group(1) if m and '\n' not in raw and '\r' not in raw else None
 
 
 def read_text(path):
@@ -308,6 +336,9 @@ def main(argv):
     data = json.dumps(body).encode('utf-8') if body is not None else None
     req = urllib.request.Request(api_base() + path, data=data, method=method)
     req.add_header('Authorization', f'Bearer {token}')
+    agent_key = read_agent_key()
+    if agent_key:
+        req.add_header('X-Agent-Key', agent_key)
     if data is not None:
         req.add_header('Content-Type', 'application/json')
     for k, v in headers.items():
@@ -324,6 +355,9 @@ def main(argv):
             return 3
         print(f'FAIL: the dashboard at {api_base()} could not be reached ({getattr(e, "reason", e)}).', file=sys.stderr)
         return 3
+    if agent_key:
+        # The body is the server's text: if it ever echoed the send key, it must not reach our output.
+        text = text.replace(agent_key, '[redacted]')
     if flags.get('search_header'):
         # The search answers leniently; the label travels only in this header (#1374). Its ABSENCE
         # is printed too: a missing header is a request that failed, not an empty result.
