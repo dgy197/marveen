@@ -59,6 +59,14 @@ export const REDACT_PATHS = [
   'req.headers.Authorization',
   'headers.authorization',
   'headers.Authorization',
+  // Card 0d7e2c04: the per-agent send key header. Node lowercases incoming header names, but a hand-built object may
+  // carry any spelling, so the common case variants are listed (pino paths are case-sensitive).
+  'req.headers["x-agent-key"]',
+  'req.headers["X-Agent-Key"]',
+  'req.headers["X-AGENT-KEY"]',
+  'headers["x-agent-key"]',
+  'headers["X-Agent-Key"]',
+  'headers["X-AGENT-KEY"]',
   'authorization',
   'token',
   'apiKey',

@@ -5,7 +5,7 @@ import {
   markMessageDone, closeOpenMessage, getAgentMessage,
   closeOtelSpan,
   getPendingBacklogByAgent,
-  getSenderAuthReport,
+  getSenderAuthReport, toServedMessage,
   countNewerMessagesForRows,
   getHeartbeatKanbanLive,
   COMPLETION_REPORT_PREFIX,
@@ -224,8 +224,9 @@ export function attachFreshness(messages: AgentMessage[]): AgentMessageWithFresh
   const nowMs = Date.now()
   // One query per distinct (from, to) partition, not one per row.
   const newer = countNewerMessagesForRows(messages)
+  // Both JSON readers of a message row (list, GET /:id) end here, so this is where sender_auth leaves the row (B1).
   return messages.map((m) => ({
-    ...m,
+    ...toServedMessage(m),
     freshness: buildFreshnessInfo(nowMs - m.created_at * 1000, newer.get(m.id) ?? 0),
   }))
 }
@@ -540,7 +541,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
         ? { priority: parsedPriority.level === 'high' ? 1 as const : 0 as const, downgraded: false }
         : decidePriority(parsedPriority.level, from.trim(), storedTo, Math.floor(Date.now() / 1000))
     // Card 0d7e2c04 (N3, shadow): record how the sender authenticated. It runs after EVERY guard above, so a
-    // refused request does no key work and keeps its answer; it never refuses, and it is not part of any response.
+    // refused request does no key work and keeps its answer; it never refuses. It is stored, never served: createAgentMessage's
+    // returned object has no such field, and every other route that returns a row goes through toServedMessage (B1).
     // 'off' skips it (null = the column stays empty, as before the card).
     const senderAuth = MESSAGE_SENDER_AUTH === 'off' ? null : classifySenderAuth(req, ctx.auth, from.trim(), storedTo)
     const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, { urgent: urgent === true, priority: decided.priority, senderAuth })
@@ -548,8 +550,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       markMessageDone(msg.id, VOICE_MAILBOX_RESULT)
       logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Voice-channel answer stored in the mailbox (no session delivery)')
       // sender_auth is stored, not served: the answer keeps the shape it had before the column existed.
-      const { sender_auth: _senderAuth, ...mailboxRow } = getAgentMessage(msg.id) ?? msg
-      json(res, { ...mailboxRow, mailbox: true })
+      json(res, { ...toServedMessage(getAgentMessage(msg.id) ?? msg), mailbox: true })
       return true
     }
     // Backpressure, returned WITH the id rather than behind a second call:
@@ -645,7 +646,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   // Sidebar threads: one row per conversation peer (system agents excluded),
   // each with its count + most-recent message, recency computed per-peer.
   if (path === '/api/messages/threads' && method === 'GET') {
-    json(res, getAgentConversationThreads())
+    // lastMessage is a full row: it goes through the same serializer as every other served row (B1).
+    json(res, getAgentConversationThreads().map((t) => ({ ...t, lastMessage: t.lastMessage ? toServedMessage(t.lastMessage) : null })))
     return true
   }
 

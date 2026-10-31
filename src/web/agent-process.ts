@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, openSync, closeSync, fstatSync, fchmodSync, writeSync, constants as fsConstants } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
@@ -349,14 +350,69 @@ export function agentKeyFilePath(agentId: string, dir: string = AGENT_KEYS_DIR):
   return join(dir, agentId)
 }
 
+/**
+ * Residual Q6 hardening (card 0d7e2c04 r1): the keys dir must be a REAL directory (not a symlink), owned by this uid,
+ * mode 0700. Checked with lstat on the path and fstat on an O_NOFOLLOW|O_DIRECTORY fd, which is also the handle the
+ * 0700 tightening goes through (a pre-existing looser dir owned by us is tightened, as before). Throws on any mismatch;
+ * the shadow-phase callers treat a throw as "start unsigned". With create=false an absent dir returns false.
+ */
+function verifyKeysDir(dir: string, create: boolean): boolean {
+  let st: ReturnType<typeof lstatSync> | null = null
+  try {
+    st = lstatSync(dir)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
+  if (st === null) {
+    if (!create) return false
+    mkdirSync(dir, { recursive: true, mode: AGENT_KEYS_DIR_MODE })
+  } else if (st.isSymbolicLink() || !st.isDirectory()) {
+    throw new Error('agent key dir is a symlink or not a directory')
+  }
+  const fd = openSync(dir, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW)
+  try {
+    const f = fstatSync(fd)
+    if (!f.isDirectory()) throw new Error('agent key dir is not a directory')
+    if (typeof process.getuid === 'function' && f.uid !== process.getuid()) throw new Error('agent key dir is not owned by the current user')
+    fchmodSync(fd, AGENT_KEYS_DIR_MODE) // mkdir's mode only applies on creation: tighten a pre-existing looser dir
+    if ((fstatSync(fd).mode & 0o777) !== AGENT_KEYS_DIR_MODE) throw new Error('agent key dir mode is not 0700')
+  } finally {
+    closeSync(fd)
+  }
+  return true
+}
+
+/** Write a key file inside a verified dir: O_EXCL|O_NOFOLLOW temp (0600), then rename. A symlink or non-file at the target refuses. */
+function writeKeyFileSafely(path: string, dir: string, data: string): void {
+  try {
+    const t = lstatSync(path)
+    if (t.isSymbolicLink() || !t.isFile()) throw new Error('agent key file is a symlink or not a regular file')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
+  const tmp = join(dir, `.tmp.${process.pid}.${Date.now()}.${randomBytes(6).toString('hex')}`)
+  const fd = openSync(tmp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, AGENT_KEY_FILE_MODE)
+  try {
+    try {
+      fchmodSync(fd, AGENT_KEY_FILE_MODE) // exact mode regardless of the umask
+      writeSync(fd, data)
+    } finally {
+      closeSync(fd)
+    }
+    renameSync(tmp, path)
+  } catch (err) {
+    try { unlinkSync(tmp) } catch { /* already gone */ }
+    throw err
+  }
+}
+
 /** Mint a fresh key for the agent and write it atomically (0600, dir 0700). Returns the file PATH only. */
 export function provisionAgentSendKey(agentId: string, dir: string = AGENT_KEYS_DIR): string {
   const path = agentKeyFilePath(agentId, dir) // validates before anything is touched
-  mkdirSync(dir, { recursive: true, mode: AGENT_KEYS_DIR_MODE })
-  chmodSync(dir, AGENT_KEYS_DIR_MODE) // mkdir's mode only applies on creation: tighten a pre-existing looser dir
+  verifyKeysDir(dir, true) // refuses a symlinked / foreign dir BEFORE any key is minted or written
   const raw = mintAgentSendKey(agentId)
   try {
-    atomicWriteFileSync(path, `X-Agent-Key: ${raw}\n`, { mode: AGENT_KEY_FILE_MODE })
+    writeKeyFileSafely(path, dir, `X-Agent-Key: ${raw}\n`)
   } catch (err) {
     // No file means nobody holds this key: do not leave a live hash behind.
     try { revokeAgentSendKey(agentId) } catch { /* best-effort */ }
@@ -374,7 +430,8 @@ export function clearAgentSendKey(agentId: string, dir: string = AGENT_KEYS_DIR)
     return
   }
   try {
-    unlinkSync(path)
+    // A symlinked / foreign dir: never unlink through it; the revoke below still runs.
+    if (verifyKeysDir(dir, false)) unlinkSync(path)
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') logger.warn({ agentId }, 'agent send-key file cleanup failed')
   }
