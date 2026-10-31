@@ -35,7 +35,11 @@ Returns `{mode, days, rows:[{from, sender_auth, count, last_seen}]}`. Counts and
 2. Mark: after 7 clean days and Gyuri's GO, unverified `from=<agent>` rows are delivered with an untrusted mark. Then another 7 days.
 3. Enforce: after those 7 days and a separate GO, unverified agent senders get a 403.
 
-Open decisions (Gyuri, not decided): K2 - in enforce, what happens to `from=OWNER_NAME` and `SYSTEM_SENDER_IDS` sent with the shared token (403, session/device only, or their own key). K5 - OS-user isolation (separate card) to close the gap below.
+Decided (Gyuri, 2026-10-31, K2 = A): in enforce, a message with `from=OWNER_NAME` or another `SYSTEM_SENDER_IDS` value that arrives with the shared token is delivered but marked as an unverified sender, and it never triggers an action. `from=system` from outside stays refused with 403, as today.
+
+Open decision (Gyuri): K5 - OS-user isolation (separate card) to close the gap below.
+
+Before enforce (review residual, 0d7e2c04 BE round 2): the key directory check and the write are not pinned to one directory handle (no openat), so a same-uid process can swap the directory between them, and the parent `store/` directory is not checked; the sender scripts read the key file without the same hardening.
 
 ## Rollback
 
