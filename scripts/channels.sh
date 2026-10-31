@@ -1543,7 +1543,10 @@ STATE_DIR_ENV="export ${STATE_ENV_VAR}=$(sh_single_quote "$MAIN_CHAN_DIR") && "
 AGENT_KEY_ENV=""
 _ak_id="${MAIN_AGENT_ID:-marveen}"
 if printf '%s' "$_ak_id" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$'; then
-  AGENT_KEY_ENV="export MARVEEN_AGENT_KEY_FILE=$(sh_single_quote "$INSTALL_DIR/store/.agent-keys/$_ak_id") && "
+  # Card 3f6500e6: only when the file exists. With MESSAGE_SENDER_AUTH=off the dashboard writes none, so nothing is exported.
+  if [ -f "$INSTALL_DIR/store/.agent-keys/$_ak_id" ] && [ ! -L "$INSTALL_DIR/store/.agent-keys/$_ak_id" ]; then
+    AGENT_KEY_ENV="export MARVEEN_AGENT_KEY_FILE=$(sh_single_quote "$INSTALL_DIR/store/.agent-keys/$_ak_id") && "
+  fi
 fi
 
 # P1 FIX: put the Claude auth token into the tmux SERVER global env BEFORE
