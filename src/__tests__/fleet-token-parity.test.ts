@@ -103,7 +103,53 @@ describe('fleet token parity: no export site bypasses the shared rule', () => {
   const src = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
   const exportLiteral = 'export CLAUDE_CODE_OAUTH_TOKEN="$(cat \'${FLEET_OAUTH_TOKEN_PATH}\')"'
 
-  it('agent-process.ts: every fleet-token export is guarded by launchExportsFleetToken', () => {
+  // The launcher keeps the source shape the security pins assert
+  // (agent-oauth-token-file.test.ts, isolated-channel-config.test.ts): the fleet
+  // export sits behind `needsFleetOauth`. So instead of calling the helper, this
+  // test EVALUATES the launcher's real predicates from the source and requires
+  // them to equal launchExportsFleetToken for every flag combination.
+  function extract(re: RegExp): string {
+    const m = src.match(re)
+    expect(m, `launcher source lacks ${re}`).not.toBeNull()
+    return (m as RegExpMatchArray)[1]
+  }
+  const isClaudeExpr = extract(/\n\s*const isClaude = (!isCustom && .+)\n/)
+  const isOwnTeamExpr = extract(/\n\s*const isOwnTeam = (.+)\n/)
+  const needsExpr = extract(/\n\s*const needsFleetOauth = (.+)\n/)
+  const site1Cond = extract(/\} else if \((!claudeConfigDir && hasFleetOauthToken\(\) && needsFleetOauth)\) \{/)
+
+  function launcherDecision(p: { isCustom: boolean; model: string; authMode: string; configured: boolean; own: boolean; present: boolean }) {
+    const body = `
+      const isClaude = ${isClaudeExpr}
+      const isOwnTeam = ${isOwnTeamExpr}
+      const needsFleetOauth = ${needsExpr}
+      const claudeConfigDir = configured ? '/d' : null
+      const hasFleetOauthToken = () => present
+      // Site 1 (shared-config pre-export): reached only when no own token file decided.
+      const site1 = own ? false : (${site1Cond})
+      // Site 2 (isolated branch): only reached when !claudeConfigDir, no own file, token present.
+      const site2 = (!configured && !own && present) ? needsFleetOauth : false
+      return { site1, site2 }`
+    return new Function('isCustom', 'model', 'authMode', 'configured', 'own', 'present', body)(
+      p.isCustom, p.model, p.authMode, p.configured, p.own, p.present,
+    ) as { site1: boolean; site2: boolean }
+  }
+
+  it('both launcher export predicates equal launchExportsFleetToken for every flag combination', () => {
+    let n = 0
+    for (const isCustom of [false, true]) for (const own of [false, true]) for (const configured of [false, true])
+      for (const present of [false, true]) for (const model of ['claude-opus-5', 'gpt-x']) for (const authMode of ['shared', 'api', 'own_team']) {
+        const rule = launchExportsFleetToken({ isClaudeModel: model.startsWith('claude-'), customProvider: isCustom, authMode, configuredConfigDir: configured, ownTokenFile: own, fleetTokenPresent: present })
+        const got = launcherDecision({ isCustom, model, authMode, configured, own, present })
+        expect(got.site1, `site1 ${JSON.stringify({ isCustom, model, authMode, configured, own, present })}`).toBe(rule)
+        // Site 2 is only reachable with the preconditions above; there it must equal the rule.
+        if (!configured && !own && present) expect(got.site2).toBe(rule)
+        n++
+      }
+    expect(n).toBe(96)
+  })
+
+  it('agent-process.ts: exactly two fleet-token exports, each in its pinned gate (own file first, needsFleetOauth)', () => {
     const idxs: number[] = []
     let from = 0
     for (;;) {
@@ -113,10 +159,8 @@ describe('fleet token parity: no export site bypasses the shared rule', () => {
       from = i + 1
     }
     expect(idxs.length).toBe(2)
-    for (const i of idxs) {
-      const before = src.slice(Math.max(0, i - 700), i)
-      expect(before).toContain('launchExportsFleetToken(')
-    }
+    expect(src.slice(Math.max(0, idxs[0] - 400), idxs[0])).toContain('!claudeConfigDir && hasFleetOauthToken() && needsFleetOauth')
+    expect(src.slice(Math.max(0, idxs[1] - 400), idxs[1])).toContain('if (needsFleetOauth) {')
   })
 
   it('the launch string keeps $(cat file), never a token value (the value is never JS-side)', () => {
