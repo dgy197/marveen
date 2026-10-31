@@ -3318,6 +3318,8 @@ const MSGCLOSE_BLOCK_RE = new RegExp(
   `${MSGCLOSE_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MSGCLOSE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
+const closeHelper = join(PROJECT_ROOT, 'scripts', 'agent-msg-close.sh')
+
 export function buildMessageCloseBody(strict = false): string {
   return [
     '## Üzenet lezárása: bejövő riportnál `notify:false`',
@@ -3338,13 +3340,19 @@ export function buildMessageCloseBody(strict = false): string {
       'Delegált feladatnál a `--no-notify` helyett `--result-file <fájl>` kell (a fájlba előbb a Write',
       'eszközzel írd, mit csináltál), hibánál `--failed`. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',
     ] : [
+      // Card f137f980 (Brainy 6367): the close goes through the signed helper, not a raw curl PUT.
       '```bash',
-      `curl -s -X PUT ${dashboardOrigin}/api/messages/<id> -H "Content-Type: application/json" \\`,
-      `  -H "Authorization: Bearer $(cat ${tokenPath})" --data-binary '{"status":"done","notify":false}'`,
+      `bash ${closeHelper} <id> done --notify false`,
       '```',
-      'A `notify` csak valódi JSON boolean lehet: a `"false"` string 400-at kap, és ilyenkor a lezárás sem',
-      'történik meg. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',
+      'Delegált feladatnál a `--notify false` helyett `--result-file <fájl>` kell (a fájlba előbb a Write',
+      'eszközzel írd, mit csináltál; `-` a stdin), hibánál `failed` áll a `done` helyett. A `--notify` csak',
+      '`true` vagy `false` lehet (a segéd valódi JSON booleant küld). A `system` feladójú üzenet lezárása',
+      'eleve nem küld nyugtát. Nyers `curl -X PUT` lezárást ne használj: aláíratlan, és a hibát elnyeli.',
+      'A segéd hibánál (nem 200, vagy nem `{"ok":true}`) hangosan `FAIL`-t ír, 5xx-nél újrapróbál.',
     ]),
+    // Card f137f980: the dashboard records WHO closed a row from the per-agent send key (closer_auth).
+    'A lezárás aláírt: a szerver a küldő-kulcs (`X-Agent-Key`) alapján rögzíti, ki zárta le az üzenetet. A',
+    'kulcsot a segéd olvassa a `MARVEEN_AGENT_KEY_FILE` fájlból; te nem írod ki és nem másolod át.',
     'Egy MÁR lezárt (done/failed) üzenet újabb lezárása 409-et ad (`Message already closed`): az első',
     'lezárás érvényes, semmi nem változott, nyugta nem ment. Ez nem hiba, nem kell ismételni vagy jelenteni.',
   ].join('\n')
