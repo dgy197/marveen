@@ -73,6 +73,7 @@ vi.mock('../web/vault.js', () => ({
   deleteSecret: vi.fn(),
   getSecret: vi.fn(() => null),
   getSecretsForEnv: vi.fn(() => ({})),
+  VaultEntryLockedError: class VaultEntryLockedError extends Error {},
 }))
 
 vi.mock('../web/dashboard-settings.js', async (importOriginal) => ({

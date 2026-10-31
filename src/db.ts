@@ -8111,6 +8111,19 @@ export interface ApprovalTelegramResult {
   approval?: Approval
 }
 
+// The ONE writer of the owner trace (N2b BE-3b MED-1: only db.ts names the table,
+// and it has a single INSERT). Both button decisions call it inside their own
+// decision transaction: the main bot's (botId null) and the permission bot's.
+function writeOwnerResolutionTrace(
+  approvalId: string, ownerId: string, status: 'approved' | 'rejected',
+  nonceHash: string, contentHash: string | null, resolvedAt: number | null, botId: string | null,
+): void {
+  db.prepare(`
+    INSERT INTO approval_owner_resolutions (approval_id, owner_id, status, nonce_hash, content_hash, resolved_at, bot_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(approvalId, ownerId, status, nonceHash, contentHash, resolvedAt, botId)
+}
+
 // The owner's decision from a Telegram button (345f34e2). The single
 // conditional UPDATE is the whole decision: the row must still be pending, an
 // email_send with a content anchor, inside its deadline (checked here, the
@@ -8177,10 +8190,7 @@ export function resolveApprovalFromTelegram(params: {
     ).changes
     const row = getApproval(id)
     if (changes === 1 && row) {
-      db.prepare(`
-        INSERT INTO approval_owner_resolutions (approval_id, owner_id, status, nonce_hash, content_hash, resolved_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(id, ownerId, status, presented, row.content_hash, row.resolved_at)
+      writeOwnerResolutionTrace(id, ownerId, status, presented, row.content_hash, row.resolved_at, null)
       return { ok: true, approval: row }
     }
     let reason: ApprovalTelegramRefusal
@@ -8404,10 +8414,7 @@ export function resolveApprovalFromPermissionBot(params: {
     `).run(decision, now, `owner:telegram:${ownerId}`, id, pre.category, pre.content_hash, pre.action_payload, now, messageId, presented).changes
     if (changes !== 1) return refuse('bad_nonce')
     const row = getApproval(id)
-    db.prepare(`
-      INSERT INTO approval_owner_resolutions (approval_id, owner_id, status, nonce_hash, content_hash, resolved_at, bot_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, ownerId, decision, presented, pre.content_hash, now, botId)
+    writeOwnerResolutionTrace(id, ownerId, decision, presented, pre.content_hash, now, botId)
     return { ok: true, approval: row }
   }).immediate()
 }

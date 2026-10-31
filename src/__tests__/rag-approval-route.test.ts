@@ -329,7 +329,11 @@ describe('POST /api/approvals/:id/consume-run', () => {
 
   it('a PATCH-approved row is 409 not_owner_verified (the dashboard cannot approve a run)', async () => {
     const p = await postD()
-    const patched = await route('PATCH', `/api/approvals/${p.id}`, { status: 'approved', resolved_by: 'dashboard' })
+    // Main's rule (OWNER_ONLY): approving over PATCH takes the owner's session; a caller without one is 403 and the row stays pending.
+    const refused = await route('PATCH', `/api/approvals/${p.id}`, { status: 'approved', resolved_by: 'dashboard' })
+    expect(refused.status).toBe(403)
+    expect(status(p.id)).toBe('pending')
+    const patched = await route('PATCH', `/api/approvals/${p.id}`, { status: 'approved', resolved_by: 'dashboard' }, { kind: 'session' })
     expect(patched.status).toBe(200)
     expect(status(p.id)).toBe('approved')
     expect(await consume(p.id)).toMatchObject({ status: 409, body: { ok: false, reason: 'not_owner_verified' } })

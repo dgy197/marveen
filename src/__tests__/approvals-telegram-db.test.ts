@@ -403,8 +403,14 @@ describe('isOwnerVerified: only the owner\'s button press leaves the trace', () 
 
   it('false after a legacy resolve, whatever attribution it claims: no trace, no verification', () => {
     pending('o3')
-    expect(resolveApproval('o3', 'approved', `owner:telegram:${OWNER}`)).toBe(true)
-    expect(getApproval('o3')).toMatchObject({ status: 'approved', resolved_by: `owner:telegram:${OWNER}` })
+    // Main's rule (fec6335f N2b): the owner:telegram: text is refused to a legacy resolve (the row stays pending) ...
+    expect(resolveApproval('o3', 'approved', `owner:telegram:${OWNER}`)).toBe(false)
+    expect(getApproval('o3')).toMatchObject({ status: 'pending', resolved_by: null })
+    expect(traceOf('o3')).toBeUndefined()
+    expect(isOwnerVerified('o3')).toBe(false)
+    // ... and a plain legacy resolve leaves no trace either.
+    expect(resolveApproval('o3', 'approved', 'dashboard')).toBe(true)
+    expect(getApproval('o3')).toMatchObject({ status: 'approved', resolved_by: 'dashboard' })
     expect(traceOf('o3')).toBeUndefined()
     expect(isOwnerVerified('o3')).toBe(false)
     expect(isOwnerVerified('o3', OWNER)).toBe(false)

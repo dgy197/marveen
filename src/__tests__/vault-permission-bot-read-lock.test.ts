@@ -15,6 +15,23 @@ import type { RouteContext } from '../web/routes/types.js'
 
 const h = vi.hoisted(() => ({ root: '', reads: [] as string[] }))
 
+// Main's code-exec gate (card 89df7a00) refuses the shared Bearer on the binding writers
+// unless the install's .env opens BEARER_CODE_EXEC_ADMIN_ENABLED. This suite tests the
+// read lock BEHIND that gate, so the switch is open in a throw-away env dir (set before
+// env.ts loads); the lock must hold even with the Bearer admitted.
+await vi.hoisted(async () => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const envDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-readlock-env-'))
+  fs.writeFileSync(path.join(envDir, '.env'), 'BEARER_CODE_EXEC_ADMIN_ENABLED=1\n')
+  process.env.CLAUDECLAW_ENV_DIR = envDir
+})
+vi.mock('../notify.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../notify.js')>()),
+  notifySecurityEvent: async () => undefined,
+}))
+
 vi.mock('../config.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../config.js')>()
   const { mkdtempSync, mkdirSync } = await import('node:fs')

@@ -22,10 +22,15 @@ vi.mock('../config.js', async (importOriginal) => {
   mkdirSync(join(h.root, 'store'), { recursive: true })
   return { ...orig, PROJECT_ROOT: h.root, STORE_DIR: join(h.root, 'store') }
 })
-vi.mock('../web/claude-credentials-guard.js', () => ({
-  liveProbeAuth: async () => { h.probes++; return 'ok' },
-  stampTokenVerified: () => undefined,
-}))
+vi.mock('../web/claude-credentials-guard.js', async (importOriginal) => {
+  // Keep the real shape check (looksLikeSetupToken): the route validates the whole value with it.
+  const orig = await importOriginal<typeof import('../web/claude-credentials-guard.js')>()
+  return {
+    ...orig,
+    liveProbeAuth: async () => { h.probes++; return 'ok' },
+    stampTokenVerified: () => undefined,
+  }
+})
 vi.mock('../web/channel-monitor.js', () => ({
   hardRestartMarveenChannels: () => ({ ok: true }),
   mainChannelsSessionExists: () => false,
@@ -41,6 +46,9 @@ const { tryHandleOnboarding, setEnvKey } =await import('../web/routes/onboarding
 
 const ENV = () => join(h.root, '.env')
 const BASE_ENV = 'FOO=bar\nPERMISSION_BOT_ID=7000000002\n'
+// Well-formed fake values (the route checks the whole value's shape: setup-token / API key).
+const GOOD_TOKEN = 'sk-ant-oat01-' + 'A'.repeat(48)
+const GOOD_KEY = 'sk-ant-api03-' + 'B'.repeat(24)
 
 function fakeReq(body: unknown) {
   const bodyStr = JSON.stringify(body)
@@ -99,32 +107,33 @@ describe('setEnvKey', () => {
 describe('POST /api/onboarding/claude-auth: no .env line injection', () => {
   it('a setup-token with an embedded newline -> 400, no probe, .env unchanged', async () => {
     for (const sep of ['\n', '\r\n', '\r', '\0']) {
-      const out = await claudeAuth({ token: `sk-ant-oat-abc${sep}PERMISSION_BOT_ID=7000000099` })
+      const out = await claudeAuth({ token: `${GOOD_TOKEN}${sep}PERMISSION_BOT_ID=7000000099` })
       expect(out.status).toBe(400)
-      expect(out.body.reason).toBe('bad-chars')
+      // main's whole-value shape check (053f4e66) refuses it before the env-writer's bad-chars guard
+      expect(out.body.reason).toBe('bad-token')
     }
     expect(h.probes).toBe(0)
     expect(readFileSync(ENV(), 'utf-8')).toBe(BASE_ENV)
   })
 
   it('an API key with an embedded newline -> 400, no probe, .env unchanged', async () => {
-    const out = await claudeAuth({ apiKey: 'sk-ant-key\nPERMISSION_BOT_ID=7000000099' })
+    const out = await claudeAuth({ apiKey: `${GOOD_KEY}\nPERMISSION_BOT_ID=7000000099` })
     expect(out.status).toBe(400)
     expect(h.probes).toBe(0)
     expect(readFileSync(ENV(), 'utf-8')).toBe(BASE_ENV)
   })
 
   it('a normal token still probes and is written as one line; other lines are untouched', async () => {
-    const out = await claudeAuth({ token: 'sk-ant-oat-normal-token' })
+    const out = await claudeAuth({ token: GOOD_TOKEN })
     expect(out.status).toBe(200)
     expect(out.body.ok).toBe(true)
     expect(h.probes).toBe(1)
-    expect(readFileSync(ENV(), 'utf-8')).toBe(`${BASE_ENV}CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat-normal-token\n`)
+    expect(readFileSync(ENV(), 'utf-8')).toBe(`${BASE_ENV}CLAUDE_CODE_OAUTH_TOKEN=${GOOD_TOKEN}\n`)
   })
 
   it('a normal API key still works', async () => {
-    const out = await claudeAuth({ apiKey: 'sk-ant-normal-key' })
+    const out = await claudeAuth({ apiKey: GOOD_KEY })
     expect(out.status).toBe(200)
-    expect(readFileSync(ENV(), 'utf-8')).toBe(`${BASE_ENV}ANTHROPIC_API_KEY=sk-ant-normal-key\n`)
+    expect(readFileSync(ENV(), 'utf-8')).toBe(`${BASE_ENV}ANTHROPIC_API_KEY=${GOOD_KEY}\n`)
   })
 })

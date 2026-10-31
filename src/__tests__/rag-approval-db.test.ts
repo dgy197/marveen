@@ -78,7 +78,10 @@ describe('consumeOwnerRunApproval', () => {
 
   it('a PATCH-approved row is never owner-verified (not_owner_verified)', () => {
     const f = pendingPermission(win)
-    expect(resolveApproval(f.id, 'approved', 'owner:telegram:' + OWNER)).toBe(true) // the same text the button writes
+    // Main's rule (fec6335f N2b): the text the button writes is refused to every other writer.
+    expect(resolveApproval(f.id, 'approved', 'owner:telegram:' + OWNER)).toBe(false)
+    expect(getApproval(f.id)?.status).toBe('pending')
+    expect(resolveApproval(f.id, 'approved', 'dashboard')).toBe(true)
     expect(getApproval(f.id)?.status).toBe('approved')
     expect(isOwnerVerified(f.id, OWNER, BOT)).toBe(false)
     expect(consume(f)).toMatchObject({ ok: false, reason: 'not_owner_verified' })

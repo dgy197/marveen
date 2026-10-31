@@ -27,6 +27,7 @@ vi.mock('../web/vault.js', () => ({
   deleteSecret: vi.fn(),
   getSecret: vi.fn(() => null),
   getSecretsForEnv: vi.fn(() => ({})),
+  VaultEntryLockedError: class VaultEntryLockedError extends Error {},
 }))
 
 writeFileSync(join(tmpRoot, 'mcp-catalog.json'), JSON.stringify([
