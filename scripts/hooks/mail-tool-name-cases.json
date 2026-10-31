@@ -184,8 +184,7 @@
     "WebFetch",
     "mcp__google-drive__createGoogleDoc",
     "mcp__ms365__send-chat-message",
-    "mcp__ms365__reply-to-channel-message",
-    "mcp__ms365__list-mail-messages"
+    "mcp__ms365__reply-to-channel-message"
   ],
   "cases": [
     { "name": "mcp__plugin_telegram_telegram__reply", "expected": null },

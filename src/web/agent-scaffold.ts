@@ -1070,6 +1070,26 @@ const NON_MAIL_SERVERS = `(?!${CI('github')}[-_])`
   + ['telegram', 'discord', 'slack'].map((p) => `(?!${CI('plugin')}_${CI(p)}[-_])`).join('')
 const verbAlt = (w: string) => `${CI('mcp')}__${NON_MAIL_SERVERS}.*__.*${CI(w)}.*`
 const VERB_ALTERNATIVES = ['reply', 'fwd', 'forward', 'send', 'draft'].map(verbAlt)
+// The SERVER-NAME alternatives (card 3d6e5181 P1): every tool of a mail-like
+// MCP server reaches the mail gates, whatever the tool is called. The verb
+// alternatives above only see names that carry reply / fwd / forward / send /
+// draft; a rule or filter tool (create_rule, set_forwarding,
+// update_mailbox_settings, ...) on outlook / ms365 / imap / ... fired no gate at
+// all (measured: 24 of 28 such names missed on all three surfaces). The word is
+// matched inside the server segment only (no '__' between `mcp__` and the word),
+// with the same explicit non-mail exclusion list as the verb alternatives
+// (github, slack, the ms365 chat / channel / activity tools, the channel
+// plugins), so the Telegram / Discord / Slack channel tools stay out. `graph`
+// is NOT a word on purpose (it would route memory-graph); the Microsoft Graph
+// MCP is reached through ms365 / msgraph / microsoft. Over-routing is harmless:
+// the hook decides, and a non-mail tool on a matched server is allowed. One
+// flat alternative per word, no inner '|' (the drift test splits on it).
+const MAIL_SERVER_WORDS = [
+  'mail', 'outlook', 'exchange', 'ms365', 'm365', 'office365', 'o365',
+  'imap', 'smtp', 'jmap', 'sieve', 'proton', 'msgraph', 'microsoft',
+]
+const mailServerAlt = (w: string) => `${CI('mcp')}__${NON_MAIL_SERVERS}(?:(?!__).)*${CI(w)}(?:(?!__).)*__.*`
+export const MAIL_SERVER_ALTERNATIVES = MAIL_SERVER_WORDS.map(mailServerAlt)
 // Binding: email-gate-matcher-drift.test.ts asserts this matcher fires for
 // every name either classifier gates, and never for the Telegram tools.
 export const EMAIL_GATE_MATCHER =
@@ -1084,6 +1104,7 @@ export const EMAIL_GATE_MATCHER =
   + '|.*create[-_]shared[-_]mailbox[-_]reply[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]all[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]forward[-_]draft.*'
   + '|.*update[-_]mail[-_]message.*|.*update[-_]shared[-_]mailbox[-_]message.*'
   + '|' + VERB_ALTERNATIVES.join('|')
+  + '|' + MAIL_SERVER_ALTERNATIVES.join('|')
 
 // Does an existing PreToolUse array carry an email-gate entry whose matcher is
 // NOT the current one? Pure + exported: this is the predicate that lets
