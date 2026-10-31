@@ -7,7 +7,7 @@
 // 403 body and the single WARN per decision, the audit row and the notification
 // text. The route call sites are pinned in the N2-N4 suites.
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RouteContext } from '../web/routes/types.js'
@@ -452,5 +452,44 @@ describe('recordCodeExecOutcome / codeExecAuditTrail: start before the write, ou
     } finally {
       getDb().exec('DROP TRIGGER IF EXISTS n6_unit_fail')
     }
+  })
+})
+
+// Card 80e8eca4: the audit row and the owner notification are independent.
+describe('a failing audit row does not suppress the owner notification', () => {
+  beforeEach(() => {
+    getDb().exec("CREATE TRIGGER n80_unit_fail BEFORE INSERT ON config_change_log BEGIN SELECT RAISE(ABORT, 'audit down'); END")
+  })
+  afterEach(() => {
+    getDb().exec('DROP TRIGGER IF EXISTS n80_unit_fail')
+  })
+
+  it('recordCodeExecAdmin: no throw, one notification with the usual text, logger.error called', () => {
+    expect(() => recordCodeExecAdmin('connectors.add', 'srv', TOKEN)).not.toThrow()
+    expect(notified).toHaveLength(1)
+    expect(notified[0]).toContain('Kódfuttatásra képes beállítás')
+    expect(notified[0]).toContain('srv')
+    expect(log.error).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(log.error.mock.calls[0]![1])).not.toContain('srv')
+  })
+
+  it('recordCodeExecOutcome failed: no throw, notification sent, logger.error called', () => {
+    expect(() => recordCodeExecOutcome('agents.import', 'sub1', 'failed', TOKEN, new RangeError('x'))).not.toThrow()
+    expect(notified).toHaveLength(1)
+    expect(notified[0]).toContain('félúton elhasalt')
+    expect(notified[0]).toContain('RangeError')
+    expect(log.error).toHaveBeenCalledTimes(1)
+  })
+
+  it('recordCodeExecOutcome ok: no throw and no notification', () => {
+    expect(() => recordCodeExecOutcome('agents.import', 'sub1', 'ok', TOKEN)).not.toThrow()
+    expect(notified).toEqual([])
+    expect(log.error).toHaveBeenCalledTimes(1)
+  })
+
+  it('trail: start() still sends the notification, and the guard sees no throw', () => {
+    const t = codeExecAuditTrail(true, 'connectors.add', TOKEN)
+    expect(() => t.start('srv')).not.toThrow()
+    expect(notified).toHaveLength(1)
   })
 })

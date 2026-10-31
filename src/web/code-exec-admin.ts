@@ -93,10 +93,16 @@ export function admitCodeExecAdmin(ctx: RouteContext, action: CodeExecAction): b
  * a full device key) and one owner notification. An operation that writes a
  * file and then throws would otherwise leave no trace at all. The subject is
  * metadata only (a connector name, a URL host, a task or agent name), never a
- * command, its arguments, an env value or a full URL.
+ * command, its arguments, an env value or a full URL. The row and the
+ * notification are independent: a failing audit row no longer suppresses the
+ * notification (card 80e8eca4).
  */
 export function recordCodeExecAdmin(action: CodeExecAction, subject: string, auth?: RouteContext['auth']): void {
-  logConfigChange('security.bearer_code_exec_admin', null, `${action} ${subject}`, auth?.kind === 'device' ? 'device' : 'token')
+  try {
+    logConfigChange('security.bearer_code_exec_admin', null, `${action} ${subject}`, auth?.kind === 'device' ? 'device' : 'token')
+  } catch (err) {
+    logger.error({ err, action }, 'Failed to write the code-exec admin audit row')
+  }
   // The text goes through formatForTelegram (Markdown-ish -> Telegram HTML):
   // bare underscores (the action, BEARER_CODE_EXEC_ADMIN_ENABLED, a name) would
   // turn into <i> tags. Inline code spans are exempt from that and HTML-escaped,
@@ -106,7 +112,7 @@ export function recordCodeExecAdmin(action: CodeExecAction, subject: string, aut
   void notifySecurityEvent(
     `⚙️ Kódfuttatásra képes beállítás a közös tokennel vagy eszközkulccsal: ${code(action)} ${code(subject)} (${code(ENABLED)}). ` +
       'Ha nem te voltál: zárd a kapcsolót, és vedd vissza a változást (MCP-bejegyzés, ütemezés, repó, .mcp.json).',
-  )
+  ).catch(() => {})
 }
 
 export type CodeExecOutcome = 'ok' | 'failed'
@@ -125,6 +131,7 @@ function errorClassOf(err: unknown): string {
  * already sent one). 'failed' adds one: the operation may have left a partial
  * state behind, so the owner should look and roll it back. The subject is the
  * same metadata as at the start; a failed outcome adds at most the error CLASS.
+ * A failing audit row does not suppress the 'failed' notification (card 80e8eca4).
  */
 export function recordCodeExecOutcome(
   action: CodeExecAction,
@@ -134,18 +141,22 @@ export function recordCodeExecOutcome(
   err?: unknown,
 ): void {
   const errClass = outcome === 'failed' ? errorClassOf(err) : ''
-  logConfigChange(
-    'security.bearer_code_exec_admin',
-    null,
-    `${action} ${subject} -> ${outcome}${errClass ? ` (${errClass})` : ''}`,
-    auth?.kind === 'device' ? 'device' : 'token',
-  )
+  try {
+    logConfigChange(
+      'security.bearer_code_exec_admin',
+      null,
+      `${action} ${subject} -> ${outcome}${errClass ? ` (${errClass})` : ''}`,
+      auth?.kind === 'device' ? 'device' : 'token',
+    )
+  } catch (e) {
+    logger.error({ err: e, action }, 'Failed to write the code-exec admin outcome row')
+  }
   if (outcome !== 'failed') return
   const code = (t: string) => `\`${t.replace(/[`\r\n]+/g, ' ')}\``
   void notifySecurityEvent(
     `⚠️ A kódfuttatásra képes beállítás félúton elhasalt: ${code(action)} ${code(subject)} (${code(errClass)}). ` +
       'Részleges állapot maradhatott: nézd meg, és vedd vissza (MCP-bejegyzés, ügynök-mappa, repó).',
-  )
+  ).catch(() => {})
 }
 
 export interface CodeExecAuditTrail {
