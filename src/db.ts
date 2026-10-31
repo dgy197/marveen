@@ -1142,6 +1142,24 @@ export function initDatabase(dbPathOverride?: string): void {
   // sets it; POST /api/messages never does, so a 1 here is authenticated by construction.
   // 0 for every older row.
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN stop_authorized INTEGER NOT NULL DEFAULT 0') } catch { /* exists */ }
+  // Card 0d7e2c04: how the sender of the row was authenticated (verified, verified_prev, mismatch, invalid, unsigned,
+  // internal, session, device). Nullable and additive: NULL for every older row (read as 'legacy'), and nothing reads
+  // it until the route (N3) starts writing it, so adding the column changes no behavior.
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN sender_auth TEXT') } catch { /* exists */ }
+  // Card 0d7e2c04: per-agent send keys (src/web/agent-send-keys.ts). One row per agent; only sha256(key) is stored,
+  // never the raw key. prev_hash/prev_valid_until hold the key a rotation replaced, valid for a grace window so a
+  // background process still holding it is not rejected. Additive: zero rows = nothing resolves, nothing changes.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_send_keys (
+      agent_id TEXT PRIMARY KEY,
+      key_hash TEXT NOT NULL UNIQUE,
+      prev_hash TEXT,
+      prev_valid_until INTEGER,
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER
+    )
+  `)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_agent_send_keys_prev ON agent_send_keys(prev_hash) WHERE prev_hash IS NOT NULL')
 
   // INVARIANT: a row that says 'delivered' must carry a delivered_at.
   //
@@ -4820,6 +4838,8 @@ export interface AgentMessage {
   // Card 71263d15 (C): 1 = a STOP from an authenticated writer (see the migration). Optional in the type
   // only because rows built in code before the column (tests, fixtures) do not carry it.
   stop_authorized?: number
+  // Card 0d7e2c04: how the sender was authenticated (see the migration). Optional in the type; null for every older row.
+  sender_auth?: string | null
 }
 
 export function createAgentMessage(
