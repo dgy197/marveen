@@ -98,7 +98,7 @@ def _is_draft_call(gate, tool: str, tool_input: dict) -> bool:
     if not _DRAFT_TOOL.search(tool):
         return False
     import email_extract  # same directory, on sys.path above
-    return email_extract.mail_tool_action(tool) == "draft"
+    return email_extract.mail_tool_action(tool, tool_input) == "draft"
 
 
 def _clean(text) -> str:

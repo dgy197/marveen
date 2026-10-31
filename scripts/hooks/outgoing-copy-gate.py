@@ -2025,7 +2025,7 @@ except Exception as _b4_exc:  # noqa: BLE001 -- deliberate fail-closed stub
 try:
     from email_extract import mail_tool_action  # noqa: E402
 except Exception:  # noqa: BLE001 -- deliberate fail-closed stub
-    def mail_tool_action(tool_name):
+    def mail_tool_action(tool_name, tool_input=None):
         name = tool_name if isinstance(tool_name, str) else ""
         if name[:5].lower() != "mcp__" or re.match(r"mcp__plugin_(?:telegram|discord|slack)[-_]", name):
             return None
@@ -2741,7 +2741,7 @@ def main():
         # nothing of ours to read, and the draft verbs (create/update/save)
         # also name label, filter and settings calls, so those pass untouched,
         # as they did before.
-        action = mail_tool_action(tool)
+        action = mail_tool_action(tool, tool_input)
         if action is None:
             sys.exit(0)
         text, unreadable = collect_mcp_body(tool_input), None
