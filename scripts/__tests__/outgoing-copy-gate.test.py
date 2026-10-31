@@ -639,7 +639,18 @@ def main():
         check("missing operation key, em dash body: audited (exit 2)", code, 2)
         code, out, err = run_hook({"tool_name": "mcp__google-workspace__manage_email",
                                    "tool_input": {"action": "search", "body": BAD_BODY}}, rules_file=active)
-        check("missing operation, readable action=search: not audited (exit 0)", code, 0)
+        check("missing operation, readable action=search: still audited, action never re-opens (exit 2)", code, 2)
+        code, out, err = run_hook({"tool_name": "mcp__google-workspace__manage_email",
+                                   "tool_input": {"operation": None, "action": "search", "body": BAD_BODY}},
+                                  rules_file=active)
+        check("operation null, action=search: audited (exit 2)", code, 2)
+        code, out, err = run_hook({"tool_name": "mcp__google-workspace__manage_email",
+                                   "tool_input": {"operation": "search", "body": BAD_BODY}}, rules_file=active)
+        check("operation=search alone: not audited (exit 0)", code, 0)
+        code, out, err = run_hook({"tool_name": "mcp__google-workspace__manage_email",
+                                   "tool_input": {"operation": "search", "action": "send", "body": BAD_BODY}},
+                                  rules_file=active)
+        check("operation=search, action=send: audited, action adds closure (exit 2)", code, 2)
 
         # AC6: fail-closed stub when email_extract.py does not load, on a disposable copy of the tree.
         import shutil

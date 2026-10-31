@@ -369,7 +369,19 @@ describe('injectEmailSendGate', () => {
     injectEmailSendGate(s)
     const hooks = (s.hooks as Record<string, unknown>).PreToolUse as Array<Record<string, unknown>>
     expect(hooks).toHaveLength(1)
-    expect(hooks[0].matcher).toBe(EMAIL_GATE_MATCHER)
+    const matcher = hooks[0].matcher as string
+    expect(matcher).toBe(EMAIL_GATE_MATCHER)
+    // Pinned independently of the constant, so dropping an alternative goes red:
+    // 36 name-keyed alternatives + the 5 verb alternatives (reply, fwd, forward, send, draft).
+    const alts = matcher.split('|')
+    expect(alts).toHaveLength(41)
+    for (const w of ['reply', 'fwd', 'forward', 'send', 'draft']) {
+      const verb = `${w.split('').map((c) => `[${c.toUpperCase()}${c.toLowerCase()}]`).join('')}.*`
+      expect(alts.filter((a) => a.endsWith(`__.*${verb}`)), `verb alternative for ${w}`).toHaveLength(1)
+    }
+    for (const w of ['.*send_email.*', '.*manage_email.*', '.*[Gg]mail.*__.*', '.*draft_email.*', '.*send_draft.*', '.*reply_all.*']) {
+      expect(alts, `pre-existing alternative ${w}`).toContain(w)
+    }
     const inner = (hooks[0].hooks as Array<{ command: string }>)[0]
     expect(inner.command).toContain('email-send-gate.mjs')
   })

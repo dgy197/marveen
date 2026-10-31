@@ -2656,17 +2656,22 @@ def main():
     # its name, only by the operation it was asked to perform.
     mail_kind = classify_mail_tool(tool)
     if mail_kind == "manage_email":
-        # `operation` first; `action` only when `operation` is absent. The raw value
-        # goes to the shared closed rule: a non-string or blank one is audited.
+        # Same rule as the other two gates: the raw `operation` goes to the shared
+        # closed rule (missing, non-string or blank is audited). `action` can only
+        # ADD closure (audit when it is outbound); it never re-opens a closed
+        # operation, so {"action":"search"} with no operation is still audited.
         op = tool_input.get("operation")
-        if op is None:
-            op = tool_input.get("action")
-        if not _manage_email_outbound(op):
+        action = tool_input.get("action")
+        action_outbound = isinstance(action, str) and manage_email_op_outbound(action)
+        if not (_manage_email_outbound(op) or action_outbound):
             sys.exit(0)  # search/read/labels/trash...: no outgoing text of ours
         # A bare forward carries someone else's text and an EMPTY note: there is
         # nothing of ours to audit, and the fail-closed "unreadable" branch below
         # would block it for no reason.
-        if manage_email_op_key(op) == "forward" and not str(tool_input.get("body") or "").strip():
+        op_key = manage_email_op_key(op)
+        if op_key not in ("send", "reply", "replyall", "forward"):
+            op_key = manage_email_op_key(action)
+        if op_key == "forward" and not str(tool_input.get("body") or "").strip():
             sys.exit(0)
         text, unreadable = collect_mcp_body(tool_input), None
     elif mail_kind in _AUDITED_MAIL_KINDS:

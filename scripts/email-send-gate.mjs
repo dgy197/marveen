@@ -1309,10 +1309,21 @@ export function manageEmailOpOutbound(op) {
 // JS twin of email_extract.manage_email_op_closed (card d8d3441e): outbound OR
 // unreadable (not a string, or empty after the normalisation). String() is NOT
 // used: String(["send"]) would read as "send".
+// E2: also closed when nothing but the EXPLICIT blank set below remains (identical
+// to _CLOSED_BLANK_CHARS in email_extract.py): ASCII whitespace, U+001C-U+001F,
+// U+0085, U+00A0, U+1680, U+2000-U+200B, U+2028, U+2029, U+202F, U+205F, U+3000,
+// U+FEFF. manageEmailOpKey / manageEmailOpOutbound keep the ASCII-only rule.
+const CLOSED_BLANK_CHARS =
+  ' \t\r\n\f\v'
+  + '\u001c\u001d\u001e\u001f\u0085\u00a0\u1680'
+  + '\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u200b'
+  + '\u2028\u2029\u202f\u205f\u3000\ufeff'
 export function manageEmailOpClosed(op) {
   if (typeof op !== 'string') return true
   const key = manageEmailOpKey(op)
-  return key === '' || MANAGE_EMAIL_SEND_OPS.has(key)
+  if (key === '' || MANAGE_EMAIL_SEND_OPS.has(key)) return true
+  for (const ch of op) if (!CLOSED_BLANK_CHARS.includes(ch)) return false
+  return true
 }
 
 // --- tool-name classification ------------------------------------------------

@@ -1003,6 +1003,17 @@ MANAGE_EMAIL_OUTBOUND_OPS = frozenset({"send", "reply", "replyall", "forward"})
 # Explicit ASCII whitespace, NOT str.strip(): Python's strip() and JS trim() take
 # different sets (NBSP, U+001C-1F, U+FEFF...), and the two twins must agree.
 _ASCII_WS = " \t\r\n\f\v"
+# Explicit code-point set for the "nothing but blank" part of manage_email_op_closed
+# (E2). Spelled out, NOT str.isspace()/strip(): the JS twin carries the identical
+# literal list. ASCII " \t\r\n\f\v", U+001C-U+001F, U+0085, U+00A0, U+1680, U+2000-U+200B,
+# U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF. manage_email_op_key and
+# manage_email_op_outbound keep the ASCII-only rule.
+_CLOSED_BLANK_CHARS = (
+    " \t\r\n\f\v"
+    "\u001c\u001d\u001e\u001f\u0085\u00a0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u200b"
+    "\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
 _ASCII_LOWER = {c: c + 32 for c in range(ord("A"), ord("Z") + 1)}
 _OP_SEPARATORS = {ord("-"): None, ord("_"): None}
 
@@ -1034,7 +1045,7 @@ def manage_email_op_closed(op) -> bool:
     if not isinstance(op, str):
         return True
     key = manage_email_op_key(op)
-    return key == "" or key in MANAGE_EMAIL_OUTBOUND_OPS
+    return key == "" or key in MANAGE_EMAIL_OUTBOUND_OPS or op.strip(_CLOSED_BLANK_CHARS) == ""
 
 
 def _stored_content_reason(tool_name: str, tool_input: dict):

@@ -763,6 +763,36 @@
       "note": "BOM behind: JS trim() would take it, the shared strip does not (py = js)"
     },
     {
+      "op": "\u00a0",
+      "outbound": false,
+      "closed": true,
+      "note": "NBSP only: empty after the explicit Unicode-whitespace set, so closed (E2)"
+    },
+    {
+      "op": "\u3000",
+      "outbound": false,
+      "closed": true,
+      "note": "ideographic space only: closed (E2)"
+    },
+    {
+      "op": "\u200b",
+      "outbound": false,
+      "closed": true,
+      "note": "zero-width space only: closed (E2)"
+    },
+    {
+      "op": "\ufeff\u0020\u0020",
+      "outbound": false,
+      "closed": true,
+      "note": "BOM then spaces: closed (E2)"
+    },
+    {
+      "op": "\u00a0send",
+      "outbound": false,
+      "closed": false,
+      "note": "NBSP before send: the KEY rule stays ASCII-only, so neither outbound nor closed on both twins (E2 records the twins)"
+    },
+    {
       "op": "\uff52\uff45\uff50\uff4c\uff59",
       "outbound": false,
       "note": "full-width letters are not ASCII"
