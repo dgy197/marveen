@@ -178,8 +178,10 @@ function handler(over: Partial<ApvHandlerOptions> = {}): UpdateHandler {
 }
 
 async function press(h: UpdateHandler, u: TelegramUpdate, botApi: BotApi = api) {
+  // Per-press delta: bot.calls is only reset in beforeEach, so a second press in one it() must not count the first.
+  const before = bot.callsOf('answerCallbackQuery').length
   const outcome = await h(u, { api: botApi, signal: new AbortController().signal })
-  const answers = bot.callsOf('answerCallbackQuery')
+  const answers = bot.callsOf('answerCallbackQuery').slice(before)
   return { outcome, toast: answers.at(-1)?.body['text'], answers: answers.length }
 }
 
