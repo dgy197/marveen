@@ -179,7 +179,8 @@ export function createBotApi(opts: BotApiOptions): BotApi {
     let env: BotApiEnvelope | null = null
     try { env = JSON.parse(raw) as BotApiEnvelope } catch { env = null }
     const errorCode = typeof env?.error_code === 'number' ? env.error_code : res.status
-    const description = mask(typeof env?.description === 'string' ? env.description.slice(0, 300) : `HTTP ${res.status}`)
+    // Mask first, cut after: a secret straddling the cut would otherwise survive in part.
+    const description = (typeof env?.description === 'string' ? mask(env.description) : `HTTP ${res.status}`).slice(0, 300)
 
     if (!res.ok || env?.ok === false) {
       if (errorCode === 409) {

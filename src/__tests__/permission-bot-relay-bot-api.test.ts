@@ -124,6 +124,21 @@ describe('error classification (token never in the message)', () => {
     await new Promise<void>((r) => srv.close(() => r()))
   })
 
+  it('an error description is masked BEFORE it is cut to 300: a token straddling the cut leaves no fragment (F4)', async () => {
+    const srv = http.createServer((_req, res) => {
+      res.writeHead(400, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: false, error_code: 400, description: `${'x'.repeat(280)}${TOKEN}${'y'.repeat(50)}` }))
+    })
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r))
+    const api = createBotApi({ token: TOKEN, apiBase: `http://127.0.0.1:${(srv.address() as AddressInfo).port}` })
+    const e = await capture(api.getMe())
+    expect(e.kind).toBe('fatal')
+    expect(e.message).toContain('<token>')
+    expect(e.message).not.toContain(SECRET.slice(0, 8))
+    expect(e.message).not.toContain('FAKEtoken')
+    await new Promise<void>((r) => srv.close(() => r()))
+  })
+
   it('read timeout -> transient', async () => {
     const srv = http.createServer(() => { /* never answers */ })
     await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r))

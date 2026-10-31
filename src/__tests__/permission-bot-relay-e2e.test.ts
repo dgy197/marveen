@@ -135,6 +135,7 @@ class LoopbackDashboard {
 
 const tg = createFakeTelegram()
 let guard: LoopbackGuard
+let blockedAfterSelfTest = 0
 let bot: FakeBotApi
 let dash: LoopbackDashboard
 let loop: PollLoop
@@ -198,8 +199,12 @@ function captureLog(): RelayLog {
 beforeAll(async () => {
   guard = installLoopbackGuard()
   await selfTestLoopbackGuard(guard)
+  blockedAfterSelfTest = guard.blocked.length
 })
 afterAll(() => {
+  // The guard refused only its own self-test connections: the relay and the route
+  // never tried a non-loopback or blocklisted connect.
+  expect(guard.blocked.slice(blockedAfterSelfTest)).toEqual([])
   guard.uninstall()
 })
 
