@@ -4842,6 +4842,17 @@ export interface AgentMessage {
   sender_auth?: string | null
 }
 
+/**
+ * Card 0d7e2c04 r1 (B1): the ONE serializer for an agent_messages row that leaves the process over HTTP. sender_auth is
+ * stored for the shadow report (GET /api/messages/sender-auth-report, aggregates only) and must not appear in any served
+ * row: a per-row verdict would tell a forger whether a stolen key still verifies, and the bodies must stay byte-identical
+ * to the pre-card ones. Every route that returns a row (list, GET /:id, threads, voice mailbox) goes through this.
+ */
+export function toServedMessage<T extends { sender_auth?: unknown }>(row: T): Omit<T, 'sender_auth'> {
+  const { sender_auth: _senderAuth, ...served } = row
+  return served
+}
+
 export function createAgentMessage(
   from: string,
   to: string,

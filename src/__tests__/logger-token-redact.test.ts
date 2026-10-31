@@ -478,6 +478,21 @@ describe('the shipped logger masks Error objects and nested fields', () => {
     expect(j.cfg.keep).toBe('ok');
     expect(j.headers.Authorization).toBe(REDACTED);
   });
+
+  it('card 0d7e2c04: the x-agent-key header is masked in a logged req, in every listed spelling', () => {
+    const KEY = 'fake-agent-key-' + 'k'.repeat(24);
+    const c = capture();
+    c.log.info({ req: { method: 'POST', headers: { 'x-agent-key': KEY, 'X-Agent-Key': KEY, 'X-AGENT-KEY': KEY, host: 'h' } } }, 'incoming');
+    c.log.info({ headers: { 'x-agent-key': KEY, 'X-Agent-Key': KEY, 'X-AGENT-KEY': KEY, host: 'h' } }, 'headers only');
+    for (const line of c.lines) expect(line).not.toContain(KEY);
+    const [a, b] = c.lines.map((l) => JSON.parse(l));
+    for (const h of [a.req.headers, b.headers]) {
+      expect(h['x-agent-key']).toBe(REDACTED);
+      expect(h['X-Agent-Key']).toBe(REDACTED);
+      expect(h['X-AGENT-KEY']).toBe(REDACTED);
+      expect(h.host).toBe('h'); // a sibling header survives
+    }
+  });
 });
 
 describe('the shipped logger masks free text on every call shape and on child loggers', () => {

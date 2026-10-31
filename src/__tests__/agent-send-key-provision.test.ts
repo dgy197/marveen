@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, statSync, existsSync, mkdirSync, chmodSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, statSync, existsSync, mkdirSync, chmodSync, readdirSync, symlinkSync, lstatSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { initDatabase, getDb } from '../db.js'
@@ -96,6 +96,84 @@ describe('provisionAgentSendKey', () => {
     for (const id of ['brainy', 'marveen', 'tuzvedelem', 'agent_1', 'a.b-c']) {
       expect(agentKeyFilePath(id, dir)).toBe(join(dir, id))
     }
+  })
+})
+
+// Residual Q6 (card 0d7e2c04 r1): a same-uid process must not be able to redirect the key write with a symlink.
+describe('provisioning refuses links (nothing is written through them)', () => {
+  const keyRows = () => (getDb().prepare('SELECT COUNT(*) AS n FROM agent_send_keys').get() as { n: number }).n
+
+  it('a symlinked keys dir -> refuses, the link target stays empty, no hash is left', () => {
+    const target = join(dir, 'elsewhere')
+    mkdirSync(target)
+    const keysDir = join(dir, '.agent-keys')
+    symlinkSync(target, keysDir)
+    expect(() => provisionAgentSendKey('iroda', keysDir)).toThrow(/symlink/)
+    expect(readdirSync(target)).toEqual([])
+    expect(lstatSync(keysDir).isSymbolicLink()).toBe(true) // untouched, not replaced
+    expect(keyRows()).toBe(0)
+  })
+
+  it('a dangling symlink as the keys dir -> refuses, nothing is created at its target', () => {
+    const target = join(dir, 'not-yet')
+    const keysDir = join(dir, '.agent-keys')
+    symlinkSync(target, keysDir)
+    expect(() => provisionAgentSendKey('iroda', keysDir)).toThrow()
+    expect(existsSync(target)).toBe(false)
+    expect(keyRows()).toBe(0)
+  })
+
+  it('a keys "dir" that is a regular file -> refuses', () => {
+    const keysDir = join(dir, '.agent-keys')
+    writeFileSync(keysDir, 'x')
+    expect(() => provisionAgentSendKey('iroda', keysDir)).toThrow()
+    expect(readFileSync(keysDir, 'utf-8')).toBe('x')
+    expect(keyRows()).toBe(0)
+  })
+
+  it('a symlinked key file -> refuses, the link target is not written, the link stays, no hash is left', () => {
+    const keysDir = join(dir, '.agent-keys')
+    mkdirSync(keysDir, { mode: 0o700 })
+    const victim = join(dir, 'victim')
+    writeFileSync(victim, 'KEEP')
+    symlinkSync(victim, join(keysDir, 'iroda'))
+    expect(() => provisionAgentSendKey('iroda', keysDir)).toThrow(/symlink/)
+    expect(readFileSync(victim, 'utf-8')).toBe('KEEP')
+    expect(lstatSync(join(keysDir, 'iroda')).isSymbolicLink()).toBe(true)
+    expect(readdirSync(keysDir)).toEqual(['iroda']) // no temp file left behind
+    expect(keyRows()).toBe(0)
+  })
+
+  it('the temp file is created exclusively: a failed write leaves no temp file in the dir', () => {
+    const keysDir = join(dir, '.agent-keys')
+    mkdirSync(keysDir, { mode: 0o700 })
+    mkdirSync(join(keysDir, 'iroda')) // a directory at the target: lstat says not a regular file
+    expect(() => provisionAgentSendKey('iroda', keysDir)).toThrow()
+    expect(readdirSync(keysDir)).toEqual(['iroda'])
+    expect(keyRows()).toBe(0)
+  })
+
+  it('clear through a symlinked dir does not unlink the file behind the link', () => {
+    const target = join(dir, 'elsewhere')
+    mkdirSync(target)
+    writeFileSync(join(target, 'iroda'), 'KEEP')
+    const keysDir = join(dir, '.agent-keys')
+    symlinkSync(target, keysDir)
+    expect(() => clearAgentSendKey('iroda', keysDir)).not.toThrow()
+    expect(readFileSync(join(target, 'iroda'), 'utf-8')).toBe('KEEP')
+  })
+
+  it('the launch wiring treats a provisioning throw as "start unsigned" (shadow fail-open)', () => {
+    const src = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
+    const at = src.indexOf('agentKeyEnv = agentKeyLaunchEnv(provisionAgentSendKey(name))')
+    expect(at).toBeGreaterThan(-1)
+    expect(src.slice(at, at + 400)).toMatch(/catch/)
+  })
+
+  it('positive control: a real 0700 dir owned by us still provisions', () => {
+    const path = provisionAgentSendKey('iroda', join(dir, '.agent-keys'))
+    expect(statSync(path).isFile()).toBe(true)
+    expect(keyRows()).toBe(1)
   })
 })
 
