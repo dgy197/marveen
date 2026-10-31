@@ -186,9 +186,16 @@ const DENIED_ENV_EXACT = new Set([
   'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE',
   'GEM_HOME', 'GEM_PATH', 'ELECTRON_RUN_AS_NODE', 'TMPDIR',
   'CLAUDE_CONFIG_DIR', 'ANTHROPIC_BASE_URL',
+  // Card 24e137ef BD4 (security review): OpenSSL config (engine loading), bash
+  // option / xtrace-prompt injection, TLS key logging, PHP / Go / curl / wget
+  // config relocation.
+  'OPENSSL_CONF', 'SHELLOPTS', 'BASHOPTS', 'PS4', 'SSLKEYLOGFILE', 'PHPRC', 'PHP_INI_SCAN_DIR',
+  'GOFLAGS', 'CURL_HOME', 'WGETRC',
 ])
 // NODE_ covers NODE_OPTIONS, NODE_PATH, NODE_EXTRA_CA_CERTS, NODE_TLS_REJECT_UNAUTHORIZED.
-const DENIED_ENV_PREFIXES = ['LD_', 'DYLD_', 'PYTHON', 'PERL5', 'GIT_', 'NPM_CONFIG_', 'NODE_', 'RUBY', 'PIP_', 'UV_', 'XDG_']
+// BASH_FUNC_ is the exported-function namespace (shellshock-style), OPENSSL_ the rest of
+// the OpenSSL env, LUA_ covers LUA_PATH / LUA_CPATH / LUA_INIT.
+const DENIED_ENV_PREFIXES = ['LD_', 'DYLD_', 'PYTHON', 'PERL5', 'GIT_', 'NPM_CONFIG_', 'NODE_', 'RUBY', 'PIP_', 'UV_', 'XDG_', 'BASH_FUNC_', 'OPENSSL_', 'LUA_']
 
 export type BindingKeyKind = 'env' | 'header'
 
