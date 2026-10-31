@@ -240,9 +240,12 @@ export function listSecrets(): Array<{ id: string, label: string, createdAt: str
 }
 
 // Card 9a77b3e5 (B3): the permission bot's token entry is locked in the storage
-// layer, so no route (connectors slugify, imports, ...) can overwrite or delete
-// it by building the same id. There is deliberately no internal bypass: the
-// entry is provisioned out-of-band by the operator.
+// layer, so every path that writes through setSecret/deleteSecret (connectors
+// slugify, the vault routes, ...) is refused for that id. There is deliberately
+// no internal bypass: the entry is provisioned out-of-band by the operator.
+// NOT covered here: the fleet import writes vault.json as a whole file and never
+// calls setSecret; its own check is validateVaultLock in fleet-transfer.ts
+// (card 8e9f4670), which refuses the whole import when a locked row is involved.
 export class VaultEntryLockedError extends Error {
   constructor() {
     super(PERMISSION_BOT_VAULT_LOCKED_ERROR)

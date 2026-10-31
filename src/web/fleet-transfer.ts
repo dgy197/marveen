@@ -26,6 +26,7 @@ import { SCHEDULED_TASKS_DIR, type ScheduledTaskWritten } from './scheduled-task
 import { registerScheduledTask } from './schedule-registry.js'
 import { getBindings } from './vault-bindings.js'
 import { resolveMasterKeyForExport } from './vault.js'
+import { isPermissionBotVaultId, PERMISSION_BOT_VAULT_LOCKED_ERROR } from './permission-bot-vault.js'
 import { getDb, backfillEmbeddings } from '../db.js'
 import { logger } from '../logger.js'
 import { isValidModelId } from '../model-id.js'
@@ -881,6 +882,48 @@ function validateModels(fleet: FleetJson): string[] {
   return errors
 }
 
+// Card 8e9f4670 (B5): the import writes the Vault as whole files
+// (importVaultSection), not through setSecret/deleteSecret, so the storage-layer
+// lock on the permission bot's token (vault.ts) never runs for it. This check is
+// the import's own fence: ANY locked row in the bundle's vault section, or a
+// locked row in the live vault that the section would replace, refuses the
+// WHOLE import. It runs before the dry-run branch and before the first write of
+// any kind (agent files, DB, skills, vault), so a refused import leaves nothing
+// behind. Fail-closed on a malformed section and on an unreadable live vault.
+function validateVaultLock(fleet: FleetJson): string[] {
+  const vault = fleet.vault
+  if (vault === undefined || vault === null) return []
+  if (typeof vault !== 'object' || !Array.isArray(vault.entries)) {
+    return ['Érvénytelen vault szekció: az entries mező hiányzik vagy nem tömb.']
+  }
+  for (const entry of vault.entries) {
+    const id = entry && typeof entry === 'object' ? (entry as Record<string, unknown>).id : undefined
+    if (typeof id !== 'string') {
+      return ['Érvénytelen vault szekció: egy bejegyzésnek nincs szöveges id-je.']
+    }
+    if (isPermissionBotVaultId(id)) {
+      return [`${PERMISSION_BOT_VAULT_LOCKED_ERROR} -- the import bundle carries it, nothing was imported.`]
+    }
+  }
+  const livePath = join(STORE_DIR, 'vault.json')
+  if (existsSync(livePath)) {
+    let live: unknown
+    try {
+      live = JSON.parse(readFileSync(livePath, 'utf-8'))
+    } catch {
+      return ['A meglévő store/vault.json nem olvasható, ezért a vault szekció nem cserélhető (a zárolt sor nem ellenőrizhető).']
+    }
+    const liveEntries = (live as { entries?: unknown } | null)?.entries
+    if (!Array.isArray(liveEntries)) {
+      return ['A meglévő store/vault.json entries mezője nem tömb, ezért a vault szekció nem cserélhető (a zárolt sor nem ellenőrizhető).']
+    }
+    if (liveEntries.some(e => isPermissionBotVaultId((e as { id?: unknown } | null)?.id))) {
+      return [`${PERMISSION_BOT_VAULT_LOCKED_ERROR} -- the live vault holds it and the bundle's vault section would replace the vault files, nothing was imported.`]
+    }
+  }
+  return []
+}
+
 function validateNames(fleet: FleetJson): string[] {
   const errors: string[] = []
 
@@ -1172,6 +1215,12 @@ export function importFleet(
   const modelErrors = validateModels(fleet)
   if (modelErrors.length > 0) {
     return { ...EMPTY_DIFF, errors: modelErrors }
+  }
+  // B5: before the dry-run branch (the preview must not promise a successful
+  // import) and before the first write of the apply phase below.
+  const vaultLockErrors = validateVaultLock(fleet)
+  if (vaultLockErrors.length > 0) {
+    return { ...EMPTY_DIFF, errors: vaultLockErrors }
   }
 
   if (!options.apply) {
