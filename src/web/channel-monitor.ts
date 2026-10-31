@@ -36,6 +36,8 @@ import {
   answerFirstRunGates,
   shSingleQuote,
   fleetVenvPathPrefix,
+  mainAgentKeyFilePath,
+  AGENT_KEY_FILE_ENV,
 } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
 import { isRestartInFlight, beginRestart, endRestart } from './restart-lock.js'
@@ -1130,6 +1132,8 @@ export function buildMainSessionRespawnCmd(opts: {
     // FLEETVENV923: same venv-first PATH as startAgentProcess and channels.sh.
     `export PATH="${fleetVenvPathPrefix()}/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"`,
     `&& export ${opts.channelStateEnv.name}=${shSingleQuote(opts.channelStateEnv.dir)}`,
+    // Inter-agent send key (card 0d7e2c04 N2, K3): only the PATH of the file the dashboard maintains, never the key.
+    ...(mainAgentKeyFilePath() ? [`&& export ${AGENT_KEY_FILE_ENV}=${shSingleQuote(mainAgentKeyFilePath() as string)}`] : []),
     // MCP startup-batch tuning (parity with channels.sh + startAgentProcess):
     // the --channels plugin is a stdio MCP server; the main session runs the
     // most MCP servers (filesystem/playwright/chrome + claude.ai connectors +

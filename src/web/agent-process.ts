@@ -52,6 +52,7 @@ import { readClaudePlansState } from './claude-plans-state.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { mintAgentSendKey, revokeAgentSendKey } from './agent-send-keys.js'
 import { paneOneLine } from './pane-text.js'
 import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
 import {
@@ -316,6 +317,96 @@ export function launchSecretRef(secretName: string, value: string): string {
   const utvonal = join(LAUNCH_SECRETS_DIR, biztonsagosNev)
   atomicWriteFileSync(utvonal, value, { mode: LAUNCH_SECRET_FILE_MODE })
   return `"$(cat ${shSingleQuote(utvonal)})"`
+}
+
+// ---------------------------------------------------------------------------
+// Per-agent send key (card 0d7e2c04 N2). Every local agent gets a key at launch
+// that binds its inter-agent `from` to its identity (see agent-send-keys.ts).
+//
+// The file store/.agent-keys/<id> holds a READY header line ("X-Agent-Key: <key>")
+// so the sender can pass it as `curl -H @file`: the value is in no argv, no env
+// and no launch string. The launch env carries only the PATH
+// (MARVEEN_AGENT_KEY_FILE). Same-user caveat as every launch secret: another
+// agent that can run a shell can read the file (spec R1).
+//
+// The DASHBOARD writes this file for the main agent too (decision K3); neither
+// scripts/channels.sh nor the respawn path fetches a key, they only export the
+// path the dashboard maintains.
+// ---------------------------------------------------------------------------
+export const AGENT_KEYS_DIR = join(STORE_DIR, '.agent-keys')
+export const AGENT_KEYS_DIR_MODE = 0o700
+export const AGENT_KEY_FILE_MODE = 0o600
+export const AGENT_KEY_FILE_ENV = 'MARVEEN_AGENT_KEY_FILE'
+
+// The id becomes a path component: letters/digits/._- only, not starting with a
+// dot (no `.`, `..`, no hidden file), at most 64 chars. Anything else throws.
+const AGENT_KEY_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/
+
+export function agentKeyFilePath(agentId: string, dir: string = AGENT_KEYS_DIR): string {
+  if (typeof agentId !== 'string' || !AGENT_KEY_ID_RE.test(agentId)) {
+    throw new Error('invalid agent id for key file')
+  }
+  return join(dir, agentId)
+}
+
+/** Mint a fresh key for the agent and write it atomically (0600, dir 0700). Returns the file PATH only. */
+export function provisionAgentSendKey(agentId: string, dir: string = AGENT_KEYS_DIR): string {
+  const path = agentKeyFilePath(agentId, dir) // validates before anything is touched
+  mkdirSync(dir, { recursive: true, mode: AGENT_KEYS_DIR_MODE })
+  chmodSync(dir, AGENT_KEYS_DIR_MODE) // mkdir's mode only applies on creation: tighten a pre-existing looser dir
+  const raw = mintAgentSendKey(agentId)
+  try {
+    atomicWriteFileSync(path, `X-Agent-Key: ${raw}\n`, { mode: AGENT_KEY_FILE_MODE })
+  } catch (err) {
+    // No file means nobody holds this key: do not leave a live hash behind.
+    try { revokeAgentSendKey(agentId) } catch { /* best-effort */ }
+    throw err
+  }
+  return path
+}
+
+/** On stop: delete the key file and revoke the hashes. Never throws, never logs the key. */
+export function clearAgentSendKey(agentId: string, dir: string = AGENT_KEYS_DIR): void {
+  let path: string
+  try {
+    path = agentKeyFilePath(agentId, dir)
+  } catch {
+    return
+  }
+  try {
+    unlinkSync(path)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') logger.warn({ agentId }, 'agent send-key file cleanup failed')
+  }
+  try {
+    revokeAgentSendKey(agentId)
+  } catch (err) {
+    logger.warn({ agentId, err: err instanceof Error ? err.message : 'unknown' }, 'agent send-key revoke failed')
+  }
+}
+
+/** Shell prefix for a launch string: exports the key file PATH, never the key. */
+export function agentKeyLaunchEnv(keyFilePath: string): string {
+  return `export ${AGENT_KEY_FILE_ENV}=${shSingleQuote(keyFilePath)} && `
+}
+
+/** Main agent (K3): the dashboard maintains its key file; boot calls this. Fail-open (shadow phase): null on error. */
+export function provisionMainAgentSendKey(): string | null {
+  try {
+    return provisionAgentSendKey(MAIN_AGENT_ID)
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : 'unknown' }, 'main agent send-key provisioning failed')
+    return null
+  }
+}
+
+/** Path the main agent's launcher should export (the file may not exist yet; senders fall back to unsigned). */
+export function mainAgentKeyFilePath(): string | null {
+  try {
+    return agentKeyFilePath(MAIN_AGENT_ID)
+  } catch {
+    return null
+  }
 }
 
 // True when the fleet OAuth token file exists and is non-empty. Provisioning an
@@ -2405,6 +2496,16 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
         apiKeyEnv = `export ANTHROPIC_API_KEY=${launchSecretRef(`agent-${name}-api-key`, agentApiKey)} && `
       }
     }
+    // Inter-agent send key (card 0d7e2c04 N2): file written 0600, launch string carries only the PATH.
+    // Fail-open while the sender-auth rollout is in shadow mode: no key means unsigned sends, not a dead agent.
+    let agentKeyEnv = ''
+    if (name !== MAIN_AGENT_ID) {
+      try {
+        agentKeyEnv = agentKeyLaunchEnv(provisionAgentSendKey(name))
+      } catch (err) {
+        logger.warn({ name, err: err instanceof Error ? err.message : 'unknown' }, 'agent send-key provisioning failed; starting without')
+      }
+    }
     // Apply security profile: write allow/deny list into settings.json, and
     // skip the dangerously-skip-permissions flag for strict profiles so
     // Claude Code enforces the list rather than bypassing it.
@@ -3004,7 +3105,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // forbid a first-party launch starts with INTERACTIVE_UNSET. The assert is
     // the last check before BOTH sinks below (normal and EPERM fallback).
     const buildLaunchCmd = (launchCwd: string) => {
-      const cmd = `${keyUnsetPrefix}${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}${bashSandboxFlag}`.trimEnd()
+      const cmd = `${keyUnsetPrefix}${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${agentKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}${bashSandboxFlag}`.trimEnd()
       assertLaunchCmdClean(cmd, { policy: keyPolicy, firstParty: keyGuardFirstParty })
       return cmd
     }
@@ -3201,6 +3302,7 @@ export async function stopAgentProcess(name: string): Promise<{ ok: boolean; err
     // A LAUNCH-TITKOK NEM ELIK TUL A LEALLITAST. Enelkul egy rotalt kulcs REGI erteke a lemezen
     // maradna a kovetkezo inditasig, egy leallitott agense pedig hataridotlenul.
     clearLaunchSecrets(name)
+    clearAgentSendKey(name)
     await delay(2000)
     // Reap any orphaned plugin grandchild that tmux did not tear down. This is
     // a LOCAL pkill against this host's process table, so it only makes sense
