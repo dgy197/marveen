@@ -15,7 +15,12 @@ the live CDP ports, which are refused BEFORE any connect().
   - a number that only matches as prefix/suffix of a longer digit run in the description -> no send;
   - every refusal is ONE line with neither the text nor the full number;
   - --print-anchor equals an independently computed sha256 of the canonical envelope;
-  - mutation control: with the hash comparison removed, a changed text IS sent.
+  - B1: an approval whose action_payload is not byte-identical to the canonical envelope (other
+    text, other number, missing, spaced, extra key, not a string) -> no consume, no send;
+  - B2: the description names exactly one phone number (none / two -> no send);
+  - B4: --approval must be a UUID, refused before any request (path tricks, newline, upper case);
+  - B5: the 1800 s window is fixed, SEEME_APPROVAL_WINDOW_S may only narrow it;
+  - mutation controls: with the hash / payload / one-number comparisons removed, the bad case IS sent.
 
 Run: python3 <thisfile>   Exit 0 = all pass.
 """
@@ -27,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -52,6 +58,16 @@ def anchor(number, text):
     canon = json.dumps({"kind": "sms", "number": number, "text": text},
                        ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def canon(number, text):
+    return json.dumps({"kind": "sms", "number": number, "text": text},
+                      ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def uid(name):
+    """The approval id the client accepts is a UUID (B4): the test names map to stable UUIDs."""
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, "seeme-test-" + name))
 
 
 LOG = []
@@ -157,13 +173,13 @@ with open(ENVV["SEEME_ENV_FILE"], "w") as fh:
     fh.write("SEEME_API_KEY=fake\nSEEME_SENDER=36300000000\nSEEME_BASE=http://127.0.0.1:%d/gateway\n" % PORT)
 
 
-def run(text, to, approval, extra=(), script=SCRIPT, env_extra=None):
+def run(text, to, approval, extra=(), script=SCRIPT, env_extra=None, raw_approval=False):
     env = dict(os.environ)
     env.update(ENVV)
     env.update(env_extra or {})
     args = [sys.executable, script, "--to", to]
     if approval:
-        args += ["--approval", approval]
+        args += ["--approval", approval if raw_approval else uid(approval)]
     args += list(extra)
     p = subprocess.run(args, input=text.encode("utf-8"), capture_output=True, env=env, timeout=60)
     return p.returncode, (p.stdout + p.stderr).decode("utf-8", "replace")
@@ -179,10 +195,12 @@ def kinds():
     return [l.split(" ")[0] for l in LOG]
 
 
-def approve(aid, number=NUM, text=TEXT, **over):
+def approve(name, number=NUM, text=TEXT, **over):
+    aid = uid(name)
     rec = {
         "id": aid, "status": "approved", "category": "external_message",
         "action_description": "SMS-t kuldenek a %s szamra (SeeMe)." % number,
+        "action_payload": canon(number, text),
         "content_hash": anchor(number, text),
         "requested_at": int(time.time()) - 60, "resolved_at": int(time.time()) - 10,
         "timeout_at": int(time.time()) + 3000,
@@ -295,10 +313,34 @@ reset()
 rc, out = run(TEXT, NUM, "old")
 check("decision older than the window: refused, no consume, no send", rc != 0 and "CONSUME" not in kinds() and "SEND" not in kinds(), out)
 check("expired: one-line reason", one_line_clean(out), out)
-approve("old-ok-env", resolved_at=int(time.time()) - 4000)
+approve("old-env-wide", resolved_at=int(time.time()) - 4000)
 reset()
-rc, out = run(TEXT, NUM, "old-ok-env", env_extra={"SEEME_APPROVAL_WINDOW_S": "7200"})
-check("window is configurable (7200 s): the same age is accepted and sent", rc == 0 and "SEND" in kinds(), out)
+rc, out = run(TEXT, NUM, "old-env-wide", env_extra={"SEEME_APPROVAL_WINDOW_S": "7200"})
+check("B5: the env variable cannot WIDEN the window (7200 asked, 1800 fixed): refused, no consume, no send",
+      rc != 0 and "CONSUME" not in kinds() and "SEND" not in kinds(), str(LOG) + out)
+approve("old-env-huge", resolved_at=int(time.time()) - 4000)
+reset()
+rc, out = run(TEXT, NUM, "old-env-huge", env_extra={"SEEME_APPROVAL_WINDOW_S": "999999999"})
+check("B5: a huge env window is capped at 1800 too", rc != 0 and "SEND" not in kinds(), out)
+approve("env-wide-ok", resolved_at=int(time.time()) - 100)
+reset()
+rc, out = run(TEXT, NUM, "env-wide-ok", env_extra={"SEEME_APPROVAL_WINDOW_S": "7200"})
+check("B5: inside the fixed window a wide env value changes nothing: sent, consume asks for 1800 s",
+      rc == 0 and "SEND" in kinds() and CONSUMED_BODIES[0].get("max_age_seconds") == 1800, out + str(CONSUMED_BODIES))
+for bad in ("0", "-5", "abc", ""):
+    approve("env-bad-" + (bad or "empty"), resolved_at=int(time.time()) - 100)
+    reset()
+    rc, out = run(TEXT, NUM, "env-bad-" + (bad or "empty"), env_extra={"SEEME_APPROVAL_WINDOW_S": bad})
+    check("B5: env value %r falls back to 1800: a 100 s old decision is sent" % bad, rc == 0 and "SEND" in kinds(), out)
+approve("env-narrow-old", resolved_at=int(time.time()) - 100)
+reset()
+rc, out = run(TEXT, NUM, "env-narrow-old", env_extra={"SEEME_APPROVAL_WINDOW_S": "30"})
+check("B5: the env variable may NARROW the window (30 s): a 100 s old decision is refused", rc != 0 and "SEND" not in kinds() and "CONSUME" not in kinds(), out)
+approve("env-narrow-new", resolved_at=int(time.time()) - 5)
+reset()
+rc, out = run(TEXT, NUM, "env-narrow-new", env_extra={"SEEME_APPROVAL_WINDOW_S": "30"})
+check("B5: narrowed window, fresh decision: sent, consume asks for 30 s",
+      rc == 0 and "SEND" in kinds() and CONSUMED_BODIES[0].get("max_age_seconds") == 30, out + str(CONSUMED_BODIES))
 approve("past-timeout", timeout_at=int(time.time()) - 5)
 reset()
 rc, out = run(TEXT, NUM, "past-timeout")
@@ -315,13 +357,81 @@ check("no resolved_at: refused", rc != 0 and "SEND" not in kinds(), out)
 # --- 7. consume failures ---
 for aid, mode in (("c500", "500"), ("cnotok", "notok")):
     approve(aid)
-    CONSUME_MODE[aid] = mode
+    CONSUME_MODE[uid(aid)] = mode
     reset()
     rc, out = run(TEXT, NUM, aid)
     check("consume %s: no send, non-zero exit, one-line reason" % mode, rc != 0 and "SEND" not in kinds() and "CONSUME" in kinds() and one_line_clean(out), out)
 reset()
 rc, out = run(TEXT, NUM, "does-not-exist")
 check("unknown approval: no consume, no send", rc != 0 and "SEND" not in kinds() and "CONSUME" not in kinds(), out)
+
+# --- 7b. B1: the approval must carry the canonical envelope as action_payload ---
+OTHER = TEXT + " Es nezd meg: https://pelda.example/x"
+approve("pl-other-text", action_payload=canon(NUM, OTHER))   # hash is of TEXT, payload (what the owner saw) is OTHER
+reset()
+rc, out = run(TEXT, NUM, "pl-other-text")
+check("B1: payload shows another text than the one hashed/sent: no consume, no send", rc != 0 and "CONSUME" not in kinds() and "SEND" not in kinds(), str(LOG) + out)
+check("B1: payload mismatch: one-line reason without text or full number", one_line_clean(out), out)
+approve("pl-other-num", action_payload=canon("36709998877", TEXT))
+reset()
+rc, out = run(TEXT, NUM, "pl-other-num")
+check("B1: payload shows another number: no consume, no send", rc != 0 and "CONSUME" not in kinds() and "SEND" not in kinds(), str(LOG) + out)
+approve("pl-none", action_payload=None)
+reset()
+rc, out = run(TEXT, NUM, "pl-none")
+check("B1: approval without action_payload (hash only): no consume, no send", rc != 0 and "CONSUME" not in kinds() and "SEND" not in kinds(), str(LOG) + out)
+approve("pl-spaced", action_payload=canon(NUM, TEXT).replace(",", ", "))
+reset()
+rc, out = run(TEXT, NUM, "pl-spaced")
+check("B1: same data but not byte-identical to the canonical JSON: no consume, no send", rc != 0 and "CONSUME" not in kinds() and "SEND" not in kinds(), str(LOG) + out)
+approve("pl-extra", action_payload=json.dumps({"kind": "sms", "number": NUM, "text": TEXT, "extra": 1}, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+reset()
+rc, out = run(TEXT, NUM, "pl-extra")
+check("B1: payload with an extra key: no consume, no send", rc != 0 and "SEND" not in kinds() and "CONSUME" not in kinds(), str(LOG) + out)
+approve("pl-nonstr", action_payload={"kind": "sms"})
+reset()
+rc, out = run(TEXT, NUM, "pl-nonstr")
+check("B1: payload that is not a string: no consume, no send", rc != 0 and "SEND" not in kinds() and "CONSUME" not in kinds(), str(LOG) + out)
+
+# --- 7c. B2: exactly one phone number in the description ---
+approve("d-none", action_description="SMS az ugyfelnek (SeeMe).")
+reset()
+rc, out = run(TEXT, NUM, "d-none")
+check("B2: description names no number: refused, no consume, no send", rc != 0 and "CONSUME" not in kinds() and "SEND" not in kinds(), out)
+approve("d-two", action_description="SMS a %s szamra, masolat a 36709998877 szamra" % NUM)
+reset()
+rc, out = run(TEXT, NUM, "d-two")
+check("B2: description names the recipient AND another number: refused, no consume, no send", rc != 0 and "CONSUME" not in kinds() and "SEND" not in kinds(), out)
+check("B2: the refusal does not print the second number", "36709998877" not in out and NUM not in out, out)
+approve("d-same-twice", action_description="SMS a +36 30 123 4567 szamra (%s), ugyanaz a szam" % NUM)
+reset()
+rc, out = run(TEXT, NUM, "d-same-twice")
+check("B2: the same number twice (other spellings) is still ONE number: sent", rc == 0 and "SEND" in kinds(), out)
+
+# --- 7d. B4: --approval must be a UUID before any request is made ---
+for bad in ("../../etc/passwd", "appr-ext-1", "not-a-uuid\nFAKE-LOG-LINE", "11111111-1111-1111-1111-11111111111Z",
+            "11111111-1111-1111-1111-1111111111111", "11111111-1111-1111-1111-111111111111/consume",
+            "11111111-1111-1111-1111-111111111111?x=1", uid("x").upper()):
+    reset()
+    rc, out = run(TEXT, NUM, bad, raw_approval=True)
+    check("B4: --approval %r refused before any request" % bad, rc != 0 and LOG == [] and "nem UUID" in out, str(LOG) + out)
+reset()
+rc, out = run("teszt", "36305552860", "../x", raw_approval=True)
+check("B4: a malformed --approval is refused for an internal number too (it would reach the log)", rc != 0 and LOG == [], str(LOG) + out)
+
+# --- 7e. --print-request builds the request this script then accepts ---
+rc, out = run(TEXT, "06 30 123 4567", None, extra=("--print-request", "ezermester", "--description", "Indok: teszt."))
+try:
+    req = json.loads(out)
+except Exception:
+    req = {}
+check("--print-request: valid JSON for an external_message with the canonical envelope as action_payload and its sha256 as content_hash",
+      rc == 0 and req.get("category") == "external_message" and req.get("agent_id") == "ezermester"
+      and req.get("action_payload") == canon(NUM, TEXT) and req.get("content_hash") == anchor(NUM, TEXT)
+      and req.get("content_hash") == hashlib.sha256(req.get("action_payload", "").encode("utf-8")).hexdigest()
+      and NUM in req.get("action_description", ""), out)
+rc, out = run(TEXT, NUM, None, extra=("--print-request", "ezermester", "--description", "Masolat: 36709998877"))
+check("--print-request: a --description naming another number is refused", rc != 0 and "36709998877" not in out, out)
 # --- 8. other statuses / categories / dry-run ---
 approve("pending", status="pending")
 reset()
@@ -350,7 +460,8 @@ check("--print-anchor is the same for every spelling of the number", out2.strip(
 
 # --- 10. mutation control: without the hash comparison a changed text IS sent ---
 src = open(SCRIPT, encoding="utf-8").read()
-mut_src = src.replace("    if ch != anchor:\n", "    if False:\n")
+# (the payload comparison goes too: a changed text no longer matches the approval's envelope either)
+mut_src = src.replace("    if ch != anchor:\n", "    if False:\n").replace('    if rec.get("action_payload") != payload:\n', "    if False:\n")
 mut_path = os.path.join(FIX, "seeme-send-mutated.py")
 with open(mut_path, "w", encoding="utf-8") as fh:
     fh.write(mut_src)
@@ -366,6 +477,29 @@ rc, out = run(TEXT + " MAS", NUM, "mut-2", script=mut_path)
 LAX["hash"] = False
 check("mutation control: with both hash comparisons removed the changed text IS sent (the cases above can fail)",
       rc == 0 and LOG[-1] == "SEND %s %s MAS" % (NUM, TEXT), str(LOG) + out)
+
+# --- 11. mutation control for B1: without the payload comparison a hash-only approval IS sent ---
+# (the fake dashboard, like the real consume, checks the hash but not the payload)
+mut2_src = src.replace('    if rec.get("action_payload") != payload:\n', "    if False:\n")
+mut2_path = os.path.join(FIX, "seeme-send-mutated-payload.py")
+with open(mut2_path, "w", encoding="utf-8") as fh:
+    fh.write(mut2_src)
+check("the payload mutation changed the script", mut2_src != src)
+approve("mut-pl", action_payload=canon(NUM, OTHER))
+reset()
+rc, out = run(TEXT, NUM, "mut-pl", script=mut2_path)
+check("mutation control (B1): with the payload comparison removed an approval showing another text IS sent (the payload cases above can fail)",
+      rc == 0 and LOG[-1] == "SEND %s %s" % (NUM, TEXT), str(LOG) + out)
+# mutation control for B2: with the exact-one-number test removed the two-number description IS sent
+mut3_src = src.replace("    if named != {to_number}:\n", "    if to_number not in named:\n")
+mut3_path = os.path.join(FIX, "seeme-send-mutated-onenum.py")
+with open(mut3_path, "w", encoding="utf-8") as fh:
+    fh.write(mut3_src)
+check("the one-number mutation changed the script", mut3_src != src)
+approve("mut-two", action_description="SMS a %s szamra, masolat a 36709998877 szamra" % NUM)
+reset()
+rc, out = run(TEXT, NUM, "mut-two", script=mut3_path)
+check("mutation control (B2): with the exact-one-number test relaxed the two-number description IS sent", rc == 0 and "SEND" in kinds(), str(LOG) + out)
 
 print()
 print("%d passed, %d failed" % (passed, len(failed)))

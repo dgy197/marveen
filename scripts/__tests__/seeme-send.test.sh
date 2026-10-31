@@ -79,10 +79,15 @@ out="$(printf '%s' "$long_text" | python3 "$SCRIPT" --to +36305552860 --dry-run 
   && pass "1600 karakter feletti szoveg elutasitva" \
   || fail "hossz-limit elutasitasat vartam, kaptam (rc=$rc): $out"
 
-out="$(printf '%s' "teszt" | python3 "$SCRIPT" --to +36301234567 --approval "nem-letezo-approval-id-xyz" --dry-run 2>&1)"; rc=$?
+out="$(printf '%s' "teszt" | python3 "$SCRIPT" --to +36301234567 --approval "44444444-4444-4444-8444-444444444444" --dry-run 2>&1)"; rc=$?
 [ $rc -eq 1 ] && echo "$out" | grep -qi "az approval lekerdezese" \
   && pass "nem letezo approval-id -> lekerdezesi hiba, elutasitva" \
   || fail "nem letezo approval-id elutasitasat vartam, kaptam (rc=$rc): $out"
+
+out="$(printf '%s' "teszt" | python3 "$SCRIPT" --to +36301234567 --approval "nem-letezo-approval-id-xyz" --dry-run 2>&1)"; rc=$?
+[ $rc -eq 1 ] && echo "$out" | grep -q "nem UUID" \
+  && pass "nem UUID approval-id -> elutasitva, kerelem nelkul" \
+  || fail "nem UUID approval-id elutasitasat vartam, kaptam (rc=$rc): $out"
 
 echo "--- mutacios kontroll (4. kikotes: a kontroll TUDJON bukni) ---"
 MUT="$(mktemp "${TMPDIR:-/tmp}/seeme-send-mutated-XXXX.py")"
