@@ -279,3 +279,54 @@ describe('gate script entrypoint (spawned, no network)', () => {
       .toBeNull()
   })
 })
+
+// card 6151bb4d: the name-by-verb fallback must not close channel servers and
+// non-draft "create_*" tools, and must keep closing every real mail send/draft.
+describe('mail-tool fallback narrowing (card 6151bb4d)', () => {
+  const verified = (a: string) => a === 'known@example.com'
+  const input = { to: ['invented@example.com'], operation: 'send' }
+  const channel = [
+    'mcp__slack__send_message', 'mcp__slack__reply', 'mcp__Slack__forward',
+    'mcp__ms365__send-chat-message', 'mcp__ms365__reply-to-chat-message',
+    'mcp__ms365-v2__send-channel-message', 'mcp__ms365__send-my-activity-notification',
+    'mcp__plugin_discord_discord__reply', 'mcp__plugin_discord_discord__send_message',
+    'mcp__plugin_telegram_telegram__send_message', 'mcp__plugin_telegram_telegram__reply',
+  ]
+  const nonDraftCreate = [
+    'mcp__gmail__create_filter', 'mcp__gmail__create_filter_from_template',
+    'mcp__google-drive__createGoogleDoc', 'mcp__gmail__v2get_draft', 'mcp__gmail__xdelete_draft',
+  ]
+  const stillGated: Array<[string, string]> = [
+    ['mcp__gmail__create_draft', 'unverified-recipient'], ['mcp__gmail__createDraft', 'unverified-recipient'],
+    ['mcp__gmail__create_message', 'unverified-recipient'], ['mcp__gmail__create_mail', 'unverified-recipient'],
+    ['mcp__ms365__create-reply-all-draft', 'unverified-recipient'],
+    ['mcp__harder-mail__send_mail', 'mail-tool-send'], ['mcp__ms365__send-mail', 'mail-tool-send'],
+    ['mcp__slack__send_email', 'mail-tool-send'], ['mcp__slack-mail__sendMail', 'mail-tool-send'],
+    ['mcp__ms365_mail__send-chat-message', 'mail-tool-send'],
+    ['mcp__gmail-v2__v2_send_draft', 'mail-tool-send'], ['mcp__gmail__v2get_send_as', 'mail-tool-send'],
+  ]
+
+  it('channel servers are not mail: the gate lets them through, even with a recipient field', () => {
+    for (const t of channel) {
+      expect(mailToolAction(t), t).toBe(null)
+      expect(gateDecision(t, input, verified).deny, t).toBe(false)
+    }
+  })
+
+  it('create / get / delete without a mail noun is no draft', () => {
+    for (const t of nonDraftCreate) {
+      expect(mailToolAction(t), t).toBe(null)
+      expect(gateDecision(t, input, verified).deny, t).toBe(false)
+    }
+  })
+
+  it('real mail sends and drafts still close', () => {
+    for (const [t, kind] of stillGated) {
+      const d = gateDecision(t, input, verified)
+      expect(d.deny, t).toBe(true)
+      expect(d.kind, t).toBe(kind)
+    }
+    // a draft to a sourced address passes, as before
+    expect(gateDecision('mcp__gmail__create_draft', { to: ['known@example.com'] }, verified).deny).toBe(false)
+  })
+})

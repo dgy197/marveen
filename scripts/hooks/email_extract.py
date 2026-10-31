@@ -529,14 +529,42 @@ _CHANNEL_PLUGIN_RE = re.compile(r"mcp__plugin_(?:telegram|discord|slack)[-_]")
 _VERSION_WORD = re.compile(r"v[0-9]+")
 
 
+# Channel-like servers, the same exclusions the hook matcher carries
+# (NON_MAIL_SERVERS in src/web/agent-scaffold.ts; card 6151bb4d): the slack
+# server unless the rest of the name says "mail" (mcp__slack__send_email stays
+# in), and the ms365 chat / channel / activity tools (its mail tools stay in).
+# Applied to what follows "mcp__". ASCII-only case folding, like the JS twin
+# (_NON_MAIL_SERVER_RE <-> NON_MAIL_SERVER_RE in scripts/email-send-gate.mjs).
+_NON_MAIL_SERVER_RE = re.compile(
+    r"(?:slack__(?![\s\S]*mail)|ms365[^_]*__[^\n\r]*(?:chat|channel|activity))",
+    re.IGNORECASE | re.ASCII)
+# "create" only drafts a letter when a mail noun comes with it (create_draft,
+# create_message, create_mail, create_reply_draft): create_filter,
+# create_filter_from_template and createGoogleDoc are not drafts (card 6151bb4d).
+_MAIL_CREATE_NOUNS = ("draft", "drafts", "message", "messages", "msg", "mail", "email", "emails")
+_GLUED_READ_VERB = re.compile(r"[a-z0-9]{1,2}(get|delete)")
+
+
 def _mail_verb(word: str):
-    """The verb a word stands for ("sendmessage" -> "send"), or None."""
+    """(verb, glued noun) a word stands for ("sendmessage" -> ("send", "message")), or None."""
     if word in _MAIL_VERBS:
-        return word
+        return word, ""
     for noun in _MAIL_GLUE_NOUNS:
         if word.endswith(noun) and word[:-len(noun)] in _MAIL_VERBS:
-            return word[:-len(noun)]
+            return word[:-len(noun)], noun
+    # A version or one-letter prefix glued to get / delete (v2get_draft,
+    # xdelete_draft) is that read verb. It only narrows: a send or draft verb
+    # behind a prefix is not touched. Twin: the regex in mailVerb (email-send-gate.mjs).
+    m = _GLUED_READ_VERB.fullmatch(word)
+    if m:
+        return m.group(1), ""
     return None
+
+
+def _creates_mail(noun: str, words, index: int) -> bool:
+    if noun in _MAIL_CREATE_NOUNS:
+        return True
+    return any(w.endswith(n) for w in words[index + 1:] for n in _MAIL_CREATE_NOUNS)
 
 
 def _action_words(segment: str):
@@ -551,12 +579,16 @@ def _action_words(segment: str):
 
 
 def _segment_action(segment: str):
-    verbs = [v for v in (_mail_verb(w) for w in _action_words(segment)) if v]
-    if any(v in _MAIL_SEND_ANYWHERE for v in verbs):
+    words = _action_words(segment)
+    entries = [(v, i) for i, v in ((i, _mail_verb(w)) for i, w in enumerate(words)) if v]
+    if any(v[0] in _MAIL_SEND_ANYWHERE for v, _ in entries):
         return "send"
-    if verbs and verbs[0] in _MAIL_SEND_VERBS:
+    if entries and entries[0][0][0] in _MAIL_SEND_VERBS:
         return "send"
-    if verbs and verbs[0] in _MAIL_DRAFT_VERBS:
+    if entries and entries[0][0][0] in _MAIL_DRAFT_VERBS:
+        (verb, noun), index = entries[0]
+        if verb == "create" and not _creates_mail(noun, words, index):
+            return None
         return "draft"
     return None
 
@@ -984,6 +1016,8 @@ def mail_tool_action(tool_name):
     name = tool_name if isinstance(tool_name, str) else ""
     parts = name.split("__")
     if len(parts) < 3 or parts[0].lower() != "mcp" or _CHANNEL_PLUGIN_RE.match(name):
+        return None
+    if _NON_MAIL_SERVER_RE.match(name[5:]):
         return None
     found = {_segment_action(p) for p in parts[2:]}
     if "send" in found:

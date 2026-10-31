@@ -347,6 +347,31 @@
     }
   ],
   "classifier_edges": [
+    {"tool": "mcp__slack__send_message", "expected": null, "note": "card 6151bb4d: the slack server is a chat channel, not mail"},
+    {"tool": "mcp__Slack__reply", "expected": null, "note": "card 6151bb4d: case-insensitive"},
+    {"tool": "mcp__slack__send_email", "expected": "send", "note": "card 6151bb4d: a slack tool whose name says mail stays in"},
+    {"tool": "mcp__slack-mail__sendMail", "expected": "send", "note": "card 6151bb4d: only the exact server slack is excluded"},
+    {"tool": "mcp__ms365__send-chat-message", "expected": null, "note": "card 6151bb4d: ms365 chat tool"},
+    {"tool": "mcp__ms365-v2__reply-to-channel-message", "expected": null, "note": "card 6151bb4d: ms365 channel tool, any server suffix"},
+    {"tool": "mcp__ms365__send-my-activity-notification", "expected": null, "note": "card 6151bb4d: ms365 activity tool"},
+    {"tool": "mcp__ms365__send-mail", "expected": "send", "note": "card 6151bb4d: ms365 mail send still closes"},
+    {"tool": "mcp__ms365_mail__send-chat-message", "expected": "send", "note": "card 6151bb4d: ms365_mail is not the ms365 chat server shape (fail-closed, as the matcher)"},
+    {"tool": "mcp__plugin_discord_discord__reply", "expected": null, "note": "card 6151bb4d: discord plugin reply is a channel"},
+    {"tool": "mcp__gmail__create_draft", "expected": "draft", "note": "card 6151bb4d: create + draft noun"},
+    {"tool": "mcp__gmail__createDraft", "expected": "draft", "note": "card 6151bb4d: camelCase"},
+    {"tool": "mcp__gmail__createdraft", "expected": "draft", "note": "card 6151bb4d: noun glued to create"},
+    {"tool": "mcp__gmail__create_message", "expected": "draft", "note": "card 6151bb4d: create + message"},
+    {"tool": "mcp__gmail__create_mail", "expected": "draft", "note": "card 6151bb4d: create + mail"},
+    {"tool": "mcp__ms365__create-reply-all-draft", "expected": "draft", "note": "card 6151bb4d: noun later in the segment"},
+    {"tool": "mcp__gmail__create_filter", "expected": null, "note": "card 6151bb4d: create without a mail noun is no draft"},
+    {"tool": "mcp__gmail__create_filter_from_template", "expected": null, "note": "card 6151bb4d"},
+    {"tool": "mcp__google-drive__createGoogleDoc", "expected": null, "note": "card 6151bb4d"},
+    {"tool": "mcp__gmail__create_mailbox_rule", "expected": null, "note": "card 6151bb4d: mailbox is not a mail noun"},
+    {"tool": "mcp__gmail__v2get_draft", "expected": null, "note": "card 6151bb4d: version prefix glued to a read verb"},
+    {"tool": "mcp__gmail__xdelete_draft", "expected": null, "note": "card 6151bb4d: one-letter prefix glued to a read verb"},
+    {"tool": "mcp__gmail__2get_draft", "expected": null, "note": "card 6151bb4d"},
+    {"tool": "mcp__gmail__v2get_send_as", "expected": "send", "note": "card 6151bb4d: the narrowed prefix word does not hide a later send verb"},
+    {"tool": "mcp__harder-mail__send_mail", "expected": "send", "note": "card 6151bb4d: harder-mail send"},
     {
       "tool": "mcp__gmail__send_message__v2",
       "expected": "send",
@@ -474,8 +499,8 @@
     },
     {
       "tool": "mcp__gmail__create_label",
-      "expected": "draft",
-      "note": "spec G2: first verb create (the copy gate passes it when it carries no text)"
+      "expected": null,
+      "note": "card 6151bb4d: create without a mail noun is no draft (was spec G2 first verb create)"
     },
     {
       "tool": "mcp__gmail__createDraft",

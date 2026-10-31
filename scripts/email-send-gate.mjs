@@ -1603,12 +1603,35 @@ const MAIL_GLUE_NOUNS = ['mail', 'email', 'emails', 'message', 'messages', 'msg'
   'draft', 'drafts', 'all', 'now', 'reply']
 const CHANNEL_PLUGIN_RE = /^mcp__plugin_(?:telegram|discord|slack)[-_]/
 
+// Channel-like servers, the same exclusions the hook matcher carries
+// (NON_MAIL_SERVERS in src/web/agent-scaffold.ts; card 6151bb4d): the slack
+// server unless the rest of the name says "mail" (mcp__slack__send_email stays
+// in), and the ms365 chat / channel / activity tools (its mail tools stay in).
+// Applied to what follows "mcp__". A chat reply is the owner's channel, not a
+// letter. Twin: _NON_MAIL_SERVER_RE in scripts/hooks/email_extract.py.
+const NON_MAIL_SERVER_RE = /^(?:slack__(?![\s\S]*mail)|ms365[^_]*__[^\n\r]*(?:chat|channel|activity))/i
+// "create" only drafts a letter when a mail noun comes with it (create_draft,
+// create_message, create_mail, create_reply_draft): create_filter,
+// create_filter_from_template and createGoogleDoc are not drafts (card 6151bb4d).
+const MAIL_CREATE_NOUNS = ['draft', 'drafts', 'message', 'messages', 'msg', 'mail', 'email', 'emails']
+
+// {verb, noun}: the verb a word stands for ("sendmessage" -> send + message), or null.
 function mailVerb(word) {
-  if (MAIL_VERBS.has(word)) return word
+  if (MAIL_VERBS.has(word)) return { verb: word, noun: '' }
   for (const noun of MAIL_GLUE_NOUNS) {
-    if (word.endsWith(noun) && MAIL_VERBS.has(word.slice(0, -noun.length))) return word.slice(0, -noun.length)
+    if (word.endsWith(noun) && MAIL_VERBS.has(word.slice(0, -noun.length))) return { verb: word.slice(0, -noun.length), noun }
   }
+  // A version or one-letter prefix glued to get / delete (v2get_draft,
+  // xdelete_draft) is that read verb. It only narrows: a send or draft verb
+  // behind a prefix is not touched. Twin: _GLUED_READ_VERB in email_extract.py.
+  const m = /^[a-z0-9]{1,2}(get|delete)$/.exec(word)
+  if (m) return { verb: m[1], noun: '' }
   return null
+}
+
+function createsMail(entry, words) {
+  if (MAIL_CREATE_NOUNS.includes(entry.noun)) return true
+  return words.slice(entry.index + 1).some((w) => MAIL_CREATE_NOUNS.some((n) => w.endsWith(n)))
 }
 
 function segmentAction(segment) {
@@ -1618,10 +1641,17 @@ function segmentAction(segment) {
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
   const words = s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
   while (words.length && /^v[0-9]+$/.test(words[0])) words.shift()
-  const verbs = words.map(mailVerb).filter(Boolean)
-  if (verbs.some((v) => MAIL_SEND_ANYWHERE.has(v))) return 'send'
-  if (verbs.length && MAIL_SEND_VERBS.has(verbs[0])) return 'send'
-  if (verbs.length && MAIL_DRAFT_VERBS.has(verbs[0])) return 'draft'
+  const entries = []
+  words.forEach((w, index) => {
+    const v = mailVerb(w)
+    if (v) entries.push({ ...v, index })
+  })
+  if (entries.some((e) => MAIL_SEND_ANYWHERE.has(e.verb))) return 'send'
+  if (entries.length && MAIL_SEND_VERBS.has(entries[0].verb)) return 'send'
+  if (entries.length && MAIL_DRAFT_VERBS.has(entries[0].verb)) {
+    if (entries[0].verb === 'create' && !createsMail(entries[0], words)) return null
+    return 'draft'
+  }
   return null
 }
 
@@ -1630,6 +1660,7 @@ export function mailToolAction(toolName) {
   const name = typeof toolName === 'string' ? toolName : ''
   const parts = name.split('__')
   if (parts.length < 3 || parts[0].toLowerCase() !== 'mcp' || CHANNEL_PLUGIN_RE.test(name)) return null
+  if (NON_MAIL_SERVER_RE.test(name.slice(5))) return null
   const found = new Set(parts.slice(2).map(segmentAction))
   if (found.has('send')) return 'send'
   if (found.has('draft')) return 'draft'
