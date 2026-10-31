@@ -1146,6 +1146,11 @@ export function initDatabase(dbPathOverride?: string): void {
   // internal, session, device). Nullable and additive: NULL for every older row (read as 'legacy'), and nothing reads
   // it until the route (N3) starts writing it, so adding the column changes no behavior.
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN sender_auth TEXT') } catch { /* exists */ }
+  // Card f137f980: how the CLOSER of the row (PUT /api/messages/:id) was authenticated, same vocabulary as sender_auth
+  // plus no_key_recipient. Written in the SAME UPDATE that sets the final status (closeOpenMessage), so a row never
+  // has a close without its verdict. Nullable and additive: NULL for every older row and for MESSAGE_SENDER_AUTH=off
+  // (read as 'legacy'); nothing reads it for a decision, it only feeds the shadow report.
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN closer_auth TEXT') } catch { /* exists */ }
   // Card 0d7e2c04: per-agent send keys (src/web/agent-send-keys.ts). One row per agent; only sha256(key) is stored,
   // never the raw key. prev_hash/prev_valid_until hold the key a rotation replaced, valid for a grace window so a
   // background process still holding it is not rejected. Additive: zero rows = nothing resolves, nothing changes.
@@ -4840,6 +4845,8 @@ export interface AgentMessage {
   stop_authorized?: number
   // Card 0d7e2c04: how the sender was authenticated (see the migration). Optional in the type; null for every older row.
   sender_auth?: string | null
+  // Card f137f980: how the closer was authenticated (see the migration). Optional in the type; null for every older row.
+  closer_auth?: string | null
 }
 
 /**
@@ -4848,8 +4855,9 @@ export interface AgentMessage {
  * row: a per-row verdict would tell a forger whether a stolen key still verifies, and the bodies must stay byte-identical
  * to the pre-card ones. Every route that returns a row (list, GET /:id, threads, voice mailbox) goes through this.
  */
-export function toServedMessage<T extends { sender_auth?: unknown }>(row: T): Omit<T, 'sender_auth'> {
-  const { sender_auth: _senderAuth, ...served } = row
+export function toServedMessage<T extends { sender_auth?: unknown; closer_auth?: unknown }>(row: T): Omit<T, 'sender_auth' | 'closer_auth'> {
+  // Card f137f980: closer_auth is stored-not-served for the same reason as sender_auth (a per-row verdict is an oracle).
+  const { sender_auth: _senderAuth, closer_auth: _closerAuth, ...served } = row
   return served
 }
 
@@ -4902,6 +4910,18 @@ export function getSenderAuthReport(days: number, nowSec: number = Math.floor(Da
     "SELECT substr(from_agent, 1, 64) AS \"from\", COALESCE(sender_auth, 'legacy') AS sender_auth, COUNT(*) AS count, MAX(created_at) AS last_seen " +
     'FROM agent_messages WHERE created_at >= ? GROUP BY 1, 2 ORDER BY 1, 2'
   ).all(since) as unknown as SenderAuthReportRow[]
+}
+
+export interface CloserAuthReportRow { to: string; closer_auth: string; count: number; last_seen: number }
+
+// Card f137f980: the closer side of the shadow report. Counts per (to_agent, closer_auth) over the rows closed in the
+// last `days` days. Aggregates ONLY: no content, no result, no key. A closed row with NULL closer_auth is 'legacy'.
+export function getCloserAuthReport(days: number, nowSec: number = Math.floor(Date.now() / 1000)): CloserAuthReportRow[] {
+  const since = nowSec - Math.max(1, Math.floor(days)) * 86400
+  return db.prepare(
+    "SELECT substr(to_agent, 1, 64) AS \"to\", COALESCE(closer_auth, 'legacy') AS closer_auth, COUNT(*) AS count, MAX(completed_at) AS last_seen " +
+    "FROM agent_messages WHERE status IN ('done', 'failed') AND completed_at >= ? GROUP BY 1, 2 ORDER BY 1, 2"
+  ).all(since) as unknown as CloserAuthReportRow[]
 }
 
 // The router's pre-delivery re-read: the CURRENT status of one row, or null if
@@ -5284,12 +5304,16 @@ export function markMessageFailed(id: number, error?: string): boolean {
 // close of an already-closed row used to overwrite its result and send a
 // second completion report in the recipient's name. The router keeps the
 // unguarded markMessageDone/markMessageFailed above for its own transitions.
-export function closeOpenMessage(id: number, status: 'done' | 'failed', result?: string): boolean {
+// Card f137f980: closerAuth (the closer's verdict) is written in the SAME UPDATE as the status, so only the winning
+// close stores a verdict and a lost race (changes === 0) leaves the first closer's value untouched. Omitted or null
+// (every old caller, MESSAGE_SENDER_AUTH=off) writes NULL.
+export function closeOpenMessage(id: number, status: 'done' | 'failed', result?: string, closerAuth?: string | null): boolean {
   const now = Math.floor(Date.now() / 1000)
   const sql = status === 'done'
-    ? "UPDATE agent_messages SET status = 'done', result = ?, completed_at = ?, delivered_at = COALESCE(delivered_at, ?) WHERE id = ? AND status NOT IN ('done', 'failed')"
-    : "UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ? AND status NOT IN ('done', 'failed')"
-  const args = status === 'done' ? [result ?? null, now, now, id] : [result ?? null, now, id]
+    ? "UPDATE agent_messages SET status = 'done', result = ?, completed_at = ?, delivered_at = COALESCE(delivered_at, ?), closer_auth = ? WHERE id = ? AND status NOT IN ('done', 'failed')"
+    : "UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ?, closer_auth = ? WHERE id = ? AND status NOT IN ('done', 'failed')"
+  const closer = closerAuth ?? null
+  const args = status === 'done' ? [result ?? null, now, now, closer, id] : [result ?? null, now, closer, id]
   return db.prepare(sql).run(...args).changes > 0
 }
 
