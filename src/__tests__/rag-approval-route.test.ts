@@ -42,6 +42,7 @@ vi.mock('../channel-provider.js', async (importOriginal) => {
 
 vi.mock('../web/vault.js', () => ({
   getSecret: vi.fn((id: string) => (id === 'telegram-engedely-bot-token' ? state.permToken : null)),
+  readPermissionBotToken: vi.fn(() => state.permToken),
 }))
 
 import { initDatabase, getApproval, getDb, listApprovalEvents } from '../db.js'

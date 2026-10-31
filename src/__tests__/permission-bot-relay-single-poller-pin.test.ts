@@ -185,6 +185,7 @@ describe('a. single poller: nothing outside the relay polls with the permission 
     'resolvePermissionBot',
     'setPermissionBotTokenReader',
     'vaultPermissionBotToken',
+    'readPermissionBotToken',
   ]
 
   it('the scan is not vacuous: it sees the other pollers and the token readers', () => {

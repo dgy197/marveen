@@ -101,14 +101,30 @@ for (const { envVar, secretId, unsendable } of valid) {
     // an unsendable id was never sent: it counts as missing
     const v = !unsendable && Object.prototype.hasOwnProperty.call(fromDashboard.values, secretId) ? fromDashboard.values[secretId] : null
     if (typeof v === 'string') value = v
-    else if (!unsendable && fromDashboard.refused.some(x => x && x.id === secretId && x.reason === 'acl')) {
+    else if (!unsendable && fromDashboard.refused.some(x => x && x.id === secretId && x.reason === 'locked')) {
+      process.stderr.write(`vault-resolve: refused, this vault entry is locked and not resolvable here: ${secretId}\n`)
+      refused++
+      continue
+    } else if (!unsendable && fromDashboard.refused.some(x => x && x.id === secretId && x.reason === 'acl')) {
       process.stderr.write(`vault-resolve: refused by the vault allowlist for this agent: ${secretId}\n`)
       refused++
       continue
     }
   } else if (!unsendable || !dashboardConfigured(projectRoot)) {
     // with a dashboard token file (the warning fallback) an unsendable id counts as missing here too
-    value = getSecret(secretId)
+    // Card 8e9f4670 (N2, r3): getSecret refuses the permission bot's token (it is read only in-process by
+    // the relay and the approvals route). Only that refusal is turned into a value-free "refused" line;
+    // any other error (e.g. a wrong master key) still ends the script loudly.
+    try {
+      value = getSecret(secretId)
+    } catch (e) {
+      if (e && e.name === 'VaultEntryReadLockedError') {
+        process.stderr.write(`vault-resolve: refused, this vault entry is locked and not resolvable here: ${secretId}\n`)
+        refused++
+        continue
+      }
+      throw e
+    }
   }
   if (value !== null) {
     process.stdout.write(`${envVar}=${value}\n`)

@@ -5,7 +5,7 @@ import { PROJECT_ROOT } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { isKeychainAvailable, keychainStore, keychainRetrieveStatus } from './keychain.js'
 import { logger } from '../logger.js'
-import { isPermissionBotVaultId, PERMISSION_BOT_VAULT_LOCKED_ERROR } from './permission-bot-vault.js'
+import { isPermissionBotVaultId, PERMISSION_BOT_VAULT_ID, PERMISSION_BOT_VAULT_LOCKED_ERROR, PERMISSION_BOT_VAULT_READ_LOCKED_ERROR } from './permission-bot-vault.js'
 
 const VAULT_PATH = join(PROJECT_ROOT, 'store', 'vault.json')
 const VAULT_KEY_PATH = join(PROJECT_ROOT, 'store', '.vault-key')
@@ -240,9 +240,12 @@ export function listSecrets(): Array<{ id: string, label: string, createdAt: str
 }
 
 // Card 9a77b3e5 (B3): the permission bot's token entry is locked in the storage
-// layer, so no route (connectors slugify, imports, ...) can overwrite or delete
-// it by building the same id. There is deliberately no internal bypass: the
-// entry is provisioned out-of-band by the operator.
+// layer, so every path that writes through setSecret/deleteSecret (connectors
+// slugify, the vault routes, ...) is refused for that id. There is deliberately
+// no internal bypass: the entry is provisioned out-of-band by the operator.
+// NOT covered here: the fleet import writes vault.json as a whole file and never
+// calls setSecret; its own check is validateVaultLock in fleet-transfer.ts
+// (card 8e9f4670), which refuses the whole import when a locked row is involved.
 export class VaultEntryLockedError extends Error {
   constructor() {
     super(PERMISSION_BOT_VAULT_LOCKED_ERROR)
@@ -265,11 +268,37 @@ export function setSecret(id: string, label: string, value: string): void {
   writeVault(store)
 }
 
-export function getSecret(id: string): string | null {
+// Card 8e9f4670 (N2, r3): the read side of the same lock. getSecret is the one
+// value-returning reader for every caller (routes, scripts, bindings, providers),
+// so the permission bot's token is refused HERE instead of per caller. It throws
+// (value-free message, id only): a throw cannot be mistaken for "not found", and
+// every existing caller either guards first, catches and fails closed, or lets
+// the error end the operation. The single legitimate reader is
+// readPermissionBotToken below.
+export class VaultEntryReadLockedError extends Error {
+  constructor() {
+    super(PERMISSION_BOT_VAULT_READ_LOCKED_ERROR)
+    this.name = 'VaultEntryReadLockedError'
+  }
+}
+
+function readEntryValue(id: string): string | null {
   const store = readVault()
   const entry = store.entries.find(e => e.id === id)
   if (!entry) return null
   return decrypt(entry.encrypted)
+}
+
+export function getSecret(id: string): string | null {
+  if (isPermissionBotVaultId(id)) throw new VaultEntryReadLockedError()
+  return readEntryValue(id)
+}
+
+// The ONLY reader of the permission bot's token: it takes no id, so it cannot be
+// pointed at another entry. Allowed callers are pinned by a grep test
+// (permission-bot-token-reader-pin.test.ts): the relay startup and the approvals route.
+export function readPermissionBotToken(): string | null {
+  return readEntryValue(PERMISSION_BOT_VAULT_ID)
 }
 
 export function deleteSecret(id: string): boolean {

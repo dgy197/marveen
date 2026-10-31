@@ -18,7 +18,7 @@ import { execGateApplies, admitCodeExecAdmin, codeExecAuditTrail } from '../code
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars, parseRunScriptsFlag } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret, VaultEntryLockedError } from '../vault.js'
 import { logVaultRead, isSshPrivateKeyId, principalOf, readVaultAcl, vaultReadRefused, vaultAclMode } from '../vault-acl.js'
-import { isPermissionBotVaultId, PERMISSION_BOT_VAULT_LOCKED_ERROR } from '../permission-bot-vault.js'
+import { isPermissionBotVaultId, PERMISSION_BOT_VAULT_ID, PERMISSION_BOT_VAULT_LOCKED_ERROR, PERMISSION_BOT_VAULT_READ_LOCKED_ERROR } from '../permission-bot-vault.js'
 import { noteCreditKeyRead } from '../credit-gate/key-reads.js'
 import { getCreditGateRuntime } from '../credit-gate/runtime.js'
 import {
@@ -894,9 +894,17 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const acl = readVaultAcl()
     const values: Record<string, string> = Object.create(null)
     const missing: string[] = []
-    const refused: Array<{ id: string; reason: 'ssh-key' | 'acl' }> = []
+    const refused: Array<{ id: string; reason: 'ssh-key' | 'acl' | 'locked' }> = []
     for (const raw of ids as string[]) {
       const id = raw.trim()
+      // Card 8e9f4670 (N2, r3): the permission bot's token is read only in-process; a resolver
+      // call (vault-resolve.mjs, vault-headers-helper.mjs) never gets it. Audit row carries the
+      // canonical id and the verdict, no value; getSecret is not reached.
+      if (isPermissionBotVaultId(id)) {
+        logVaultRead(PERMISSION_BOT_VAULT_ID, ctx.auth, listSecrets().some(s => isPermissionBotVaultId(s.id)), ctx.req, acl, { channel: 'resolve', refused: true })
+        refused.push({ id, reason: 'locked' })
+        continue
+      }
       if (isSshPrivateKeyId(id)) {
         logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), ctx.req, acl, { channel: 'resolve', refused: true })
         refused.push({ id, reason: 'ssh-key' })
@@ -936,6 +944,16 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     if (isSshPrivateKeyId(id)) {
       logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), ctx.req, readVaultAcl(), { channel: 'value', refused: true })
       json(res, { error: 'SSH private keys are not served by this route' }, 403)
+      return true
+    }
+    // Card 8e9f4670 (N2): the permission bot's token is read only in-process (the relay,
+    // approvals.ts). Whoever can read it could race the relay's getUpdates, so no API
+    // caller gets the value. 403 also when the row does not exist (no existence leak), the
+    // match is the shared predicate (decoded id, trim, lower case), and the value is never
+    // decrypted. The audit row carries the canonical id and the verdict, no value.
+    if (isPermissionBotVaultId(id)) {
+      logVaultRead(PERMISSION_BOT_VAULT_ID, ctx.auth, listSecrets().some(s => isPermissionBotVaultId(s.id)), ctx.req, readVaultAcl(), { channel: 'value', refused: true })
+      json(res, { error: PERMISSION_BOT_VAULT_READ_LOCKED_ERROR }, 403)
       return true
     }
     const acl = readVaultAcl()
@@ -1013,6 +1031,17 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       logger.warn({ event: 'vault-binding-refused', vaultSecretId: data.vaultSecretId, kind, principal,
         via: data.headerName?.trim() ? 'header' : 'env' }, 'vault: SSH private key binding refused')
       json(res, { error: 'SSH private keys cannot be bound to an env var or a header' }, 400)
+      return true
+    }
+
+    // Card 8e9f4670 (N2): a binding would hand the permission bot's token to an env var or a
+    // header of another process, which is a read path around the value-route lock. Refused
+    // before any write or sync runs (vault-bindings.json and every .mcp.json stay untouched).
+    if (isPermissionBotVaultId(data.vaultSecretId)) {
+      const { kind, principal } = principalOf(ctx.auth)
+      logger.warn({ event: 'vault-binding-refused', vaultSecretId: PERMISSION_BOT_VAULT_ID, kind, principal,
+        via: data.headerName?.trim() ? 'header' : 'env' }, 'vault: permission bot token binding refused')
+      json(res, { error: PERMISSION_BOT_VAULT_READ_LOCKED_ERROR }, 403)
       return true
     }
 

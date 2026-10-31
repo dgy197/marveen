@@ -10,5 +10,9 @@ export function isPermissionBotVaultId(id: unknown): boolean {
   return typeof id === 'string' && id.trim().toLowerCase() === PERMISSION_BOT_VAULT_ID
 }
 
+// Card 8e9f4670 (N2): the read side. The value is read only in-process (the relay).
+export const PERMISSION_BOT_VAULT_READ_LOCKED_ERROR =
+  `The Vault entry "${PERMISSION_BOT_VAULT_ID}" is locked: its value is not served through the API`
+
 export const PERMISSION_BOT_VAULT_LOCKED_ERROR =
   `The Vault entry "${PERMISSION_BOT_VAULT_ID}" is locked: it cannot be written or deleted through the API`

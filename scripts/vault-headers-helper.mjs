@@ -79,13 +79,25 @@ for (const { headerName, scheme, vaultId, unsendable } of wanted) {
   if (fromDashboard) {
     const v = !unsendable && Object.prototype.hasOwnProperty.call(fromDashboard.values, vaultId) ? fromDashboard.values[vaultId] : null
     if (typeof v === 'string') secret = v
-    else if (fromDashboard.refused.some(x => x && x.id === vaultId && x.reason === 'acl')) {
+    else if (fromDashboard.refused.some(x => x && x.id === vaultId && x.reason === 'locked')) {
+      process.stderr.write(`vault-headers-helper: refused, this vault entry is locked and not resolvable here: "${vaultId}"\n`)
+      continue
+    } else if (fromDashboard.refused.some(x => x && x.id === vaultId && x.reason === 'acl')) {
       process.stderr.write(`vault-headers-helper: refused by the vault allowlist for this agent: "${vaultId}"\n`)
       continue
     }
   } else if (!unsendable || !dashboardConfigured(projectRoot)) {
     // with a dashboard token file (the warning fallback) an unsendable id counts as missing here too
-    secret = getSecret(vaultId)
+    // Card 8e9f4670 (N2, r3): getSecret refuses the permission bot's token; it never leaves as a header.
+    try {
+      secret = getSecret(vaultId)
+    } catch (e) {
+      if (e && e.name === 'VaultEntryReadLockedError') {
+        process.stderr.write(`vault-headers-helper: refused, this vault entry is locked and not resolvable here: "${vaultId}"\n`)
+        continue
+      }
+      throw e
+    }
   }
   if (secret === null) {
     process.stderr.write(`vault-headers-helper: vault secret "${vaultId}" not found\n`)

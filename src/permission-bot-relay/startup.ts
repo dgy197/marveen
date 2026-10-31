@@ -20,8 +20,7 @@
 // Telegram user-id shape, null on any error).
 
 import { resolveAlertOwnerChat } from '../owner-chat.js'
-import { getSecret } from '../web/vault.js'
-import { PERMISSION_BOT_VAULT_ID } from '../web/permission-bot-vault.js'
+import { readPermissionBotToken } from '../web/vault.js'
 import { BotApiError, createBotApi, type BotApi } from './bot-api.js'
 import type { StatusFile } from './offset-store.js'
 import type { RelayLog } from './poll-loop.js'
@@ -73,7 +72,7 @@ export interface StartupDeps {
 /** The token from the Vault entry, or null (missing, locked Keychain, any error). */
 export function vaultPermissionBotToken(): string | null {
   try {
-    return getSecret(PERMISSION_BOT_VAULT_ID)
+    return readPermissionBotToken()
   } catch {
     return null
   }

@@ -193,7 +193,16 @@ if (def.authHeader === 'none') {
   headerExport = 'export ANTHROPIC_AUTH_TOKEN=ollama && '
   unsetConflict = 'unset ANTHROPIC_API_KEY && '
 } else {
-  const key = (getSecret(def.vaultKey ?? '') ?? '').trim()
+  // Card 8e9f4670 (N2): getSecret refuses the permission bot's token; that is a stop, not a stack trace.
+  let key = ''
+  try {
+    key = (getSecret(def.vaultKey ?? '') ?? '').trim()
+  } catch (e) {
+    if (e && e.name === 'VaultEntryReadLockedError') {
+      fatal(`vault key "${def.vaultKey}" is locked and not usable as a provider key (provider "${customProviderId}")`)
+    }
+    throw e
+  }
   if (!key) {
     fatal(`vault key "${def.vaultKey}" missing for provider "${customProviderId}" -- add it in the Vault tab`)
   }

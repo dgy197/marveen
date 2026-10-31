@@ -357,7 +357,18 @@ storage layer too (`setSecret` / `deleteSecret` in `src/web/vault.ts`), so a
 route that builds the same id, such as `POST /api/connectors` with the name
 `telegram-engedely-bot` (slug plus `-token`), is refused as well (403) before
 anything is installed. There is no internal bypass. The operator puts the token
-in place out-of-band (not through the API). Reads are unchanged.
+in place out-of-band (not through the API).
+
+**Vault read-lock.** The same entry is never served by the API (card 8e9f4670).
+`GET /api/vault/telegram-engedely-bot-token` answers 403 for the exact id, case,
+whitespace and URL-encoded variants, also when the row does not exist (no
+existence leak), without decrypting; the audit row carries the id, the principal
+and the verdict, never a value. `POST /api/vault/bindings` with that id answers
+403 and writes nothing (`vault-bindings.json` and every `.mcp.json` stay
+untouched). A fleet export skips the row (and any binding that names it) and
+logs a warning; provision the token out-of-band on the target. In-process
+`getSecret` is unchanged: the relay and `approvals.ts` read the token that way.
+The `GET /api/vault` list still shows the id (metadata, no value).
 
 **Runner note.** `consume-run` requires the body `category` to equal the
 approval row's category, so a `permission_bot_probe` row can never authorise a

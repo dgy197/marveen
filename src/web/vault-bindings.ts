@@ -8,6 +8,7 @@ import { getSecret, listSecrets } from './vault.js'
 import { getExternalProjectPaths } from './dashboard-settings.js'
 import { shellEscape } from './sanitize.js'
 import { logger } from '../logger.js'
+import { isPermissionBotVaultId, PERMISSION_BOT_VAULT_ID, PERMISSION_BOT_VAULT_READ_LOCKED_ERROR } from './permission-bot-vault.js'
 
 const BINDINGS_PATH = join(PROJECT_ROOT, 'store', 'vault-bindings.json')
 const VAULT_WRAPPER_PATH = join(PROJECT_ROOT, 'scripts', 'vault-env-wrapper.sh')
@@ -78,6 +79,9 @@ export function getBindings(): VaultBinding[] {
 }
 
 export function addBinding(binding: VaultBinding): void {
+  // Card 8e9f4670 (N2, B1): defence in depth under the route check. A binding on the
+  // permission bot's token would later resolve it into another process's env or header.
+  if (isPermissionBotVaultId(binding.vaultSecretId)) throw new Error(PERMISSION_BOT_VAULT_READ_LOCKED_ERROR)
   const store = readBindings()
   const idx = store.bindings.findIndex(
     b => b.vaultSecretId === binding.vaultSecretId && b.envVar === binding.envVar,
@@ -300,6 +304,7 @@ export function scanMcpConfigs(): ScanFinding[] {
 
   const vaultValues = new Map<string, string>()
   for (const s of existingSecrets) {
+    if (isPermissionBotVaultId(s.id)) continue // card 8e9f4670 (N2): never decrypted here
     const val = getSecret(s.id)
     if (val) vaultValues.set(val, s.id)
   }
@@ -387,6 +392,15 @@ function applyHeadersHelper(serverCfg: any, headerBindings: VaultBinding[]): voi
 export function syncSecret(vaultSecretId: string): SyncResult {
   const bindings = getBindings().filter(b => b.vaultSecretId === vaultSecretId)
   if (bindings.length === 0) return { updated: 0, errors: [] }
+
+  // Card 8e9f4670 (N2, B1): a binding that predates the lock, or came in through a fleet
+  // import, must not resolve the permission bot's token. Refused before getSecret: no
+  // decrypt, no file write, and the entry carries the id only, never a value.
+  if (isPermissionBotVaultId(vaultSecretId)) {
+    logger.warn({ event: 'vault-sync-refused', vaultSecretId: PERMISSION_BOT_VAULT_ID, bindings: bindings.length },
+      'vault: sync of the permission bot token refused')
+    return { updated: 0, errors: [`Vault secret "${PERMISSION_BOT_VAULT_ID}" is locked: not synced (${PERMISSION_BOT_VAULT_READ_LOCKED_ERROR})`] }
+  }
 
   const secret = getSecret(vaultSecretId)
   if (secret === null) return { updated: 0, errors: [`Vault secret "${vaultSecretId}" not found`] }
