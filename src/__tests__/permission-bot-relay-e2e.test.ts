@@ -373,6 +373,10 @@ describe('permission-bot relay, end to end through the real approvals route', ()
     const swapped = buildCallbackData('approved', p.id, p.reject)
     secretsInFlight.push(swapped)
     expect((await relayPress(p, swapped)).toast).toBe(TOAST_INVALID)
+    // The route itself rejected the swapped pair (not a pre-filter drop).
+    expect(dash.calls).toHaveLength(2)
+    expect(dash.calls[1]!.status).toBe(403)
+    expect(JSON.parse(dash.calls[1]!.raw)).toMatchObject({ ok: false, reason: 'bad_nonce' })
     expect(status(p.id)).toBe('pending')
 
     const real = await relayPress(p, p.approveData)
