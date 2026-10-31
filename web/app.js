@@ -3655,6 +3655,120 @@ function showToast(msg, duration = 3000) {
 }
 
 // === Agents API ===
+// FLEETTOKENUI acdb8045 K7: "régi token" badge per agent card + the owner-only "restart all stale" sweep.
+// Everything from the server goes through textContent; the sweep route can take N x gap seconds, so the
+// client timeout is long and the button disables itself while it runs.
+const FLEET_TOKEN_SWEEP_TIMEOUT_MS = 20 * 60 * 1000
+let fleetTokenSweepRunning = false
+
+function fleetTokenSweepErrorKey(status) {
+  if (status === 403) return 'agents.fleet_token.forbidden'
+  if (status === 409) return 'agents.fleet_token.in_progress'
+  return 'agents.fleet_token.failed'
+}
+
+function renderFleetTokenResult(box, data) {
+  box.textContent = ''
+  const groups = [['restarted', 'agents.fleet_token.res_restarted'], ['skipped', 'agents.fleet_token.res_skipped'], ['failed', 'agents.fleet_token.res_failed']]
+  for (const [key, labelKey] of groups) {
+    const names = Array.isArray(data && data[key]) ? data[key] : []
+    if (!names.length) continue
+    const row = document.createElement('div')
+    row.className = 'fleet-token-result-row'
+    row.textContent = `${t(labelKey)}: ${names.map((n) => String(n)).join(', ')}`
+    box.appendChild(row)
+  }
+  if (!box.firstChild) box.textContent = t('agents.fleet_token.res_none')
+}
+
+async function runFleetTokenSweep(btn, box) {
+  if (fleetTokenSweepRunning) return
+  fleetTokenSweepRunning = true
+  btn.disabled = true
+  box.textContent = t('agents.fleet_token.running')
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), FLEET_TOKEN_SWEEP_TIMEOUT_MS)
+  try {
+    const res = await fetch('/api/agents/fleet-token/restart-stale', { method: 'POST', signal: ctl.signal })
+    if (!res.ok) {
+      // 403 is final (owner session only): no retry, no fallback.
+      box.textContent = t(fleetTokenSweepErrorKey(res.status))
+      return
+    }
+    renderFleetTokenResult(box, await res.json())
+  } catch (err) {
+    box.textContent = t('agents.fleet_token.failed')
+  } finally {
+    clearTimeout(timer)
+    fleetTokenSweepRunning = false
+    btn.disabled = false
+    refreshFleetTokenUi()
+  }
+}
+
+function fleetTokenBar() {
+  let bar = document.getElementById('fleetTokenBar')
+  if (bar) return bar
+  const view = document.getElementById('agentsGridView')
+  if (!view || !view.parentNode) return null
+  bar = document.createElement('div')
+  bar.id = 'fleetTokenBar'
+  bar.style.cssText = 'display:none;margin:0 0 12px'
+  const btn = document.createElement('button')
+  btn.className = 'btn-secondary btn-compact'
+  btn.id = 'fleetTokenSweepBtn'
+  btn.textContent = t('agents.fleet_token.sweep_btn')
+  const box = document.createElement('div')
+  box.id = 'fleetTokenResult'
+  box.style.cssText = 'margin-top:6px;font-size:12px'
+  btn.addEventListener('click', () => runFleetTokenSweep(btn, box))
+  bar.appendChild(btn)
+  bar.appendChild(box)
+  view.parentNode.insertBefore(bar, view)
+  return bar
+}
+
+function applyFleetTokenBadges(states) {
+  let anyStale = false
+  for (const [name, state] of Object.entries(states)) {
+    const card = document.querySelector(`.agent-card[data-name="${CSS.escape(name)}"]`)
+    if (!card) continue
+    let badge = card.querySelector('.fleet-token-badge')
+    const label = state === 'stale' ? t('agents.fleet_token.stale') : state === 'unknown' ? t('agents.fleet_token.unknown') : ''
+    if (state === 'stale') anyStale = true
+    if (!label) { if (badge) badge.remove(); continue }
+    if (!badge) {
+      badge = document.createElement('span')
+      badge.className = 'fleet-token-badge'
+      badge.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:10px;margin-left:4px;font-weight:600;color:#000'
+      const footer = card.querySelector('.agent-card-footer')
+      if (footer) footer.appendChild(badge)
+    }
+    badge.dataset.state = state
+    badge.style.background = state === 'stale' ? 'var(--accent-warning,#f59e0b)' : 'var(--border,#9ca3af)'
+    badge.textContent = label
+    badge.title = t(state === 'stale' ? 'agents.fleet_token.stale_tip' : 'agents.fleet_token.unknown_tip')
+  }
+  const bar = fleetTokenBar()
+  if (bar) bar.style.display = anyStale ? '' : 'none'
+}
+
+async function refreshFleetTokenUi() {
+  try {
+    const states = {}
+    const running = (Array.isArray(agents) ? agents : []).filter((a) => a && a.running && a.name !== mainAgentId())
+    await Promise.all(running.map(async (a) => {
+      try {
+        const r = await fetch(`/api/agents/${encodeURIComponent(a.name)}/status`)
+        if (!r.ok) return
+        const body = await r.json()
+        if (body && typeof body.fleetToken === 'string') states[a.name] = body.fleetToken
+      } catch { /* a badge is never worth an error */ }
+    }))
+    applyFleetTokenBadges(states)
+  } catch { /* ignore */ }
+}
+
 async function loadAgents() {
   try {
     // The federation status fetch is deliberately failure-proof (.catch ->
@@ -3689,6 +3803,7 @@ async function loadAgents() {
       }
     }
     renderAgents()
+    refreshFleetTokenUi()
   } catch (err) {
     console.error('Betöltés hiba:', err)
   }
