@@ -161,7 +161,7 @@ describe('main agent path (K3)', () => {
     expect(cm).toContain('AGENT_KEY_FILE_ENV')
     const sh = readFileSync(join(__dirname, '..', '..', 'scripts', 'channels.sh'), 'utf-8')
     expect(sh).toContain('MARVEEN_AGENT_KEY_FILE=')
-    expect(sh.match(/\$\{STATE_DIR_ENV\}\$\{AGENT_KEY_ENV\}/g)?.length).toBe(2) // both new-session launches
+    expect(sh.match(/\$\{CUSTOM_PROVIDER_ENV\}\$\{AGENT_KEY_ENV\}/g)?.length).toBe(2) // both new-session launches
     const keyLines = sh.split('\n').filter((l) => /AGENT_KEY_ENV=|\.agent-keys/.test(l) && !l.trim().startsWith('#'))
     for (const l of keyLines) expect(l).not.toMatch(/curl|api\//)
   })
