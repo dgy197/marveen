@@ -15,9 +15,14 @@
 // The file is capped: at ROTATE_AT bytes it is renamed to egress-shadow.jsonl.1 (replacing the older
 // one), so the pair stays under 5 MB. Any log failure is swallowed: it never blocks the call.
 //
+// SCOPE: with --main-scope every session on a config dir of its own is judged, which also covers a
+// provisioned sub-agent that loads this project file. Such a line goes to the SAME log, tagged by the
+// "agent" field (payload agent_type, else MARVEEN_AGENT_ID / MAIN_AGENT_ID, else null); it is never
+// dropped silently, so the analysis filters on that field.
+//
 // --main-scope behaves as in the enforcing hook: only a session on a config dir of its own is judged.
 
-import { readFileSync, openSync, writeSync, closeSync, fstatSync, renameSync, mkdirSync, realpathSync, constants } from 'node:fs'
+import { readFileSync, openSync, writeSync, closeSync, lstatSync, renameSync, mkdirSync, realpathSync, constants } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -28,6 +33,10 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 export const SHADOW_LOG = process.env.EGRESS_SHADOW_LOG || join(ROOT, 'store', 'egress-shadow.jsonl')
 // File + its ".1" rotation stay under 5 MB (2 x 2 MiB = 4.2 MB, plus one line of slack).
 export const ROTATE_AT = 2 * 1024 * 1024
+// The parser is quadratic in the number of lines (card 80743e3a): a command above either bound is not
+// classified, only logged as "too_large". Keeps the hook far below its 5 s timeout.
+export const MAX_CMD_CHARS = 64 * 1024
+export const MAX_CMD_LINES = 2000
 
 const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex')
 
@@ -47,6 +56,9 @@ export function shadowRecord(payload, deps = {}) {
   const base = { ts: new Date().toISOString(), cmd_sha256: null, decision: 'allow', reason: null, agent: agentIdOf(payload) }
   const command = payload?.tool_input?.command
   base.cmd_sha256 = sha256(typeof command === 'string' ? command : '')
+  if (typeof command === 'string' && (command.length > MAX_CMD_CHARS || command.split('\n').length > MAX_CMD_LINES)) {
+    return { ...base, reason: 'too_large' }
+  }
   try {
     setHookCwd(payload?.cwd)
     if (measure(command, loadMeasureHosts())) return { ...base, reason: 'measure-only' }
@@ -62,14 +74,17 @@ export function shadowRecord(payload, deps = {}) {
 export function appendShadowLog(record, path = SHADOW_LOG) {
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+    const line = JSON.stringify(record) + '\n'
+    // Rotate BEFORE opening, and when this line would cross the cap, so the live file never exceeds it.
+    // (Renaming after the open would send the line into the renamed file: the fd follows the inode.)
+    let size = 0
+    try { size = lstatSync(path).size } catch { /* no log yet */ }
+    if (size > 0 && size + Buffer.byteLength(line) > ROTATE_AT) {
+      try { renameSync(path, `${path}.1`) } catch { /* keep appending to the big file rather than lose the line */ }
+    }
     // O_NOFOLLOW: a planted symlink at the log path is refused (the write is then simply lost).
     const fd = openSync(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
-    try {
-      if (fstatSync(fd).size >= ROTATE_AT) {
-        try { renameSync(path, `${path}.1`) } catch { /* keep appending to the big file rather than lose the line */ }
-      }
-      writeSync(fd, JSON.stringify(record) + '\n')
-    } finally { closeSync(fd) }
+    try { writeSync(fd, line) } finally { closeSync(fd) }
     return true
   } catch {
     return false

