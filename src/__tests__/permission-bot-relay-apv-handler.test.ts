@@ -441,7 +441,55 @@ describe('F3.4 dashboard answer -> exact toast, one request, no retry', () => {
     expect(toastFor({ ...base, status: 200, signed: false })).toBe(TOAST_UNKNOWN)
     expect(toastFor({ ...base, status: 409, signed: false, reason: 'expired' })).toBe(TOAST_UNKNOWN)
     expect(toastFor({ ...base, status: 200, signed: true })).toBe('T')
-    expect(toastFor({ ...base, status: 403, signed: false, reason: 'bad_nonce' })).toBe(TOAST_INVALID)
+    // Card 3bc4a33e B1: an unsigned 400/403/404 is neutral too; signed ones keep their toast.
+    for (const status of [400, 403, 404]) {
+      expect(toastFor({ ...base, status, signed: false, reason: 'bad_nonce' })).toBe(TOAST_UNKNOWN)
+      expect(toastFor({ ...base, status, signed: true, reason: 'bad_nonce' })).toBe(TOAST_INVALID)
+    }
+    expect(toastFor({ ...base, status: 503, signed: false })).toBe(TOAST_UNAVAILABLE)
+  })
+  // Card 3bc4a33e B1: a stranger on the port cannot pose as a status-specific refusal.
+  for (const sign of ['none', 'badmac', 'otherkey'] as const) {
+    for (const status of [400, 403, 404]) {
+      it(`${status} with signature "${sign}" -> neutral unknown toast, rejected`, async () => {
+        dash.reply = { status, body: { ok: false, reason: 'bad_nonce' } }
+        dash.sign = sign
+        const r = await press(handler(), update(button().data))
+        expect(r).toEqual({ outcome: 'rejected', toast: TOAST_UNKNOWN, answers: 1 })
+      })
+    }
+  }
+
+  // Card 3bc4a33e B3: a key that appears after the relay started is picked up on a press.
+  it('a null key is reloaded lazily on a press, at most once per interval', async () => {
+    dash.reply = okReply
+    let clock = 1_000_000
+    let reloads = 0
+    let available = false
+    const h = handler({
+      responseKey: null,
+      reloadIntervalMs: 10_000,
+      now: () => clock,
+      reloadResponseKey: () => { reloads++; return available ? TEST_KEY : null },
+    })
+    expect((await press(h, update(button().data))).toast).toBe(TOAST_UNKNOWN)
+    expect(reloads).toBe(1)
+    available = true
+    clock += 5_000
+    expect((await press(h, update(button().data))).toast).toBe(TOAST_UNKNOWN)
+    expect(reloads).toBe(1)
+    clock += 6_000
+    expect(await press(h, update(button().data))).toEqual({ outcome: 'processed', toast: '✅ Jóváhagyva: 12:00 (Budapest).', answers: 1 })
+    expect(reloads).toBe(2)
+    expect(await press(h, update(button().data))).toEqual({ outcome: 'processed', toast: '✅ Jóváhagyva: 12:00 (Budapest).', answers: 1 })
+    expect(reloads).toBe(2)
+  })
+  it('a key that exists at the first press is used for that very press; a throwing reload is a null key', async () => {
+    dash.reply = okReply
+    const h = handler({ responseKey: null, reloadResponseKey: () => TEST_KEY })
+    expect((await press(h, update(button().data))).outcome).toBe('processed')
+    const t = handler({ responseKey: null, reloadResponseKey: () => { throw new Error('boom') } })
+    expect((await press(t, update(button().data))).toast).toBe(TOAST_UNKNOWN)
   })
 
   it('toastFor covers the unavailable kinds', () => {

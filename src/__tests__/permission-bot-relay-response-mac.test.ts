@@ -66,6 +66,15 @@ describe('response MAC', () => {
     expect(verifyResponseMac(K, mac(), ID, NONCE, 200, '{"ok":false}')).toBe(false)
     expect(verifyResponseMac(Buffer.alloc(32, 4), mac(), ID, NONCE, 200, BODY)).toBe(false)
   })
+  // Card 3bc4a33e B2: fields are length-prefixed, so splitting one into the next cannot collide.
+  it('a field-splitting forgery cannot reuse the MAC of another (nonce, status, body) tuple', () => {
+    const real = responseMac(K, ID, 'N', 200, 'P\n409\nB')!
+    expect(responseMac(K, ID, 'N\n200\nP', 409, 'B')).not.toBe(real)
+    expect(verifyResponseMac(K, real, ID, 'N\n200\nP', 409, 'B')).toBe(false)
+    expect(responseMac(K, ID, 'N', 2, '00P')).not.toBe(responseMac(K, ID, 'N2', 0, '0P'))
+    expect(responseMac(K, 'ab', 'c', 200, BODY)).not.toBe(responseMac(K, 'a', 'bc', 200, BODY))
+    expect(responseMac(K, ID, 'é', 200, BODY)).not.toBe(responseMac(K, ID, 'e', 200, BODY))
+  })
   it('a missing, short, upper-case or non-hex header never verifies; no key, no MAC', () => {
     for (const h of [null, undefined, '', 'abc', mac().toUpperCase(), 'z'.repeat(64), `${mac()}00`]) {
       expect(verifyResponseMac(K, h, ID, NONCE, 200, BODY)).toBe(false)

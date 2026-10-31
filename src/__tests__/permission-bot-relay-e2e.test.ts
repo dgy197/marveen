@@ -443,6 +443,18 @@ describe('signed answers of the permission-bot route (card 0c15f6f7 A1)', () => 
     expect(verifyResponseMac(key, out.headers[RESPONSE_MAC_HEADER], id32, '', out.status, out.raw)).toBe(true)
   })
 
+  // Card 3bc4a33e B2: a nonce that is not a callback nonce is signed as '', never verbatim.
+  it('a request nonce that is not a callback nonce is signed over the empty string', async () => {
+    const p = await postD()
+    const id32 = p.id.replace(/-/g, '')
+    const key = loadOrCreateResponseKey(responseKeyPath(dir))!
+    const weird = 'N\n200\nP'
+    const out = await route('POST', `/api/approvals/${id32}/permission-bot`, { ...forged(), nonce: weird })
+    expect(out.status).toBe(400)
+    expect(verifyResponseMac(key, out.headers[RESPONSE_MAC_HEADER], id32, '', out.status, out.raw)).toBe(true)
+    expect(verifyResponseMac(key, out.headers[RESPONSE_MAC_HEADER], id32, weird, out.status, out.raw)).toBe(false)
+  })
+
   it('a key file with mode 0644 is unusable: the route sends no header and does not rewrite it', async () => {
     const p = await postD()
     const keyFile = responseKeyPath(dir)

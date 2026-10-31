@@ -1314,7 +1314,8 @@ function permissionBotJson(res: http.ServerResponse, rawId: string, nonce: strin
 function handlePermissionBotDecision(res: RouteContext['res'], rawId: string, body: unknown): void {
   const logId = normalizeApprovalId(rawId)
   const rawNonce = (body !== null && typeof body === 'object' && !Array.isArray(body)) ? (body as Record<string, unknown>).nonce : undefined
-  const nonce = typeof rawNonce === 'string' ? rawNonce : ''
+  // Only a well-formed callback nonce is signed; anything else signs as '' (card 3bc4a33e B2).
+  const nonce = isCallbackNonce(rawNonce) ? rawNonce : ''
   const send = (data: unknown, status: number): void => permissionBotJson(res, rawId, nonce, data, status)
   const refuse = (status: number, reason: string, extra: Record<string, unknown> = {}): void => {
     logger.warn({ id: logId, reason, ...extra }, 'Approval permission-bot decision refused')

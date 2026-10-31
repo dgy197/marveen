@@ -113,6 +113,8 @@ export function prefilterCallback(cbq: TelegramCallbackQuery, owner: string | nu
 
 export const PRESSER_KEY_FILE_NAME = 'permission-bot-relay.presser-key'
 const PRESSER_KEY_BYTES = 32
+// Card 3bc4a33e B3: minimum gap between two lazy reloads of a missing response key.
+const RESPONSE_KEY_RELOAD_MS = 10_000
 // Telegram rejects answerCallbackQuery with a text over 200 characters.
 export const TOAST_MAX_CODE_POINTS = 200
 
@@ -185,6 +187,12 @@ export interface ApvHandlerOptions {
   // Key that signs the dashboard's answers (loadOrCreateResponseKey); absent or
   // invalid: no answer verifies, so a 200/409 only ever gets the "unknown" toast.
   responseKey?: Buffer | null
+  // Card 3bc4a33e B3: called when responseKey is null at a press (the dashboard may
+  // have created the key after the relay started); read-only, same validation as
+  // at startup. Tried at most once per reloadIntervalMs.
+  reloadResponseKey?: () => Buffer | null
+  reloadIntervalMs?: number
+  now?: () => number
   timeoutMs?: number
   fetchImpl?: typeof fetch
 }
@@ -197,7 +205,9 @@ function safeReason(v: unknown): string | null {
 export function toastFor(r: ForwardResult): string {
   if (r.kind === 'unavailable') return TOAST_UNAVAILABLE
   // Card 0c15f6f7 A1: an unsigned 200/409 may come from a stranger on the port.
-  if ((r.status === 200 || r.status === 409) && !r.signed) return TOAST_UNKNOWN
+  // Card 3bc4a33e B1: so may an unsigned 400/403/404, which must not pose as a
+  // status-specific toast either.
+  if ([200, 400, 403, 404, 409].includes(r.status) && !r.signed) return TOAST_UNKNOWN
   if (r.status === 200) {
     if (!r.ok) return TOAST_UNKNOWN
     return r.outcomeText ?? TOAST_DECIDED
@@ -219,6 +229,20 @@ export function createApvHandler(opts: ApvHandlerOptions): UpdateHandler {
   const resolveOwner = opts.resolveOwner ?? strictOwnerUserId
   const { log, pinnedBotId } = opts
   const tag = (id: unknown): string | null => presserTag(id, opts.presserKey)
+  const reloadIntervalMs = opts.reloadIntervalMs ?? RESPONSE_KEY_RELOAD_MS
+  const now = opts.now ?? Date.now
+  let responseKey: Buffer | null = opts.responseKey ?? null
+  let lastReloadAt: number | null = null
+
+  // Card 3bc4a33e B3: a null key is retried lazily, at most once per interval.
+  function currentResponseKey(): Buffer | null {
+    if (responseKey != null || opts.reloadResponseKey == null) return responseKey
+    const t = now()
+    if (lastReloadAt != null && t - lastReloadAt < reloadIntervalMs) return null
+    lastReloadAt = t
+    try { responseKey = opts.reloadResponseKey() } catch { responseKey = null }
+    return responseKey
+  }
 
   async function forward(pass: PrefilterPass, signal: AbortSignal): Promise<ForwardResult> {
     const bearer = opts.readBearer()
@@ -241,7 +265,7 @@ export function createApvHandler(opts: ApvHandlerOptions): UpdateHandler {
       // Card 0c15f6f7 A1: the MAC covers the whole body, so an over-long one is unsigned.
       const text = full.slice(0, RESPONSE_BODY_MAX)
       const signed = full.length <= RESPONSE_BODY_MAX
-        && verifyResponseMac(opts.responseKey, res.headers.get(RESPONSE_MAC_HEADER), pass.id32, pass.body.nonce, res.status, full)
+        && verifyResponseMac(currentResponseKey(), res.headers.get(RESPONSE_MAC_HEADER), pass.id32, pass.body.nonce, res.status, full)
       let parsed: Record<string, unknown> | null = null
       try {
         const j: unknown = JSON.parse(text)
@@ -276,7 +300,7 @@ export function createApvHandler(opts: ApvHandlerOptions): UpdateHandler {
     const toast = toastFor(r)
     if (r.kind === 'answered') {
       log.info({ update_id: updateId, presser: tag(cbq.from?.id), status: r.status, reason: r.reason }, 'permission-bot-relay: press forwarded, dashboard answered')
-      if ((r.status === 200 || r.status === 409) && !r.signed) {
+      if ([200, 400, 403, 404, 409].includes(r.status) && !r.signed) {
         log.warn({ update_id: updateId, presser: tag(cbq.from?.id), reason: 'unsigned_response', status: r.status }, 'permission-bot-relay: the answer carried no valid signature, treated as unknown')
       }
     } else {
