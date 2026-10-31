@@ -183,6 +183,52 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
     }
   })
 
+  it('verb alternatives reach non-gmail servers, github and the channel plugins stay out (card 7f8b46a1)', () => {
+    // The four tools the name-keyed matcher never fired for (the classifiers already
+    // call them send/draft), plus a server with no "mail" in its name.
+    const fires = [
+      'mcp__x__replyAll',
+      'mcp__x__fwd_message',
+      'mcp__x__send_reply',
+      'mcp__x__sendDraft',
+      'mcp__acme-crm__forwardMessage',
+      'mcp__acme-crm__Reply',
+    ]
+    // excluded by the explicit non-mail list, card 7f8b46a1
+    const stays = [
+      'mcp__github__reply_to_review_comment',
+      'mcp__github__add_issue_comment',
+      'mcp__github__create_pull_request_review',
+      'mcp__github__create_issue',
+      'mcp__plugin_telegram_telegram__reply',
+      'mcp__plugin_telegram_telegram__send_message',
+      'mcp__plugin_slack-channel_slack__reply',
+      'mcp__plugin_discord_discord__reply',
+      'mcp__plugin_discord_discord__fetch_messages',
+    ]
+    // the shape the drift test relies on: no '|' inside a lookahead group
+    for (const alt of CANONICAL) {
+      let depth = 0
+      for (const ch of alt) { if (ch === '(') depth++; if (ch === ')') depth-- }
+      expect(depth, `unbalanced alternative after the '|' split: ${alt}`).toBe(0)
+    }
+    const canonical = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
+    for (const tool of fires) expect(canonical.test(tool), `EMAIL_GATE_MATCHER misses ${tool}`).toBe(true)
+    for (const tool of stays) expect(canonical.test(tool), `EMAIL_GATE_MATCHER fires on ${tool}`).toBe(false)
+    for (const script of EMAIL_HOOKS) {
+      const own = (SETTINGS.hooks?.PreToolUse ?? []).filter((e) => (e.hooks ?? []).some((h) => (h.command ?? '').includes(script)))
+      for (const tool of fires) {
+        expect(own.some((e) => new RegExp(`^(${e.matcher ?? ''})$`).test(tool)), `${script} misses ${tool}`).toBe(true)
+      }
+      for (const tool of stays) {
+        const fired = own.filter((e) => new RegExp(`^(${e.matcher ?? ''})$`).test(tool)).map((e) => e.matcher)
+        // the copy gate has its own telegram/discord reply entries (an allowed extra surface)
+        const extra = script === 'outgoing-copy-gate.py' && /plugin_(telegram|discord)_.*__reply$/.test(tool)
+        if (!extra) expect(fired, `${script} fires on ${tool}`).toEqual([])
+      }
+    }
+  })
+
   it('a harder-mail create_draft does NOT ask for approval on the main agent; send_mail does', () => {
     // Owner decision (tg 6349): approval is for the actual send only.
     const td = mkdtempSync(join(tmpdir(), 'hm-gate-'))
