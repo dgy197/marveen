@@ -15171,6 +15171,28 @@ function _filterApprovals() {
   })
 }
 
+// e487f46c B1: an external_message (SMS) request that carries its canonical
+// {kind,number,text} envelope shows the NUMBER and the FULL TEXT of that envelope
+// (the server checked content_hash is its sha256 when the request was filed), not the
+// requester's free description, which follows marked as unverified. Anything else
+// keeps the 80-character description cell.
+function _approvalSmsEnvelope(a) {
+  if (!a || a.category !== 'external_message' || typeof a.action_payload !== 'string') return null
+  try {
+    const o = JSON.parse(a.action_payload)
+    if (o && o.kind === 'sms' && typeof o.number === 'string' && typeof o.text === 'string') return o
+  } catch { /* not an SMS envelope: fall back to the description */ }
+  return null
+}
+
+function _approvalDescriptionCell(a) {
+  const sms = _approvalSmsEnvelope(a)
+  if (sms) {
+    return `<td style="max-width:280px;font-size:12px;white-space:pre-wrap">SMS ${escapeHtml(sms.number)}:\n${escapeHtml(sms.text)}\n<span style="color:var(--text-muted)">${escapeHtml(t('approvals.sms_unverified_description'))} ${escapeHtml(a.action_description)}</span></td>`
+  }
+  return `<td style="max-width:280px;font-size:12px" title="${escapeAttr(a.action_description)}">${escapeHtml(a.action_description.length > 80 ? a.action_description.slice(0, 80) + '...' : a.action_description)}</td>`
+}
+
 function _renderApprovalsTable() {
   const filtered = _filterApprovals()
   const { offset } = _approvalsState
@@ -15194,7 +15216,7 @@ function _renderApprovalsTable() {
       <td style="white-space:nowrap;font-size:12px">${escapeHtml(time)}</td>
       <td><code style="font-size:12px">${escapeHtml(a.agent_id)}</code></td>
       <td style="font-size:12px">${escapeHtml(a.category)}</td>
-      <td style="max-width:280px;font-size:12px" title="${escapeAttr(a.action_description)}">${escapeHtml(a.action_description.length > 80 ? a.action_description.slice(0, 80) + '...' : a.action_description)}</td>
+      ${_approvalDescriptionCell(a)}
       <td>${badge}</td>
       <td style="font-size:12px;white-space:nowrap">${countdown}</td>
       <td>${actions}</td>

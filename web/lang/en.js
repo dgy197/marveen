@@ -776,6 +776,7 @@ window._i18n.en = {
   'approvals.btn.approve':       'Approve',
   'approvals.btn.reject':        'Reject',
   'approvals.telegram_only':     'Decided only by the owner\'s Telegram button.',
+  'approvals.sms_unverified_description': 'Requester\'s description (unverified):',
   'approvals.status.pending':    'Pending',
   'approvals.status.approved':   'Approved',
   'approvals.status.rejected':   'Rejected',
