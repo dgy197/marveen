@@ -323,6 +323,8 @@ describe('F3.4 dashboard answer -> exact toast, one request, no retry', () => {
   const table: Array<[string, DashReply, string, 'processed' | 'rejected']> = [
     ['200 outcome_text', { status: 200, body: { ok: true, outcome_text: '❌ Elutasítva: 12:01 (Budapest).' } }, '❌ Elutasítva: 12:01 (Budapest).', 'processed'],
     ['200 ok without outcome_text', { status: 200, body: { ok: true } }, TOAST_DECIDED, 'processed'],
+    ['200 outcome_text over 200 code points is cut', { status: 200, body: { ok: true, outcome_text: 'é'.repeat(250) } }, 'é'.repeat(200), 'processed'],
+    ['200 outcome_text blank', { status: 200, body: { ok: true, outcome_text: '   ' } }, TOAST_DECIDED, 'processed'],
     ['200 not the success shape', { status: 200, body: { ok: false } }, TOAST_UNKNOWN, 'rejected'],
     ['200 non-JSON', { status: 200, raw: '<html>' }, TOAST_UNKNOWN, 'rejected'],
     ['409 already_resolved', { status: 409, body: { ok: false, reason: 'already_resolved', status: 'approved' } }, TOAST_CLOSED, 'rejected'],

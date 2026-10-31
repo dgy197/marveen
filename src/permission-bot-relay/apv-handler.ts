@@ -24,8 +24,9 @@
 // and the HTTP status. Never the callback data, the nonce, the approval id, the
 // raw presser id, the Bearer or a response body.
 
-import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { createHmac, randomBytes } from 'node:crypto'
+import { closeSync, constants as fsConstants, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { parseCallbackData } from '../web/approval-callback-data.js'
 import { BotApiError, type BotApi, type TelegramCallbackQuery } from './bot-api.js'
 import { REASON_CODE_RE } from './offset-store.js'
@@ -110,10 +111,60 @@ export function prefilterCallback(cbq: TelegramCallbackQuery, owner: string | nu
   }
 }
 
-/** A short, non-reversible-at-a-glance tag of the presser for the log. */
-export function presserTag(id: unknown): string | null {
+export const PRESSER_KEY_FILE_NAME = 'permission-bot-relay.presser-key'
+const PRESSER_KEY_BYTES = 32
+// Telegram rejects answerCallbackQuery with a text over 200 characters.
+export const TOAST_MAX_CODE_POINTS = 200
+
+/** Cuts a toast to at most 200 code points; an empty result is null. */
+export function cutToast(text: string): string | null {
+  const cut = Array.from(text).slice(0, TOAST_MAX_CODE_POINTS).join('').trim()
+  return cut === '' ? null : cut
+}
+
+function readPresserKey(path: string): Buffer | null {
+  let fd: number | null = null
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    const st = fstatSync(fd)
+    if (!st.isFile() || (st.mode & 0o777) !== 0o600 || st.size !== PRESSER_KEY_BYTES) return null
+    const buf = Buffer.alloc(PRESSER_KEY_BYTES)
+    if (readSync(fd, buf, 0, PRESSER_KEY_BYTES, 0) !== PRESSER_KEY_BYTES) return null
+    return buf
+  } catch {
+    return null
+  } finally {
+    if (fd !== null) { try { closeSync(fd) } catch { /* best effort */ } }
+  }
+}
+
+/**
+ * The per-install secret that keys the presser tag: 32 random bytes, 0600, in the
+ * relay's store directory. Created with exclusive create, read back on later runs.
+ * Missing and not creatable, or wrong mode/size: null (no tag, fail closed). Never
+ * throws and never reports the secret.
+ */
+export function loadOrCreatePresserKey(path: string): Buffer | null {
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+    const fd = openSync(path, 'wx', 0o600)
+    try {
+      fchmodSync(fd, 0o600)
+      if (writeSync(fd, randomBytes(PRESSER_KEY_BYTES)) !== PRESSER_KEY_BYTES) return null
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    // EEXIST (already created) or not creatable: fall through to the read-back.
+  }
+  return readPresserKey(path)
+}
+
+/** A short HMAC-SHA256 tag of the presser for the log; null without a valid key. */
+export function presserTag(id: unknown, key: Buffer | null | undefined): string | null {
   if (!isPositiveId(id)) return null
-  return createHash('sha256').update(`permission-bot-relay:${id}`, 'utf8').digest('hex').slice(0, 12)
+  if (!Buffer.isBuffer(key) || key.length !== PRESSER_KEY_BYTES) return null
+  return createHmac('sha256', key).update(`permission-bot-relay:${id}`, 'utf8').digest('hex').slice(0, 12)
 }
 
 /** Reads the dashboard Bearer from its file on every call; null when unusable. */
@@ -156,6 +207,8 @@ export interface ApvHandlerOptions {
   readBearer: () => string | null
   log: RelayLog
   resolveOwner?: () => string | null
+  // Key of the presser log tag (loadOrCreatePresserKey); absent or invalid: no tag.
+  presserKey?: Buffer | null
   timeoutMs?: number
   fetchImpl?: typeof fetch
 }
@@ -187,6 +240,7 @@ export function createApvHandler(opts: ApvHandlerOptions): UpdateHandler {
   const timeoutMs = opts.timeoutMs ?? FORWARD_TIMEOUT_MS
   const resolveOwner = opts.resolveOwner ?? strictOwnerUserId
   const { log, pinnedBotId } = opts
+  const tag = (id: unknown): string | null => presserTag(id, opts.presserKey)
 
   async function forward(pass: PrefilterPass, signal: AbortSignal): Promise<ForwardResult> {
     const bearer = opts.readBearer()
@@ -212,7 +266,7 @@ export function createApvHandler(opts: ApvHandlerOptions): UpdateHandler {
         parsed = j !== null && typeof j === 'object' && !Array.isArray(j) ? j as Record<string, unknown> : null
       } catch { parsed = null }
       const rawOutcome = parsed?.['outcome_text']
-      const outcome = typeof rawOutcome === 'string' && rawOutcome.trim() !== '' ? rawOutcome.trim() : null
+      const outcome = typeof rawOutcome === 'string' ? cutToast(rawOutcome.trim()) : null
       return { kind: 'answered', status: res.status, reason: safeReason(parsed?.['reason']), ok: parsed?.['ok'] === true, outcomeText: outcome }
     } catch {
       if (timedOut) return { kind: 'unavailable', why: 'timeout' }
@@ -232,16 +286,16 @@ export function createApvHandler(opts: ApvHandlerOptions): UpdateHandler {
     try { owner = resolveOwner() } catch { owner = null }
     const pre = prefilterCallback(cbq, owner, pinnedBotId)
     if (!pre.ok) {
-      log.warn({ update_id: updateId, reason: pre.reason, presser: presserTag(cbq.from?.id) }, 'permission-bot-relay: press refused by the pre-filter, not forwarded')
+      log.warn({ update_id: updateId, reason: pre.reason, presser: tag(cbq.from?.id) }, 'permission-bot-relay: press refused by the pre-filter, not forwarded')
       await answerToast(ctx.api, cbq, pre.reason === 'owner_unresolved' ? TOAST_UNAVAILABLE : TOAST_INVALID, log, updateId, ctx.signal)
       return 'rejected'
     }
     const r = await forward(pre, ctx.signal)
     const toast = toastFor(r)
     if (r.kind === 'answered') {
-      log.info({ update_id: updateId, presser: presserTag(cbq.from?.id), status: r.status, reason: r.reason }, 'permission-bot-relay: press forwarded, dashboard answered')
+      log.info({ update_id: updateId, presser: tag(cbq.from?.id), status: r.status, reason: r.reason }, 'permission-bot-relay: press forwarded, dashboard answered')
     } else {
-      log.warn({ update_id: updateId, presser: presserTag(cbq.from?.id), reason: 'dashboard_unavailable', why: r.why }, 'permission-bot-relay: press NOT decided, the dashboard was not reachable')
+      log.warn({ update_id: updateId, presser: tag(cbq.from?.id), reason: 'dashboard_unavailable', why: r.why }, 'permission-bot-relay: press NOT decided, the dashboard was not reachable')
     }
     await answerToast(ctx.api, cbq, toast, log, updateId, ctx.signal)
     return r.kind === 'answered' && r.status === 200 && r.ok ? 'processed' : 'rejected'
