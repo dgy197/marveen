@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, hasForwardKey, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
+import { gateDecision, hasForwardKey, hasForwardKeyName, isReadAction, mailRuleForward as mailRuleForwardJs, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
 
 // graph-forward N1b (spec G1-G7): the mail tools are recognised by their
 // ACTION, whatever the server name or version prefix. The gap it closes: the
@@ -398,9 +398,12 @@ describe('mail-tool fallback narrowing (card 6151bb4d)', () => {
       expect(gateDecision(t, clean, () => false), t).toEqual({ deny: false })
     }
     expect(mailToolAction('mcp__gmail__create_filter')).toBe('draft') // name only
-    expect(mailToolAction('mcp__gmail__delete_filter', { forwardTo: 'x' })).toBe(null)
+    // card 3d6e5181 N3: delete / create_label are non-readers, so a forwardTo key now forwards under
+    // any name (they were null under the closed rule/filter list); a reader stays a reader
+    expect(mailToolAction('mcp__gmail__delete_filter', { forwardTo: 'x' })).toBe('send')
     expect(mailToolAction('mcp__gmail__get_filter', { forwardTo: 'x' })).toBe(null)
-    expect(mailToolAction('mcp__gmail__create_label', { forwardTo: 'x' })).toBe(null)
+    expect(mailToolAction('mcp__gmail__create_label', { forwardTo: 'x' })).toBe('send')
+    expect(mailToolAction('mcp__gmail__create_label', { name: 'X' })).toBe(null)
     expect(mailToolAction('mcp__slack__create_rule', { forwardTo: 'x' })).toBe(null)
     // an input that is not an object cannot be read: forwarding, fail-closed
     expect(mailToolAction('mcp__gmail__create_rule', 'x')).toBe('send')
@@ -433,5 +436,107 @@ describe('mail-tool fallback narrowing (card 6151bb4d)', () => {
     }
     // a draft to a sourced address passes, as before
     expect(gateDecision('mcp__gmail__create_draft', { to: ['known@example.com'] }, verified).deny).toBe(false)
+  })
+})
+
+// card 3d6e5181 N3: the name-independent forwarding rule. A non-reader call of a mail server whose
+// input forwards (a forward / redirect KEY, or a forward / redirect WORD in a value outside the
+// free-text keys) is a send for the classifier and mail-rule-forward for the gate, under ANY name;
+// readers stay allowed; a draft with "looking forward" in its body is still a draft. The vectors
+// are the `name_independent` block of mail-tool-action-cases.json; the python twin runs the same
+// block (scripts/__tests__/mail-tool-action.test.py), here both sides are compared call by call.
+type Ni = {
+  servers: string[]; forward_names: string[]; disguised_names: string[]; reader_names: string[]
+  forward_shapes: Array<{ label: string; input: unknown }>
+  reader_inputs: Array<{ label: string; input: unknown }>
+  clean: Array<{ tool: string; input: unknown; expected: 'draft' | null; note: string }>
+}
+const NI = (JSON.parse(readFileSync(join(EXTRACT_DIR, 'mail-tool-action-cases.json'), 'utf-8')) as { name_independent: Ni }).name_independent
+describe('name-independent forwarding rule (card 3d6e5181 N3): JS and python agree', () => {
+  const T = (s: string, n: string) => `mcp__${s}__${n}`
+  const none = () => false
+  const calls: Array<[string, unknown, string]> = []
+  for (const s of NI.servers) {
+    for (const n of [...NI.forward_names, ...NI.disguised_names]) for (const f of NI.forward_shapes) calls.push([T(s, n), f.input, `${f.label}`])
+    for (const n of NI.reader_names) for (const f of NI.reader_inputs) calls.push([T(s, n), f.input, `reader ${f.label}`])
+  }
+  for (const c of NI.clean) calls.push([c.tool, c.input, c.note])
+  const py = pythonActions(calls.map((c): [unknown, boolean, unknown] => [c[0], true, c[1]]))
+  const ruleOut = JSON.parse(execFileSync('python3', ['-I', '-c', `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(EXTRACT_DIR)})
+from email_extract import mail_rule_forward
+print(json.dumps([mail_rule_forward(n, i) for n, i in json.load(sys.stdin)]))
+`], { encoding: 'utf-8', input: JSON.stringify(calls.map((c) => [c[0], c[1]])) }).trim()) as boolean[]
+
+  it('every forward name x shape x server is a send and a mail-rule-forward deny, in both twins', () => {
+    let n = 0
+    calls.forEach((c, i) => {
+      const [tool, input, label] = c
+      if (label.startsWith('reader') || NI.clean.some((x) => x.tool === tool && x.input === input)) return
+      n++
+      expect(mailToolAction(tool, input), `${tool} ${label}`).toBe('send')
+      expect(py[i], `py ${tool} ${label}`).toBe('send')
+      expect(gateDecision(tool, input, () => true), `${tool} ${label}`).toEqual({ deny: true, kind: 'mail-rule-forward' })
+    })
+    expect(n).toBe(NI.servers.length * (NI.forward_names.length + NI.disguised_names.length) * NI.forward_shapes.length)
+  })
+
+  it('readers stay allowed whatever the input; the clean cases keep their class', () => {
+    calls.forEach((c, i) => {
+      const [tool, input, label] = c
+      if (!label.startsWith('reader')) return
+      expect(mailToolAction(tool, input), `${tool} ${label}`).toBe(null)
+      expect(py[i], `py ${tool} ${label}`).toBe(null)
+      expect(gateDecision(tool, input, none), `${tool} ${label}`).toEqual({ deny: false })
+    })
+    NI.clean.forEach((c) => {
+      const i = calls.findIndex((x) => x[0] === c.tool && x[1] === c.input)
+      expect(mailToolAction(c.tool, c.input), c.note).toBe(c.expected)
+      expect(py[i], `py ${c.note}`).toBe(c.expected)
+      expect(mailRuleForwardJs(c.tool, c.input), c.note).toBe(false)
+      expect(ruleOut[i], `py rule ${c.note}`).toBe(false)
+    })
+    // a draft with prose in its body is still just a draft: unverified address denied, known one passes
+    const d = { to: ['known@example.com'], subject: 'Hi', body: 'I am looking forward to it' }
+    expect(gateDecision('mcp__gmail__create_draft', d, (a: string) => a === 'known@example.com')).toEqual({ deny: false })
+    expect(gateDecision('mcp__outlook__manage_rules', { rules: [{ name: 'News', actions: { moveToFolder: 'F1' } }] }, none)).toEqual({ deny: false })
+  })
+
+  it('mailRuleForward agrees between the twins on every call, and classifier edges hold', () => {
+    calls.forEach((c, i) => expect(mailRuleForwardJs(c[0], c[1]), `${c[0]} ${c[2]}`).toBe(ruleOut[i]))
+    // the stricter 6151bb4d rule keeps counting a bare address for rule / filter names ...
+    expect(mailToolAction('mcp__gmail__create_filter', { criteria: { from: 'x@y.hu' } })).toBe('send')
+    // ... the name-independent one does not (decision Q4)
+    expect(mailToolAction('mcp__imap__move_message', { messageId: '<abc@host>' })).toBe(null)
+    // channel plugins and the excluded chat tools are out of scope
+    expect(mailToolAction('mcp__plugin_telegram_telegram__edit_message', { forwardTo: 'x' })).toBe(null)
+    expect(mailToolAction('mcp__ms365__send-chat-message', { forwardTo: 'x' })).toBe(null)
+    // a non-object input of a non-reader cannot be read: forwarding, fail-closed; a reader stays a reader
+    expect(mailToolAction('mcp__outlook__manage_rules', 'x')).toBe('send')
+    expect(mailToolAction('mcp__outlook__get_rules', 'x')).toBe(null)
+  })
+
+  it('isReadAction: closed list, a sign anywhere makes it a write, unknown verbs are writes', () => {
+    const r = (n: string) => isReadAction(n.split('__'))
+    for (const n of ['get_rules', 'list_rules', 'getrules', 'search_emails', 'v2_get_settings', 'read_email', 'listEmails', 'export_rules',
+      'watch_mailbox', 'search_address_book', 'describe_filter', 'fetch_message']) expect(r(n), n).toBe(true)
+    for (const n of ['get_or_create_rule', 'list_and_forward', 'searchAndForward', 'manage_rules', 'define_rule', 'frobnicate_rules',
+      'rules', 'get_and_purge', 'list_then_move', 'v2_manage_rules', 'update_settings']) expect(r(n), n).toBe(false)
+  })
+
+  it('hasForwardKeyName: keys anywhere, words in non-free values, bare addresses and prose do not count', () => {
+    expect(hasForwardKeyName({ a: [{ B: { ForwardTo: 1 } }] })).toBe(true)
+    expect(hasForwardKeyName({ type: 'forward' })).toBe(true)
+    expect(hasForwardKeyName({ script: 'redirect :copy "x"' })).toBe(true)
+    expect(hasForwardKeyName({ actionName: 'forward' })).toBe(true) // not a free-text key
+    expect(hasForwardKeyName({ x: 'autoForward' })).toBe(true)
+    expect(hasForwardKeyName({ x: 'straightforward' })).toBe(false)
+    expect(hasForwardKeyName({ body: 'looking forward', subject: 'Fwd: forwarded', message_body: 'forward it' })).toBe(false)
+    expect(hasForwardKeyName({ body: '{"forwardTo":"x"}' })).toBe(true) // a JSON string in a body is still walked for keys
+    expect(hasForwardKeyName({ to: 'x@y.hu', id: '<a@b>' })).toBe(false)
+    expect(hasForwardKeyName({ x: 'forward' }, false)).toBe(false)
+    expect(hasForwardKeyName('x')).toBe(true)
+    expect(hasForwardKeyName(null)).toBe(true)
   })
 })

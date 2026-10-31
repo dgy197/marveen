@@ -1129,12 +1129,156 @@ def _harder_send_envelope(ti: dict, to: list, reason):
 _NO_INPUT = object()
 
 
+# ---- Name-independent forwarding rule (card 3d6e5181 N3) ----------------------------
+# The closed rule / filter name lists above (_RULE_WRITE_VERBS, _segment_writes_rule)
+# did not converge: a rule or forwarding setting under a name nobody listed
+# (manage_rules, define_rule, configure_filter, set_messagerules,
+# update_auto_forwarding ...) passed. The rule below does not read the name's nouns at
+# all, it asks two questions: is the tool a READER (_is_read_action: a closed list,
+# fail-closed), and does its input FORWARD (_has_forward_key_name)? A non-reader whose
+# input forwards is a send under ANY name. The 6151bb4d rule stays on top of it,
+# unchanged (it also counts a bare address, but only for rule / filter names).
+#
+# READER = some word of the action segment(s) is a READ word (whole word, or the start
+# of a glued word: getrules, listemails) AND no word contains a write / forwarding SIGN
+# (substring, so createrule, get_or_create_rule, list_and_forward are not readers).
+# Nouns (rule, filter, setting, alias, vacation, label) are NOT signs: list_rules,
+# get_rules and get_settings are readers. Everything else is NOT a reader: an unknown
+# verb is a write. No position is looked at, so a prefix (v2_, gmail_) does not matter.
+# 'watch' and 'export' are readers (spec 3.3). Benign look-alikes (address, settings,
+# input, output, asset, offset ...) are stripped before the sign test: they contain
+# 'add', 'set', 'put' without being verbs. A sign can only make the call a non-reader,
+# i.e. stricter. Twin: isReadAction in scripts/email-send-gate.mjs.
+_READ_WORDS = ("get", "list", "search", "read", "fetch", "count", "watch", "describe", "view",
+               "find", "query", "peek", "show", "check", "download", "export", "lookup", "preview", "verify")
+_NON_READ_SIGNS = (
+    "create", "update", "set", "add", "save", "edit", "modify", "put", "patch",
+    "upsert", "replace", "insert", "import", "enable", "disable", "apply", "manage", "configure",
+    "define", "toggle", "change", "write", "post", "make", "delete", "remove", "move", "mark",
+    "forward", "redirect", "fwd", "send", "reply", "delegate", "purge", "clear", "empty", "trash",
+    "archive", "unsubscribe", "subscribe", "block", "snooze", "run", "exec", "submit", "grant",
+    "share", "invite", "register", "schedule", "copy", "clone", "route", "relay", "bounce",
+    "deliver", "dispatch", "publish", "push", "transfer", "assign", "link", "append", "attach",
+    "upload", "init", "rename", "reset", "restore", "revoke", "sync",
+)
+_NON_READ_WORDS = frozenset({"and", "then"})
+_BENIGN_LOOKALIKES = re.compile(r"settings?|address(?:es)?|inputs?|outputs?|assets?|datasets?|offsets?|bookmarks?|rulesets?")
+
+
+def _is_read_action(segments) -> bool:
+    words = []
+    for s in segments:
+        words.extend(_action_words(str(s)))
+    read = False
+    for w in words:
+        if w in _NON_READ_WORDS:
+            return False
+        bare = _BENIGN_LOOKALIKES.sub("", w)
+        if any(n in bare for n in _NON_READ_SIGNS):
+            return False
+        if any(w == r or w.startswith(r) for r in _READ_WORDS):
+            read = True
+    return read
+
+
+# Forwarding in the tool INPUT, name-independent (card 3d6e5181 N3, decisions Q3, Q4).
+# A KEY containing forward / redirect (any depth, also inside a string that parses as
+# JSON, double encoding included), case-insensitive; and, only with value_words, a
+# forward / redirect WORD in a string value (word start: "type":"forward", `redirect
+# :copy`, autoForward count; "straightforward" does not). A bare address ("@") does NOT
+# count here (IMAP Message-IDs). Value words are not read in FREE-TEXT keys
+# (the key, lowercased and stripped to a-z0-9, is in _FREE_TEXT_KEYS: body, subject,
+# text, content, html, snippet, query ..., or ENDS in body / text / content / html:
+# message_body, plainText): a draft body that says "looking forward" is prose. The
+# match is exact or by suffix on purpose, so `actionName` or `bodyAction` are NOT free
+# text, and a rule script (`sieveScript`) is not either. Known gap, accepted: a forward
+# word that only sits in a free-text key (`ruleContent`) is not seen; a JSON string
+# there is still walked for keys. Same bounds and fail-closed exits as _has_forward_key (too deep, too many
+# nodes, a string too long to parse, a non-container input = True).
+# Twin: hasForwardKeyName in scripts/email-send-gate.mjs.
+_FREE_TEXT_KEYS = frozenset({
+    "body", "htmlbody", "textbody", "plaintext", "plainbody", "bodypreview",
+    "subject", "text", "content", "html", "snippet", "query", "q", "search", "keyword", "keywords",
+    "label", "labels", "title", "description", "comment", "note", "summary", "preview", "message", "name",
+})
+_FREE_TEXT_SUFFIX = re.compile(r"(?:body|text|content|html)$")
+_FORWARD_WORD = re.compile(r"(?<![A-Za-z])(?:forward|redirect)", re.IGNORECASE | re.ASCII)
+_FORWARD_WORD_CAMEL = re.compile(r"[a-z](?:Forward|Redirect)")
+_NON_ALNUM = re.compile(r"[^a-z0-9]")
+
+
+def _has_forward_key_name(value, value_words: bool = True) -> bool:
+    if not isinstance(value, (dict, list)):
+        return True
+    nodes = 0
+    stack = [(value, 0, False)]
+    while stack:
+        v, depth, free = stack.pop()
+        if depth > _FORWARD_WALK_MAX_DEPTH:
+            return True
+        if isinstance(v, str):
+            if value_words and not free and (_FORWARD_WORD.search(v) or _FORWARD_WORD_CAMEL.search(v)):
+                return True
+            if _FORWARD_JSON_START.match(v):
+                if len(v) > _FORWARD_JSON_MAX_CHARS:
+                    return True
+                try:
+                    parsed = json.loads(v)
+                except RecursionError:
+                    return True
+                except ValueError:
+                    continue
+                if isinstance(parsed, str):
+                    stack.append((parsed, depth + 1, free))
+                elif isinstance(parsed, (dict, list)):
+                    stack.append((parsed, depth + 1, False))
+            continue
+        is_list = isinstance(v, list)
+        items = [(None, x) for x in v] if is_list else list(v.items())
+        for k, x in items:
+            nodes += 1
+            if nodes > _FORWARD_WALK_MAX_NODES:
+                return True
+            child_free = free if is_list else False
+            if isinstance(k, str):
+                key = k.lower()
+                if "forward" in key or "redirect" in key:
+                    return True
+                norm = _NON_ALNUM.sub("", key)
+                child_free = norm in _FREE_TEXT_KEYS or bool(_FREE_TEXT_SUFFIX.search(norm))
+            if isinstance(x, (str, dict, list)):
+                stack.append((x, depth + 1, child_free))
+    return False
+
+
+def _name_independent_forward(segments, tool_input) -> bool:
+    """A non-reader call whose input forwards, under any name. A name the NAME classifier
+    calls a send is left to the send branches (False here); readers never match. Every
+    other tool, the draft class included (update_settings, create_forwarding_address,
+    update_auto_forwarding: update / create are draft verbs), needs a forward / redirect
+    KEY or a forward / redirect WORD in a non-free-text value (decision Q4, AC10). The
+    "looking forward" of a draft body is a free-text value and a bare address is no
+    forwarding, so a draft still goes the ledger way (AC8, AC12). Note: decision Q3 said
+    KEY only for drafts; AC10 (update_settings with a Sieve `redirect` value, a
+    `type: forward` action) needs the value words for the draft class too.
+    Twin: nameIndependentForward in scripts/email-send-gate.mjs."""
+    classes = [_segment_action(p, False) for p in segments]
+    if "send" in classes or _is_read_action(segments):
+        return False
+    # manage_email multiplexes its operations in a VALUE (operation: "forward"), and its own
+    # branch decides those: only a forward KEY counts here, so the existing manage_email
+    # verdicts do not change.
+    multiplexed = any("_".join(_action_words(s)) == "manage_email" for s in segments)
+    return _has_forward_key_name(tool_input, not multiplexed)
+
+
 def mail_rule_forward(tool_name, tool_input=_NO_INPUT) -> bool:
-    """A rule / filter write whose input forwards (_has_forward_key): a standing rule
-    that sends every matching mail out. Needs the input: name only, there is nothing to
-    classify. Pure, never raises. The JS gate denies it outright (kind
-    mail-rule-forward); here it is a send, so the approval gate asks for an approval
-    (card 6151bb4d r2 B2). Twin: mailRuleForward in scripts/email-send-gate.mjs."""
+    """A rule / filter write whose input forwards (_has_forward_key), or any non-reader
+    call whose input forwards (_name_independent_forward): a standing rule that sends
+    mail out. Needs the input: name only, there is nothing to classify. Pure, never
+    raises. The JS gate denies it outright (kind mail-rule-forward); here it is a send,
+    so the approval gate asks for an approval (card 6151bb4d r2 B2, card 3d6e5181 N3).
+    Twin: mailRuleForward in scripts/email-send-gate.mjs."""
     if tool_input is _NO_INPUT:
         return False
     name = tool_name if isinstance(tool_name, str) else ""
@@ -1143,7 +1287,10 @@ def mail_rule_forward(tool_name, tool_input=_NO_INPUT) -> bool:
         return False
     if _NON_MAIL_SERVER_RE.match(name[5:]):
         return False
-    return any(_segment_writes_rule(p) for p in parts[2:]) and _has_forward_key(tool_input)
+    segments = parts[2:]
+    if any(_segment_writes_rule(p) for p in segments) and _has_forward_key(tool_input):
+        return True
+    return _name_independent_forward(segments, tool_input)
 
 
 def mail_tool_action(tool_name, tool_input=_NO_INPUT):

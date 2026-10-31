@@ -1763,10 +1763,130 @@ function segmentWritesRule(segment) {
   return noun && write
 }
 
-// A rule / filter write whose input forwards (hasForwardKey): a standing rule that
-// sends every matching mail out. It is not a draft the ledger could vouch for: the
-// gate denies it outright (kind mail-rule-forward; card 6151bb4d r2 B2). Needs the
-// input: name only, there is nothing to classify. Pure, never throws.
+// ---- Name-independent forwarding rule (card 3d6e5181 N3) ----------------------------
+// The closed rule / filter name lists above (RULE_WRITE_VERBS, segmentWritesRule) did
+// not converge: a rule or forwarding setting under a name nobody listed (manage_rules,
+// define_rule, configure_filter, set_messagerules, update_auto_forwarding ...) passed.
+// The rule below does not read the name's nouns at all, it asks two questions: is the
+// tool a READER (isReadAction: a closed list, fail-closed), and does its input FORWARD
+// (hasForwardKeyName)? A non-reader whose input forwards is mail-rule-forward under
+// ANY name. The 6151bb4d rule stays on top of it, unchanged (it also counts a bare
+// address, but only for rule / filter names).
+//
+// READER = some word of the action segment(s) is a READ word (whole word, or the start
+// of a glued word: getrules, listemails) AND no word contains a write / forwarding SIGN
+// (substring, so createrule, get_or_create_rule, list_and_forward are not readers).
+// Nouns (rule, filter, setting, alias, vacation, label) are NOT signs: list_rules,
+// get_rules and get_settings are readers. Everything else is NOT a reader: an unknown
+// verb is a write. No position is looked at, so a prefix (v2_, gmail_) does not matter.
+// 'watch' and 'export' are readers (spec 3.3). Benign look-alikes (address, settings,
+// input, output, asset, offset ...) are stripped before the sign test: they contain
+// 'add', 'set', 'put' without being verbs. A sign can only make the call a non-reader,
+// i.e. stricter. Twin: _is_read_action in scripts/hooks/email_extract.py.
+const READ_WORDS = ['get', 'list', 'search', 'read', 'fetch', 'count', 'watch', 'describe', 'view',
+  'find', 'query', 'peek', 'show', 'check', 'download', 'export', 'lookup', 'preview', 'verify']
+const NON_READ_SIGNS = ['create', 'update', 'set', 'add', 'save', 'edit', 'modify', 'put', 'patch',
+  'upsert', 'replace', 'insert', 'import', 'enable', 'disable', 'apply', 'manage', 'configure',
+  'define', 'toggle', 'change', 'write', 'post', 'make', 'delete', 'remove', 'move', 'mark',
+  'forward', 'redirect', 'fwd', 'send', 'reply', 'delegate', 'purge', 'clear', 'empty', 'trash',
+  'archive', 'unsubscribe', 'subscribe', 'block', 'snooze', 'run', 'exec', 'submit', 'grant',
+  'share', 'invite', 'register', 'schedule', 'copy', 'clone', 'route', 'relay', 'bounce',
+  'deliver', 'dispatch', 'publish', 'push', 'transfer', 'assign', 'link', 'append', 'attach',
+  'upload', 'init', 'rename', 'reset', 'restore', 'revoke', 'sync']
+const NON_READ_WORDS = new Set(['and', 'then'])
+const BENIGN_LOOKALIKES = /settings?|address(?:es)?|inputs?|outputs?|assets?|datasets?|offsets?|bookmarks?|rulesets?/g
+export function isReadAction(segments) {
+  const words = []
+  for (const s of segments) words.push(...segmentWords(String(s)))
+  let read = false
+  for (const w of words) {
+    if (NON_READ_WORDS.has(w)) return false
+    const bare = w.replace(BENIGN_LOOKALIKES, '')
+    if (NON_READ_SIGNS.some((n) => bare.includes(n))) return false
+    if (READ_WORDS.some((r) => w === r || w.startsWith(r))) read = true
+  }
+  return read
+}
+
+// Forwarding in the tool INPUT, name-independent (card 3d6e5181 N3, decisions Q3, Q4).
+// A KEY containing forward / redirect (any depth, also inside a string that parses as
+// JSON, double encoding included), case-insensitive; and, only with `valueWords`, a
+// forward / redirect WORD in a string value (word start: "type":"forward", `redirect
+// :copy`, autoForward count; "straightforward" does not). A bare address ("@") does
+// NOT count here (IMAP Message-IDs). Value words are not read in FREE-TEXT keys
+// (the key, lowercased and stripped to a-z0-9, is in FREE_TEXT_KEYS: body, subject,
+// text, content, html, snippet, query ..., or ENDS in body / text / content / html:
+// message_body, plainText): a draft body that says "looking forward" is prose. The
+// match is exact or by suffix on purpose, so `actionName` or `bodyAction` are NOT free
+// text, and a rule script (`sieveScript`) is not either. Known gap, accepted: a
+// forward word that only sits in a free-text key (`ruleContent`) is not seen; a JSON
+// string there is still walked for keys. Same bounds and fail-closed exits as hasForwardKey (too deep, too many
+// nodes, a string too long to parse, a non-object input = true).
+// Twin: _has_forward_key_name in scripts/hooks/email_extract.py.
+const FREE_TEXT_KEYS = new Set(['body', 'htmlbody', 'textbody', 'plaintext', 'plainbody', 'bodypreview',
+  'subject', 'text', 'content', 'html', 'snippet', 'query', 'q', 'search', 'keyword', 'keywords',
+  'label', 'labels', 'title', 'description', 'comment', 'note', 'summary', 'preview', 'message', 'name'])
+const FREE_TEXT_SUFFIX = /(?:body|text|content|html)$/
+const FORWARD_WORD = /(?<![A-Za-z])(?:forward|redirect)/i
+const FORWARD_WORD_CAMEL = /[a-z](?:Forward|Redirect)/
+export function hasForwardKeyName(input, valueWords = true) {
+  if (typeof input !== 'object' || input === null) return true
+  let nodes = 0
+  const stack = [[input, 0, false]]
+  while (stack.length) {
+    const [v, depth, free] = stack.pop()
+    if (depth > FORWARD_WALK_MAX_DEPTH) return true
+    if (typeof v === 'string') {
+      if (valueWords && !free && (FORWARD_WORD.test(v) || FORWARD_WORD_CAMEL.test(v))) return true
+      if (FORWARD_JSON_START.test(v)) {
+        if (v.length > FORWARD_JSON_MAX_CHARS) return true
+        let parsed
+        try { parsed = JSON.parse(v) } catch (err) { if (err instanceof SyntaxError) continue; return true }
+        if (typeof parsed === 'string') stack.push([parsed, depth + 1, free])
+        else if (typeof parsed === 'object' && parsed !== null) stack.push([parsed, depth + 1, false])
+      }
+      continue
+    }
+    const isArr = Array.isArray(v)
+    for (const [k, x] of (isArr ? v.map((y) => [null, y]) : Object.entries(v))) {
+      if (++nodes > FORWARD_WALK_MAX_NODES) return true
+      let childFree = isArr ? free : false
+      if (k !== null) {
+        const key = k.toLowerCase()
+        if (key.includes('forward') || key.includes('redirect')) return true
+        const norm = key.replace(/[^a-z0-9]/g, '')
+        childFree = FREE_TEXT_KEYS.has(norm) || FREE_TEXT_SUFFIX.test(norm)
+      }
+      if (typeof x === 'string' || (typeof x === 'object' && x !== null)) stack.push([x, depth + 1, childFree])
+    }
+  }
+  return false
+}
+
+// A non-reader call whose input forwards, under any name. A name the NAME classifier
+// calls a send is left to the send branches (false here); readers never match. Every
+// other tool, the draft class included (update_settings, create_forwarding_address,
+// update_auto_forwarding: update / create are draft verbs), needs a forward / redirect
+// KEY or a forward / redirect WORD in a non-free-text value (decision Q4, AC10). The
+// "looking forward" of a draft body is a free-text value and a bare address is no
+// forwarding, so a draft still goes the ledger way (AC8, AC12). Note: decision Q3
+// said KEY only for drafts; AC10 (update_settings with a Sieve `redirect` value, a
+// `type: forward` action) needs the value words for the draft class too.
+function nameIndependentForward(segments, toolInput) {
+  const classes = segments.map((p) => segmentAction(p, false))
+  if (classes.includes('send') || isReadAction(segments)) return false
+  // manage_email multiplexes its operations in a VALUE (operation: "forward"), and its own
+  // branch below decides those (kind draft-required): only a forward KEY counts here, so the
+  // kind of the existing manage_email denies does not change.
+  const multiplexed = segments.some((s) => segmentWords(s).join('_') === 'manage_email')
+  return hasForwardKeyName(toolInput, !multiplexed)
+}
+
+// A rule / filter write whose input forwards (hasForwardKey), or any non-reader call
+// whose input forwards (nameIndependentForward): a standing rule that sends mail out.
+// It is not a draft the ledger could vouch for: the gate denies it outright (kind
+// mail-rule-forward; card 6151bb4d r2 B2, card 3d6e5181 N3). Needs the input: name
+// only, there is nothing to classify. Pure, never throws.
 // Twin: mail_rule_forward in scripts/hooks/email_extract.py.
 export function mailRuleForward(toolName, toolInput = undefined) {
   if (toolInput === undefined) return false
@@ -1774,7 +1894,9 @@ export function mailRuleForward(toolName, toolInput = undefined) {
   const parts = name.split('__')
   if (parts.length < 3 || parts[0].toLowerCase() !== 'mcp' || CHANNEL_PLUGIN_RE.test(name)) return false
   if (NON_MAIL_SERVER_RE.test(name.slice(5))) return false
-  return parts.slice(2).some(segmentWritesRule) && hasForwardKey(toolInput)
+  const segments = parts.slice(2)
+  if (segments.some(segmentWritesRule) && hasForwardKey(toolInput)) return true
+  return nameIndependentForward(segments, toolInput)
 }
 
 // 'send', 'draft' or null. Pure, never throws. Name only: create + rule / filter is
