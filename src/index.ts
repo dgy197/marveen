@@ -23,7 +23,7 @@ import { scheduleDecaySweep } from './decay-schedule.js'
 import { DECAY_SWEEP_INTERVAL_MS } from './db.js'
 import { initHeartbeat, stopHeartbeat, ensureHeartbeatWorkerHidden } from './heartbeat.js'
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
-import { startAgentProcess } from './web/agent-process.js'
+import { startAgentProcess, provisionMainAgentSendKey } from './web/agent-process.js'
 import { runLogRotationSweep, LOG_ROTATION_SWEEP_MS } from './web/log-rotation.js'
 import { sweepScheduledRunSnapshots } from './web/scheduled-run-snapshot.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
@@ -595,6 +595,10 @@ async function main(): Promise<void> {
       .then((result) => logger.info({ result }, 'credentials-guard: fleet-token boot pass'))
       .catch((err) => logger.warn({ err }, 'credentials-guard: fleet-token boot pass failed'))
   }, 15_000)
+
+  // Inter-agent send key for the main agent (card 0d7e2c04 N2, K3): the dashboard writes the key file,
+  // channels.sh and the respawn path only export its path. Fail-open (logs, returns null).
+  provisionMainAgentSendKey()
 
   if (shouldBootHeartbeatAgent({ respawnEnabled: RESPAWN_ENABLED, agentEnabled: HEARTBEAT_AGENT_ENABLED })) {
     ensureHeartbeatAgent()
