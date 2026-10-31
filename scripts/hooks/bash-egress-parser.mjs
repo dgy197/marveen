@@ -1182,7 +1182,7 @@ function directFunctionBody(body, args, callText) {
     if (c === '\\' && quote !== "'") { k++; continue }
     if (c === quote) quote = null
     else if (quote === null && (c === '"' || c === "'")) quote = c
-    else if (quote === null && c === '$' && POSITIONAL_REF.test(body.slice(k))) return null
+    else if (quote === null && c === '$' && body.slice(k).search(POSITIONAL_REF) === 0) return null
   }
   if (/\b(?:shift|getopts)\b|\bset\b[^;&|\n]*(?:\s--(?:\s|$)|\s[^-+\s])/.test(body)
     || /\$\{[0-9@*][^}]/.test(body)) return null
