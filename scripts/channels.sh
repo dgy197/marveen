@@ -1543,8 +1543,12 @@ STATE_DIR_ENV="export ${STATE_ENV_VAR}=$(sh_single_quote "$MAIN_CHAN_DIR") && "
 AGENT_KEY_ENV=""
 _ak_id="${MAIN_AGENT_ID:-marveen}"
 if printf '%s' "$_ak_id" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$'; then
-  # Card 3f6500e6: only when the file exists. With MESSAGE_SENDER_AUTH=off the dashboard writes none, so nothing is exported.
-  if [ -f "$INSTALL_DIR/store/.agent-keys/$_ak_id" ] && [ ! -L "$INSTALL_DIR/store/.agent-keys/$_ak_id" ]; then
+  # Card 3f6500e6 (B1): gate on the MODE, not on the file. Read MESSAGE_SENDER_AUTH
+  # from .env the way the dashboard does: unset/empty/unknown = shadow, only `off` disables.
+  # A main agent started before the dashboard writes its key still gets the path and
+  # picks the file up once it exists (senders read it per send). A symlinked path is refused.
+  _ak_mode="$(grep -E '^MESSAGE_SENDER_AUTH=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "\"' \r" | tr '[:upper:]' '[:lower:]')"
+  if [ "$_ak_mode" != "off" ] && [ ! -L "$INSTALL_DIR/store/.agent-keys/$_ak_id" ]; then
     AGENT_KEY_ENV="export MARVEEN_AGENT_KEY_FILE=$(sh_single_quote "$INSTALL_DIR/store/.agent-keys/$_ak_id") && "
   fi
 fi

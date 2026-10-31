@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, readdirSync, symlinkSync, lstatSync, writeFileSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { initDatabase, getDb } from '../db.js'
 import {
@@ -67,9 +68,40 @@ describe('off: nothing is provisioned', () => {
     expect(idx.indexOf('sweepAgentSendKeysWhenOff()')).toBeGreaterThan(idx.indexOf('  provisionMainAgentSendKey()'))
   })
 
-  it('channels.sh exports the path only when the file exists (and is not a link)', () => {
+  it('channels.sh gates the export on the mode (not on file existence) and refuses a symlinked path', () => {
     const sh = readFileSync(join(__dirname, '..', '..', 'scripts', 'channels.sh'), 'utf-8')
-    expect(sh).toMatch(/if \[ -f "\$INSTALL_DIR\/store\/\.agent-keys\/\$_ak_id" \] && \[ ! -L [^\n]*\]; then\s*\n\s*AGENT_KEY_ENV="export MARVEEN_AGENT_KEY_FILE=/)
+    expect(sh).toMatch(/if \[ "\$_ak_mode" != "off" \] && \[ ! -L "\$INSTALL_DIR\/store\/\.agent-keys\/\$_ak_id" \]; then\s*\n\s*AGENT_KEY_ENV="export MARVEEN_AGENT_KEY_FILE=/)
+    expect(sh).not.toMatch(/\[ -f "\$INSTALL_DIR\/store\/\.agent-keys/)
+  })
+
+  // Behavioural: run the real block extracted from channels.sh against a scratch install dir.
+  const runBlock = (envLine: string | null, mkLink: boolean): string => {
+    const sh = readFileSync(join(__dirname, '..', '..', 'scripts', 'channels.sh'), 'utf-8')
+    const start = sh.indexOf('AGENT_KEY_ENV=""')
+    const end = sh.indexOf('# P1 FIX: put the Claude auth token')
+    const block = sh.slice(start, end)
+    const inst = join(dir, 'inst')
+    mkdirSync(join(inst, 'store', '.agent-keys'), { recursive: true })
+    if (envLine !== null) writeFileSync(join(inst, '.env'), envLine + '\n')
+    if (mkLink) symlinkSync('/nonexistent', join(inst, 'store', '.agent-keys', 'marveen'))
+    const script = `sh_single_quote() { printf "'%s'" "$1"; }\nINSTALL_DIR='${inst}'\nMAIN_AGENT_ID=marveen\n${block}\nprintf '%s' "$AGENT_KEY_ENV"\n`
+    const f = join(dir, 'blk.sh')
+    writeFileSync(f, script)
+    return execFileSync('bash', [f], { encoding: 'utf-8' })
+  }
+
+  it('shadow (and unset) + key file missing: the path is exported', () => {
+    expect(runBlock('MESSAGE_SENDER_AUTH=shadow', false)).toContain('MARVEEN_AGENT_KEY_FILE=')
+    expect(runBlock(null, false)).toContain('MARVEEN_AGENT_KEY_FILE=')
+  })
+
+  it('off: nothing is exported', () => {
+    expect(runBlock('MESSAGE_SENDER_AUTH=off', false)).toBe('')
+    expect(runBlock('MESSAGE_SENDER_AUTH="OFF"', false)).toBe('')
+  })
+
+  it('the path is a symlink: nothing is exported', () => {
+    expect(runBlock('MESSAGE_SENDER_AUTH=shadow', true)).toBe('')
   })
 })
 
