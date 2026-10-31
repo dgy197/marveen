@@ -258,6 +258,8 @@ function childEnv(w: World, scenario: Scenario): { env: Record<string, string>; 
     logPath,
     env: {
       PATH: `${BIN}:${dirname(process.execPath)}:/usr/bin:/bin`,
+      // tsx puts its IPC pipe under TMPDIR; without it the pipe lands in /tmp, which safe-vitest.sb denies
+      ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}),
       HOME: w.home,
       LC_ALL: 'en_US.UTF-8',
       NODE_ENV: 'production',

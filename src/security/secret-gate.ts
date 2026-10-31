@@ -236,6 +236,16 @@ export const FIXTURE_EXCEPTIONS: readonly FixtureException[] = Object.freeze([
     sha256: 'db8f43c042cf5bdf36abda27c6fb50a1eac827489a10916a552531b93cb548cd',
     reason: 'collectors config validation: this literal IS the input to "rejects a raw secret in secret_ref (must be vault:)". Its raw-secret shape is the subject under test.',
   },
+  {
+    path: 'src/__tests__/graph-cli-enforce-matrix.test.ts',
+    sha256: '2d0f8ce994ca6fe5cdabe72d4662a65fc2bc7ff984e97b9721cc8f92695c5bf2',
+    reason: 'Graph CLI test: synthetic Bearer fixture asserted on the fake server (the Authorization header the CLI sends), card 6151bb4d.',
+  },
+  {
+    path: 'src/__tests__/graph-forward-integration.test.ts',
+    sha256: '2d0f8ce994ca6fe5cdabe72d4662a65fc2bc7ff984e97b9721cc8f92695c5bf2',
+    reason: 'Graph forward integration test: synthetic Bearer fixture asserted on the fake server (the Authorization header the CLI sends), card 6151bb4d.',
+  },
 ]);
 
 export type ExceptionProblem = { path: string; reason: string };

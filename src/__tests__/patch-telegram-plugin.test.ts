@@ -516,20 +516,21 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     ])
     expect(a.lines[a.open + 4]).toBe(`  if (data.startsWith('kbd:')) { ${KBD_MARKER}`)
     expect(syntaxErrors(first)).toEqual([])
-    // kbd first, the apv line put in afterwards (as the apv patch does): the next kbd run changes nothing
+    // the default run() now applies kbd AND apv (card 6151bb4d): the apv call line is already between
+    // `const data` and the perm regex, kbd sits after the regex, and the next run changes nothing
     writeFileSync(server, fixtureText)
     run()
-    const kbdOnly = readFileSync(server, 'utf-8')
-    const b = hook(kbdOnly)
-    expect(b.lines[b.open + 2]).toMatch(/^ {2}const m = \/\^perm:/)
-    const lines = [...b.lines]
-    lines.splice(b.open + 2, 0, APV_LINE)
-    writeFileSync(server, lines.join('\n'))
+    const both = readFileSync(server, 'utf-8')
+    const b = hook(both)
+    expect(b.lines[b.open + 2]).toBe(APV_LINE)
+    expect(b.lines[b.open + 3]).toMatch(/^ {2}const m = \/\^perm:/)
+    expect(b.lines[b.open + 4]).toBe(`  if (data.startsWith('kbd:')) { ${KBD_MARKER}`)
     const state = join(cache, 'state.json')
     const r2 = run(['--state', state])
     expect(r2.stderr).toBe('')
     expect(readState(state).files[0].patches.kbd).toBe('already')
-    expect(readFileSync(server, 'utf-8')).toBe(first)
+    expect(readState(state).files[0].patches.apv).toBe('already')
+    expect(readFileSync(server, 'utf-8')).toBe(both)
   })
 })
 
@@ -1203,7 +1204,9 @@ describe('apv: email-approval buttons (345f34e2)', () => {
     const text = readFileSync(server, 'utf-8')
     expect(text).not.toContain(APV)
     expect(text).not.toContain('marveenApprovalCallback')
-    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', kbd: 'patched', apv: `anchor-missing:${name}` })
+    // kbd and apv share the perm-regex anchor: a moved one skips both (each loudly), every other anchor only apv
+    const kbd = name === 'perm regex' ? 'anchor-missing:callback perm regex' : 'patched'
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', kbd, apv: `anchor-missing:${name}` })
   })
 
   it('a plugin that already has one of the block\'s names: nothing inserted, loudly', () => {
