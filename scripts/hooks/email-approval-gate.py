@@ -258,6 +258,22 @@ def _manage_email_op_outbound(op: str) -> bool:
     return manage_email_op_outbound(op)
 
 
+def _manage_email_op_closed(op) -> bool:
+    """email_extract.manage_email_op_closed (outbound OR unreadable), lazily and
+    guarded like _manage_email_op_outbound; the local rule decides alone when the
+    module does not load or predates the function, so the gate is never narrower."""
+    if not isinstance(op, str) or not op.strip():
+        return True
+    if _manage_email_op_outbound(op):
+        return True
+    try:
+        sys.path.insert(0, _HERE)
+        from email_extract import manage_email_op_closed
+        return manage_email_op_closed(op)
+    except Exception:  # noqa: BLE001 -- SyntaxError, ImportError, NameError, anything: local rule stands
+        return False
+
+
 def _is_explicit_draft(tool_input: dict) -> bool:
     """Did the call EXPLICITLY ask for a draft? Only a literal true (bool) or the
     exact string "true" counts; everything else is treated as a send.
@@ -438,10 +454,7 @@ def manage_email_is_send(tool_input: dict) -> bool:
     to stop the SEND. Fail-closed stays: only an explicit draft:true passes,
     a missing/ambiguous flag is a send.
     """
-    op = tool_input.get("operation")
-    if not isinstance(op, str) or not op.strip():
-        return True
-    if not _manage_email_op_outbound(op):
+    if not _manage_email_op_closed(tool_input.get("operation")):
         return False
     return not _is_explicit_draft(tool_input)
 

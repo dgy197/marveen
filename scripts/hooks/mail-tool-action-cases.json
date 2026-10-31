@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared vectors for the mail-tool ACTION classifier (graph-forward card, spec G1-G7, Brainy 2958). Each case is a tool name plus a representative tool_input and the class every gate must give it, whatever the server name or version prefix: expected=send -> the main-agent approval gate is in scope (level logic runs), the copy gate audits the text, the sub-agent JS gate denies unconditionally; expected=draft -> the approval gate is NOT in scope, the copy gate audits, the JS gate ledger-checks the recipients; expected=nonsend -> all three pass the call untouched. today_spec=true marks the rows the spec says today's name patterns already recognise (the observed base verdicts are in golden-base.json, section g7_observed_base). extra=true rows are additions that are unambiguous under G1/G4 but are not in the spec list. get_send_as is an accepted false positive (any send token is fail-closed). Written by build_vectors.py; ASCII only. classifier_edges (added in N1b): name-only edge cases of the classifier, expected 'send', 'draft' or null, checked against both implementations (python mail_tool_action, JS mailToolAction). manage_email_ops (card 2f835ee4 r5): operation strings of the multiplexed manage_email tool and whether the shared normalisation (email_extract.manage_email_op_outbound / manageEmailOpOutbound in email-send-gate.mjs) takes them for an outbound operation; both twins must agree on every row.",
+  "_comment": "Shared vectors for the mail-tool ACTION classifier (graph-forward card, spec G1-G7, Brainy 2958). Each case is a tool name plus a representative tool_input and the class every gate must give it, whatever the server name or version prefix: expected=send -> the main-agent approval gate is in scope (level logic runs), the copy gate audits the text, the sub-agent JS gate denies unconditionally; expected=draft -> the approval gate is NOT in scope, the copy gate audits, the JS gate ledger-checks the recipients; expected=nonsend -> all three pass the call untouched. today_spec=true marks the rows the spec says today's name patterns already recognise (the observed base verdicts are in golden-base.json, section g7_observed_base). extra=true rows are additions that are unambiguous under G1/G4 but are not in the spec list. get_send_as is an accepted false positive (any send token is fail-closed). Written by build_vectors.py; ASCII only. classifier_edges (added in N1b): name-only edge cases of the classifier, expected 'send', 'draft' or null, checked against both implementations (python mail_tool_action, JS mailToolAction). manage_email_ops (card 2f835ee4 r5): operation strings of the multiplexed manage_email tool and whether the shared normalisation (email_extract.manage_email_op_outbound / manageEmailOpOutbound in email-send-gate.mjs) takes them for an outbound operation; both twins must agree on every row. closed (card d8d3441e): optional per row, default = outbound; email_extract.manage_email_op_closed / manageEmailOpClosed say true for outbound OR unreadable operations (not a string, or empty after the normalisation), and every gate takes closed as a send.",
   "cases": [
     {
       "name": "gmail-v2 v2_send_draft",
@@ -515,7 +515,7 @@
     {
       "tool": "mcp__github__reply_to_review_comment",
       "expected": "send",
-      "note": "name-agnostic by design: today's matchers keep non-mail servers out (2f835ee4)"
+      "note": "classifier stays name-agnostic (send); the matcher keeps it out via its explicit non-mail exclusion list (card 7f8b46a1), not by server naming"
     },
     {
       "tool": "mcp__google-workspace__manage_email",
@@ -697,12 +697,50 @@
     {
       "op": "",
       "outbound": false,
-      "note": "empty string: the callers own the missing-operation policy"
+      "closed": true,
+      "note": "empty string: unreadable, so closed (card d8d3441e)"
     },
     {
       "op": "   ",
       "outbound": false,
-      "note": "ASCII spaces only: empty after the strip"
+      "closed": true,
+      "note": "ASCII spaces only: empty after the strip, so closed"
+    },
+    {
+      "op": null,
+      "outbound": false,
+      "closed": true,
+      "note": "null / a missing operation reaches the gates as null: closed"
+    },
+    {
+      "op": [],
+      "outbound": false,
+      "closed": true,
+      "note": "non-string: closed"
+    },
+    {
+      "op": ["send"],
+      "outbound": false,
+      "closed": true,
+      "note": "non-string that stringifies to send: closed, never read as send"
+    },
+    {
+      "op": 123,
+      "outbound": false,
+      "closed": true,
+      "note": "non-string: closed"
+    },
+    {
+      "op": "search",
+      "outbound": false,
+      "closed": false,
+      "note": "a readable non-outbound operation stays open"
+    },
+    {
+      "op": "Reply-All",
+      "outbound": true,
+      "closed": true,
+      "note": "outbound is closed"
     },
     {
       "op": "reply_\u0430ll",

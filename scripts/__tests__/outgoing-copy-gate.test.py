@@ -609,7 +609,7 @@ def main():
 
         # AC4: reads and mailbox changes stay untouched, and the match is exact, not a substring.
         for form in ("search", "read", "get", "list", "trash", "label", "modify", "getAttachment",
-                     "get_reply_all_settings", "replyall_recipients", "reply_alls", "forwarding_rules", "", "reply all"):
+                     "get_reply_all_settings", "replyall_recipients", "reply_alls", "forwarding_rules", "reply all"):
             code, out, err = run_hook(me(form, body=BAD_BODY), rules_file=active)
             check(f"AC4: non-outbound op {form!r} is not audited (exit 0)", code, 0)
 
@@ -626,13 +626,20 @@ def main():
             code, out, err = run_hook(me(form, message_id="x", body=BAD_BODY), rules_file=active)
             check(f"forward spelled {form!r} with an em dash note blocks (exit 2)", code, 2)
 
-        # A non-string operation: the policy is the pre-r5 one (str() of it is not outbound) and
-        # nothing raises (exit 0 or 2 only, never a Python traceback exit 1).
-        for form in (["reply_all"], 123, None, {}, True):
+        # card d8d3441e: a missing, blank or non-string operation is CLOSED (audited), like the
+        # approval gate takes it for a send. Nothing raises (exit 2, never a traceback exit 1).
+        for form in (["reply_all"], ["search"], 123, None, {}, True, "", "   "):
             code, out, err = run_hook(me(form, body=BAD_BODY), rules_file=active)
-            check_true(f"non-string op {form!r}: exit 0 or 2, no crash", code in (0, 2) and "Traceback" not in err,
+            check_true(f"closed op {form!r}: audited, no crash", code == 2 and "Traceback" not in err,
                        f"exit={code} err={err[:200]!r}")
-            check(f"non-string op {form!r}: not audited, as before (exit 0)", code, 0)
+            code, out, err = run_hook(me(form, body=CLEAN_HU_OK), rules_file=active)
+            check(f"closed op {form!r}, clean body passes (exit 0)", code, 0)
+        code, out, err = run_hook({"tool_name": "mcp__google-workspace__manage_email",
+                                   "tool_input": {"body": BAD_BODY}}, rules_file=active)
+        check("missing operation key, em dash body: audited (exit 2)", code, 2)
+        code, out, err = run_hook({"tool_name": "mcp__google-workspace__manage_email",
+                                   "tool_input": {"action": "search", "body": BAD_BODY}}, rules_file=active)
+        check("missing operation, readable action=search: not audited (exit 0)", code, 0)
 
         # AC6: fail-closed stub when email_extract.py does not load, on a disposable copy of the tree.
         import shutil
@@ -667,7 +674,7 @@ def main():
         code, out, err = run_copy(me("replyAll", body=CLEAN_HU_OK))
         check("AC6: email_extract does not load -> any non-empty operation counts as outbound (exit 2)", code, 2)
         code, out, err = run_copy(me("", body=CLEAN_HU_OK))
-        check("AC6: email_extract does not load -> an EMPTY operation keeps the old policy (exit 0)", code, 0)
+        check("AC6: email_extract does not load -> an EMPTY operation is closed too (exit 2, card d8d3441e)", code, 2)
         code, out, err = run_copy(me(["reply_all"], body=CLEAN_HU_OK))
         check_true("AC6: email_extract does not load -> a non-string operation never crashes (exit 0 or 2)",
                    code in (0, 2) and "Traceback" not in err, f"exit={code} err={err[:200]!r}")

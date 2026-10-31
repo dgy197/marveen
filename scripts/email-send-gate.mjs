@@ -1306,6 +1306,14 @@ export function manageEmailOpKey(op) {
 export function manageEmailOpOutbound(op) {
   return MANAGE_EMAIL_SEND_OPS.has(manageEmailOpKey(op))
 }
+// JS twin of email_extract.manage_email_op_closed (card d8d3441e): outbound OR
+// unreadable (not a string, or empty after the normalisation). String() is NOT
+// used: String(["send"]) would read as "send".
+export function manageEmailOpClosed(op) {
+  if (typeof op !== 'string') return true
+  const key = manageEmailOpKey(op)
+  return key === '' || MANAGE_EMAIL_SEND_OPS.has(key)
+}
 
 // --- tool-name classification ------------------------------------------------
 // JS twin of email_extract.classify_mail_tool (scripts/hooks/email_extract.py,
@@ -1749,9 +1757,9 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
   // on ctx.operation alone and never looks at draft:true, so with it enabled the
   // mailbox is effectively read-only (verified live, 2026-08-10).
   if (mailKind === 'manage_email') {
-    // String() keeps the pre-r5 reading of a non-string operation (["send"] is
-    // "send"); the normalisation itself is manageEmailOpOutbound.
-    if (!manageEmailOpOutbound(String(toolInput?.operation ?? ''))) return { deny: false }
+    // A missing or non-string operation is closed (card d8d3441e): it goes down
+    // the address check + draft rule like an outbound one.
+    if (!manageEmailOpClosed(toolInput?.operation)) return { deny: false }
     // The address check runs before the draft rule, so it applies to the send
     // AND to the draft the deny message would send us back to write.
     const unparseable = unparseableRecipients(toolInput)

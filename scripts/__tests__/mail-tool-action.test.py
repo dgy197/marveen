@@ -231,6 +231,12 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     for r in OPS:
         got = ee.manage_email_op_outbound(r["op"])
         check(f"function: {r['op']!r} -> outbound={r['outbound']} ({r['note']})", got is r["outbound"], f"got {got!r}")
+        closed = r.get("closed", r["outbound"])
+        got = ee.manage_email_op_closed(r["op"])
+        check(f"function: {r['op']!r} -> closed={closed} (card d8d3441e)", got is closed, f"got {got!r}")
+    check("the manage_email_ops block pins closed true and false, non-strings included",
+          {r.get("closed", r["outbound"]) for r in OPS} == {True, False}
+          and {"null", "list", "int"} <= {type(r["op"]).__name__.replace("NoneType", "null") for r in OPS})
     for v in (None, 123, ["send"], {"op": "send"}, True, b"send"):
         check(f"function: a non-string operation {v!r} is not outbound and does not raise",
               ee.manage_email_op_outbound(v) is False)
@@ -245,12 +251,14 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     pre_copy = {"send", "reply", "replyall", "forward"}
     for r in OPS:
         op = r["op"]
+        isstr = isinstance(op, str)
+        closed = r.get("closed", r["outbound"])
         code, _, err = run(GATE, s1, ME, {"operation": op, "to": ["a@b.hu"], "body": "Kedves Ügyfelünk! Törzs."})
-        want = r["outbound"] or op.strip().lower().replace("-", "_") in pre_approval or not op.strip()
+        want = closed or (isstr and (op.strip().lower().replace("-", "_") in pre_approval or not op.strip()))
         check(f"approval gate L1: operation {op!r} -> {'DENIED' if want else 'passes'}",
               (code == 2 and "szint 1" in err) if want else code == 0, f"exit={code} err={err[:120]!r}")
         code, _, err = run(COPY, s1, ME, {"operation": op, "body": "Szia " + EM_DASH + " vége."})
-        want = r["outbound"] or op.strip().lower() in pre_copy
+        want = closed or (isstr and op.strip().lower() in pre_copy)
         check(f"copy gate: operation {op!r} -> {'audited (exit 2)' if want else 'not audited (exit 0)'}",
               code == (2 if want else 0), f"exit={code} err={err[:120]!r}")
     # AC5: the draft flag is honoured for the new alias exactly as for reply.
@@ -267,10 +275,17 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
         check(f"approval gate L1: operation {v!r} is taken for a send, as before", code == 2 and "szint 1" in err,
               f"exit={code}")
         code, _, err = run(COPY, s1, ME, {"operation": v, "body": "Szia " + EM_DASH + " vége."})
-        check(f"copy gate: operation {v!r} is not audited, as before", code == 0, f"exit={code} err={err[:120]!r}")
+        check(f"copy gate: operation {v!r} is closed, so audited (exit 2, card d8d3441e)", code == 2,
+              f"exit={code} err={err[:120]!r}")
     code, _, err = run(GATE, s1, ME, {"body": "Törzs."})
     check("approval gate L1: no operation key at all is taken for a send, as before",
           code == 2 and "szint 1" in err, f"exit={code}")
+    code, _, err = run(COPY, s1, ME, {"body": "Szia " + EM_DASH + " vége."})
+    check("copy gate: no operation key at all is closed, so audited (exit 2, card d8d3441e)", code == 2,
+          f"exit={code} err={err[:120]!r}")
+    code, _, err = run(COPY, s1, ME, {"operation": ["send"], "action": "search", "body": "Szia " + EM_DASH + " vége."})
+    check("copy gate: a non-string operation is not rescued by a readable `action` (exit 2)", code == 2,
+          f"exit={code}")
     code, _, err = run(COPY, s1, ME, {"action": "reply_all", "body": "Szia " + EM_DASH + " vége."})
     check("copy gate: the `action` key is read like `operation` (exit 2)", code == 2, f"exit={code}")
 
@@ -403,7 +418,9 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     g_nf, c_nf, x_nf = copy_tree(os.path.join(td, "old-me"))
     with open(x_nf, encoding="utf-8") as fh:
         src = fh.read()
-    src3 = src.replace("def manage_email_op_outbound(", "def _gone_manage_email_op_outbound(")
+    # A module that predates the feature has neither the outbound nor the closed rule.
+    src3 = (src.replace("def manage_email_op_outbound(", "def _gone_manage_email_op_outbound(")
+               .replace("def manage_email_op_closed(", "def _gone_manage_email_op_closed("))
     with open(x_nf, "w", encoding="utf-8") as fh:
         fh.write(src3)
     check("old-module copy really lacks manage_email_op_outbound",
@@ -422,7 +439,7 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     code, _, err = run(c_nf, s1, ME, {"operation": "search", "query": "x"})
     check("no shared op function: copy gate, even a search blocks (the stub is closed, exit 2)", code == 2, f"exit={code}")
     code, _, err = run(c_nf, s1, ME, {"operation": "", "body": "x"})
-    check("no shared op function: copy gate, an empty operation keeps the old policy (exit 0)", code == 0, f"exit={code}")
+    check("no shared op function: copy gate, an empty operation with a clean body passes (exit 0)", code == 0, f"exit={code}")
     # Control, so the line above is the stub and not the gate: the intact copy lets a search through.
     code, _, err = run(c_ok, s1, ME, {"operation": "search", "query": "x"})
     check("control: the intact copy lets a search through the copy gate (exit 0)", code == 0, f"exit={code}")

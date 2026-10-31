@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, mailToolAction, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
+import { gateDecision, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
 
 // graph-forward N1b (spec G1-G7): the mail tools are recognised by their
 // ACTION, whatever the server name or version prefix. The gap it closes: the
@@ -76,15 +76,15 @@ describe('mail-tool action: python and JS agree with the shared contract', () =>
 // send / reply / replyall / forward) lives twice: manageEmailOpOutbound here and
 // manage_email_op_outbound in email_extract.py. Every row of the manage_email_ops block goes
 // through BOTH, and the sub-agent gate and the python entry points must follow.
-const OPS = (VECTORS as unknown as { manage_email_ops: Array<{ op: string; outbound: boolean; note: string }> })
+const OPS = (VECTORS as unknown as { manage_email_ops: Array<{ op: unknown; outbound: boolean; closed?: boolean; note: string }> })
   .manage_email_ops
 
-function pythonOps(ops: unknown[]): boolean[] {
+function pythonOps(ops: unknown[]): boolean[][] {
   const out = execFileSync('python3', ['-I', '-c', `
 import json, sys
 sys.path.insert(0, ${JSON.stringify(EXTRACT_DIR)})
-from email_extract import manage_email_op_outbound
-print(json.dumps([manage_email_op_outbound(o) for o in json.load(sys.stdin)]))
+from email_extract import manage_email_op_outbound, manage_email_op_closed
+print(json.dumps([[manage_email_op_outbound(o), manage_email_op_closed(o)] for o in json.load(sys.stdin)]))
 `], { encoding: 'utf-8', input: JSON.stringify(ops) })
   return JSON.parse(out.trim())
 }
@@ -102,14 +102,30 @@ describe('manage_email operations: python and JS agree on the shared block', () 
   OPS.forEach((r, i) => {
     it(`${JSON.stringify(r.op)} -> outbound=${r.outbound} (${r.note})`, () => {
       expect(manageEmailOpOutbound(r.op), 'JS').toBe(r.outbound)
-      expect(py[i], 'python').toBe(r.outbound)
+      expect(py[i][0], 'python').toBe(r.outbound)
     })
+    // card d8d3441e: the closed rule (outbound OR unreadable), same row, both twins
+    const closed = r.closed ?? r.outbound
+    it(`${JSON.stringify(r.op)} -> closed=${closed} (${r.note})`, () => {
+      expect(manageEmailOpClosed(r.op), 'JS').toBe(closed)
+      expect(py[i][1], 'python').toBe(closed)
+    })
+  })
+
+  it('card d8d3441e: the block pins closed on missing-like and non-string operations', () => {
+    expect(OPS.some((r) => r.op === null && r.closed === true)).toBe(true)
+    expect(OPS.some((r) => Array.isArray(r.op) && r.closed === true)).toBe(true)
+    expect(OPS.some((r) => typeof r.op === 'number' && r.closed === true)).toBe(true)
+    expect(OPS.some((r) => r.op === 'search' && r.closed === false)).toBe(true)
+    expect(manageEmailOpClosed(undefined)).toBe(true)
+    expect(manageEmailOpClosed(['send'])).toBe(true)
   })
 
   NON_STRINGS.forEach((v, i) => {
     it(`a non-string operation ${JSON.stringify(v)} is not outbound and does not throw`, () => {
       expect(manageEmailOpOutbound(v)).toBe(false)
-      expect(py[OPS.length + i]).toBe(false)
+      expect(py[OPS.length + i][0]).toBe(false)
+      expect(py[OPS.length + i][1]).toBe(true)
     })
   })
 

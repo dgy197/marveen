@@ -2048,6 +2048,12 @@ except Exception:  # noqa: BLE001 -- deliberate fail-closed stub
     def manage_email_op_outbound(op):
         return isinstance(op, str) and op != ""
 
+try:
+    from email_extract import manage_email_op_closed  # noqa: E402
+except Exception:  # noqa: BLE001 -- deliberate fail-closed stub: everything is closed
+    def manage_email_op_closed(op):
+        return True
+
 
 # The pre-r5 test (Python strip() takes Unicode whitespace that the shared ASCII
 # strip does not), OR-ed in so this gate is never narrower than it was (AC3).
@@ -2055,7 +2061,11 @@ _PRE_R5_OUTBOUND_OPS = {"send", "reply", "replyall", "forward"}
 
 
 def _manage_email_outbound(op):
-    return manage_email_op_outbound(op) or op.strip().lower() in _PRE_R5_OUTBOUND_OPS
+    """Outbound OR unreadable (card d8d3441e): a missing or non-string operation
+    is audited, like the approval gate takes it for a send."""
+    if manage_email_op_closed(op) or manage_email_op_outbound(op):
+        return True
+    return isinstance(op, str) and op.strip().lower() in _PRE_R5_OUTBOUND_OPS
 
 
 # --- Telegram reply (GATETG816) ---------------------------------------------
@@ -2646,7 +2656,11 @@ def main():
     # its name, only by the operation it was asked to perform.
     mail_kind = classify_mail_tool(tool)
     if mail_kind == "manage_email":
-        op = str(tool_input.get("operation") or tool_input.get("action") or "")
+        # `operation` first; `action` only when `operation` is absent. The raw value
+        # goes to the shared closed rule: a non-string or blank one is audited.
+        op = tool_input.get("operation")
+        if op is None:
+            op = tool_input.get("action")
         if not _manage_email_outbound(op):
             sys.exit(0)  # search/read/labels/trash...: no outgoing text of ours
         # A bare forward carries someone else's text and an EMPTY note: there is

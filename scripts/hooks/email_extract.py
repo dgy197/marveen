@@ -1025,6 +1025,18 @@ def manage_email_op_outbound(op) -> bool:
     return manage_email_op_key(op) in MANAGE_EMAIL_OUTBOUND_OPS
 
 
+def manage_email_op_closed(op) -> bool:
+    """The ONE fail-closed rule for a manage_email `operation` (card d8d3441e): True
+    when the operation is outbound OR cannot be read (not a str, or empty after the
+    normalisation), because that is the case where nobody can prove it is not a send.
+    Shared by the approval gate and the copy gate; JS twin manageEmailOpClosed in
+    scripts/email-send-gate.mjs. Pure, never raises."""
+    if not isinstance(op, str):
+        return True
+    key = manage_email_op_key(op)
+    return key == "" or key in MANAGE_EMAIL_OUTBOUND_OPS
+
+
 def _stored_content_reason(tool_name: str, tool_input: dict):
     """Why a send by the action classifier cannot be anchored, or None (G5).
     A send of a stored draft (a draft word in the action, or a draft id in the
