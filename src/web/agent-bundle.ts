@@ -11,6 +11,7 @@ import {
   lstatSync,
   renameSync,
   realpathSync,
+  unlinkSync,
 } from 'node:fs'
 import { join, basename, dirname, relative, sep } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -261,6 +262,52 @@ export function assertNoSymlinksInTree(root: string, label: string): void {
       if (st.isDirectory()) stack.push(p)
     }
   }
+}
+
+// Card 51538ebc r4 (Brainy decision C): the bundle levels the importers navigate
+// by. A link here would redirect a whole agent or the manifest, so it refuses the
+// bundle; any deeper link is only content and is dropped.
+function isStructuralBundleEntry(rel: string): boolean {
+  return rel === 'manifest.json' || rel === 'agent' || rel === 'agents' || dirname(rel) === 'agents'
+}
+
+// Card 51538ebc r4 (Brainy decision C): runs on the extract root right after tar,
+// before anything reads the tree. One iterative lstat walk (links never followed):
+// a link at a structural level throws, every deeper link is unlinked (the link
+// itself, never its target) and its extract-root relative path returned, so the
+// importers report it like card 24e137ef BD1. Invariant afterwards: no symbolic
+// link anywhere in the extracted tree (re-checked before returning).
+export function stripBundleSymlinks(extractRoot: string): string[] {
+  const shown = (rel: string): string => rel.replace(/[^\x20-\x7e]/g, '?')
+  if (lstatSync(extractRoot).isSymbolicLink()) throw new Error('Invalid bundle: symlink at .')
+  const removed: string[] = []
+  const stack: string[] = [extractRoot]
+  while (stack.length > 0) {
+    const dir = stack.pop() as string
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name)
+      const rel = relative(extractRoot, p)
+      const st = lstatSync(p)
+      if (st.isSymbolicLink()) {
+        if (isStructuralBundleEntry(rel)) throw new Error(`Invalid bundle: symlink at ${shown(rel)}`)
+        unlinkSync(p)
+        removed.push(rel)
+      } else if (st.isDirectory()) {
+        stack.push(p)
+      }
+    }
+  }
+  assertNoSymlinksInTree(extractRoot, '')
+  return removed
+}
+
+// The stripped links that sat inside <agentRel> (e.g. 'agent', 'agents/x'),
+// relative to that agent dir, in the droppedEntries format.
+function strippedLinksUnder(removed: string[], agentRel: string): string[] {
+  const prefix = agentRel + sep
+  return removed
+    .filter(r => r.startsWith(prefix))
+    .map(r => `${r.slice(prefix.length).replace(/[^\x20-\x7e]/g, '?')} (symlink)`)
 }
 
 // Card 51538ebc r3 B1: even with no links in the tree, the staged agent dir must
@@ -533,8 +580,8 @@ export function importAgentBundle(
     } catch {
       throw new Error('Invalid bundle: could not extract (not a gzip tar archive?)')
     }
-    // Before anything reads or writes the tree (card 51538ebc r3 B1).
-    assertNoSymlinksInTree(extractRoot, '')
+    // Before anything reads or writes the tree (card 51538ebc r3 B1, r4 C).
+    const strippedLinks = stripBundleSymlinks(extractRoot)
 
     const manifest = readBundleManifest(extractRoot)
     const stagedAgentDir = join(extractRoot, 'agent')
@@ -561,7 +608,7 @@ export function importAgentBundle(
     }
     applyKeptSecurityProfile(stagedAgentDir, exists ? dest : null)
     const droppedSettings = exists ? [] : dropStagedSettings(stagedAgentDir)
-    const droppedEntries = installStagedAgent(stagedAgentDir, dest, exists)
+    const droppedEntries = [...installStagedAgent(stagedAgentDir, dest, exists), ...strippedLinksUnder(strippedLinks, 'agent')].sort()
 
     return { name, manifest, overwritten: exists, droppedEntries, droppedSettings }
   } finally {
@@ -729,8 +776,8 @@ export function importAllAgentsBundle(
     } catch {
       throw new Error('Invalid bundle: could not extract (not a gzip tar archive?)')
     }
-    // Before anything reads or writes the tree (card 51538ebc r3 B1).
-    assertNoSymlinksInTree(extractRoot, '')
+    // Before anything reads or writes the tree (card 51538ebc r3 B1, r4 C).
+    const strippedLinks = stripBundleSymlinks(extractRoot)
 
     const manifest = readFleetManifest(extractRoot)
     const agentsRoot = join(extractRoot, 'agents')
@@ -773,7 +820,7 @@ export function importAllAgentsBundle(
       if (exists && !opts.overwrite) { skipped.push({ name, reason: 'already exists' }); continue }
       applyKeptSecurityProfile(stagedAgentDir, exists ? dest : null)
       const droppedSettings = exists ? [] : dropStagedSettings(stagedAgentDir)
-      const droppedEntries = installStagedAgent(stagedAgentDir, dest, exists)
+      const droppedEntries = [...installStagedAgent(stagedAgentDir, dest, exists), ...strippedLinksUnder(strippedLinks, join('agents', entry))].sort()
       imported.push({ name, overwritten: exists, droppedEntries, droppedSettings })
     }
 

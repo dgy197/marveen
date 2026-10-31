@@ -552,24 +552,25 @@ describe('bundle import allowlist (card 24e137ef B1)', () => {
       })
 
       // Card 51538ebc B1: a staged .claude / hooks / settings.json that is a symlink
-      // would make the keep step rm/cp/write OUTSIDE staging. The import is refused
-      // before anything is touched; the outside tree and the existing agent stay as
-      // they were.
+      // would make the keep step rm/cp/write OUTSIDE staging. r4 (Brainy decision C):
+      // the link is unlinked right after tar, reported as dropped, and the keep step
+      // only ever sees real staged files; the outside tree is untouched and the
+      // existing agent's settings and hooks are kept (BD3).
       const symlinkCases: { label: string; plant: (agent: string, outside: string) => void; match: RegExp }[] = [
-        { label: '.claude', plant: (agent, outside) => symlinkSync(outside, join(agent, '.claude')), match: /symlink at .*\.claude$/ },
+        { label: '.claude', plant: (agent, outside) => symlinkSync(outside, join(agent, '.claude')), match: /^\.claude$/ },
         {
           label: '.claude/hooks',
           plant: (agent, outside) => { mkdirSync(join(agent, '.claude'), { recursive: true }); symlinkSync(join(outside, 'hooks'), join(agent, '.claude', 'hooks')) },
-          match: /symlink at .*hooks$/,
+          match: /^\.claude\/hooks$/,
         },
         {
           label: '.claude/settings.json',
           plant: (agent, outside) => { mkdirSync(join(agent, '.claude'), { recursive: true }); symlinkSync(join(outside, 'settings.json'), join(agent, '.claude', 'settings.json')) },
-          match: /symlink at .*settings\.json$/,
+          match: /^\.claude\/settings\.json$/,
         },
       ]
       for (const c of symlinkCases) {
-        it(`B1 overwrite with a staged ${c.label} symlink is refused, outside tree and existing agent untouched`, () => {
+        it(`B1 overwrite with a staged ${c.label} symlink: the link is dropped, outside tree untouched, existing settings and hooks kept`, () => {
           const outside = join(tmp, 'outside')
           makeAgent(outside, { 'hooks/guard.py': 'print("fleet gate")', 'settings.json': '{"outside":true}' })
           const destBase = join(tmp, 'agents')
@@ -579,27 +580,36 @@ describe('bundle import allowlist (card 24e137ef B1)', () => {
             '.claude/hooks/mine.py': 'print("local")',
           })
           const bundle = pack({ 'CLAUDE.md': 'x' }, (agent) => c.plant(agent, outside))
-          expect(() => run(bundle, destBase, true)).toThrow(c.match)
+          const dropped = run(bundle, destBase, true).droppedEntries
+          expect(dropped.filter(d => d.endsWith(' (symlink)')).map(d => d.slice(0, -' (symlink)'.length))).toEqual([c.label])
+          expect(dropped.find(d => d.endsWith(' (symlink)'))!.slice(0, -' (symlink)'.length)).toMatch(c.match)
           expect(readFileSync(join(outside, 'hooks', 'guard.py'), 'utf-8')).toBe('print("fleet gate")')
           expect(readFileSync(join(outside, 'settings.json'), 'utf-8')).toBe('{"outside":true}')
           expect(readdirSync(join(outside, 'hooks'))).toEqual(['guard.py'])
           const dest = join(destBase, 'victim')
-          expect(readFileSync(join(dest, 'CLAUDE.md'), 'utf-8')).toBe('old')
+          expect(lstatSync(join(dest, '.claude')).isSymbolicLink()).toBe(false)
+          expect(lstatSync(join(dest, '.claude', 'hooks')).isSymbolicLink()).toBe(false)
+          expect(lstatSync(join(dest, '.claude', 'settings.json')).isSymbolicLink()).toBe(false)
+          expect(readFileSync(join(dest, 'CLAUDE.md'), 'utf-8')).toBe('x')
           expect(readFileSync(join(dest, '.claude', 'hooks', 'mine.py'), 'utf-8')).toBe('print("local")')
           expect(readFileSync(join(dest, '.claude', 'settings.json'), 'utf-8')).toBe('{"mine":true}\n')
           expect(readdirSync(destBase)).toEqual(['victim'])
         })
       }
 
-      it('B1 a staged agent-config.json symlink is refused too, the file it points to is untouched', () => {
+      it('B1 a staged agent-config.json symlink is dropped too, the file it points to is untouched', () => {
         const outside = join(tmp, 'outside')
         makeAgent(outside, { 'target.json': '{"outside":true}' })
         const destBase = join(tmp, 'agents')
         makeAgent(join(destBase, 'victim'), { 'CLAUDE.md': 'old' })
         const bundle = pack({ 'CLAUDE.md': 'x' }, (agent) => symlinkSync(join(outside, 'target.json'), join(agent, 'agent-config.json')))
-        expect(() => run(bundle, destBase, true)).toThrow(/symlink at .*agent-config\.json$/)
+        expect(run(bundle, destBase, true).droppedEntries).toContain('agent-config.json (symlink)')
         expect(readFileSync(join(outside, 'target.json'), 'utf-8')).toBe('{"outside":true}')
-        expect(readFileSync(join(destBase, 'victim', 'CLAUDE.md'), 'utf-8')).toBe('old')
+        expect(readdirSync(outside)).toEqual(['target.json'])
+        expect(readFileSync(join(destBase, 'victim', 'CLAUDE.md'), 'utf-8')).toBe('x')
+        let cfgIsLink = false
+        try { cfgIsLink = lstatSync(join(destBase, 'victim', 'agent-config.json')).isSymbolicLink() } catch { /* absent is fine */ }
+        expect(cfgIsLink).toBe(false)
       })
 
       // Card 51538ebc B1 (existing side): a symlinked existing hooks dir / settings.json
@@ -826,8 +836,9 @@ describe('bundle import: no symlink anywhere in the extracted tree (card 51538eb
     })
   }
 
-  // (b) a link at a depth the old per-level list never looked at
-  it('(b) single bundle with agent/sub/deeper/link -> outside dir is refused', () => {
+  // (b) a link at a depth the old per-level list never looked at. r4 (Brainy
+  // decision C): below the structural levels a link is dropped, never followed.
+  it('(b) single bundle with agent/sub/deeper/link -> the link is dropped, outside dir untouched', () => {
     const outside = join(tmp, 'outside')
     makeAgent(outside, { 'secret.txt': 'keep me' })
     const root = join(tmp, 'pack-single')
@@ -837,12 +848,16 @@ describe('bundle import: no symlink anywhere in the extracted tree (card 51538eb
     const bundle = tarUp(root, ['manifest.json', 'agent'])
     const destBase = join(tmp, 'dest')
     mkdirSync(destBase, { recursive: true })
-    expect(() => importAgentBundle(bundle, asNew(destBase))).toThrow(/symlink at agent\/sub\/deeper\/link$/)
-    expect(readdirSync(destBase)).toEqual([])
+    const result = importAgentBundle(bundle, asNew(destBase))
+    expect(result.droppedEntries).toContain(`${join('sub', 'deeper', 'link')} (symlink)`)
+    expect(readdirSync(destBase)).toEqual(['victim'])
+    expect(() => lstatSync(join(destBase, 'victim', 'sub', 'deeper', 'link'))).toThrow(/ENOENT/)
+    expect(readFileSync(join(destBase, 'victim', 'CLAUDE.md'), 'utf-8')).toBe('x')
     expect(readdirSync(outside)).toEqual(['secret.txt'])
+    expect(readFileSync(join(outside, 'secret.txt'), 'utf-8')).toBe('keep me')
   })
 
-  it('(b) fleet bundle with agents/x/a/b/link -> outside dir is refused for the whole bundle', () => {
+  it('(b) fleet bundle with agents/x/a/b/link -> the link is dropped, both agents land, outside dir untouched', () => {
     const outside = join(tmp, 'outside')
     makeAgent(outside, { 'secret.txt': 'keep me' })
     const root = join(tmp, 'pack-fleet')
@@ -853,10 +868,13 @@ describe('bundle import: no symlink anywhere in the extracted tree (card 51538eb
     const bundle = tarUp(root, ['manifest.json', 'agents'])
     const destBase = join(tmp, 'dest')
     mkdirSync(destBase, { recursive: true })
-    expect(() => importAllAgentsBundle(bundle, asNew(destBase))).toThrow(/symlink at agents\/x\/a\/b\/link$/)
-    // nothing half-installed: the clean agent y did not land either
-    expect(readdirSync(destBase)).toEqual([])
+    const result = importAllAgentsBundle(bundle, asNew(destBase))
+    expect(result.imported.map(a => a.name).sort()).toEqual(['x', 'y'])
+    expect(result.imported.find(a => a.name === 'x')!.droppedEntries).toContain(`${join('a', 'b', 'link')} (symlink)`)
+    expect(result.imported.find(a => a.name === 'y')!.droppedEntries.filter(d => d.endsWith(' (symlink)'))).toEqual([])
+    expect(() => lstatSync(join(destBase, 'x', 'a', 'b', 'link'))).toThrow(/ENOENT/)
     expect(readdirSync(outside)).toEqual(['secret.txt'])
+    expect(readFileSync(join(outside, 'secret.txt'), 'utf-8')).toBe('keep me')
   })
 
   // (c) manifest.json is a symlink to a valid manifest elsewhere
