@@ -1718,7 +1718,8 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
 // Check raw input, including feeds, before any transformation can hide an ANSI prefix.
 // Only a complete literal echo/printf command is exempt; unknown execution contexts deny.
 function rawAnsiInputDeny(raw) {
-  if (!raw.includes("$'")) return false
+  const joined = raw.replace(/\\\r?\n/g, '')
+  if (!raw.includes("$'") && !joined.includes("$'")) return false
   if (/\\\r?\n/.test(raw)) return true
   const literal = /^(?:[^\s'"\\$`;|&<>(){}*?\[\]#]|\\[^\r\n]|\$'(?:[^'\\]|\\[^\r\n])*'|'[^']*'|"(?:[^"\\$`]|\\[^\r\n]|\$\$|\$')*")+/
   const start = /^[ \t]*(?:echo|printf)(?=[ \t]|$)/.exec(raw)

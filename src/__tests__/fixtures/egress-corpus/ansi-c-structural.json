@@ -1,4 +1,8 @@
 [
+  { "rule": "D16 LF-joined ANSI prefix", "reason": "raw-ansi-execution-context", "cmd": "sh -c $\\\n'printf hello'" },
+  { "rule": "D16 CRLF-joined ANSI prefix", "reason": "raw-ansi-execution-context", "cmd": "sh -c $\\\r\n'printf hello'" },
+  { "rule": "D16 LF-joined ambiguous dollar prefix", "reason": "raw-ansi-execution-context", "cmd": "echo $$\\\n'hello'" },
+  { "rule": "D16 CRLF-joined ambiguous dollar prefix", "reason": "raw-ansi-execution-context", "cmd": "echo $$\\\r\n'hello'" },
   { "rule": "D10 bash ANSI payload word", "reason": "raw-ansi-execution-context", "cmd": "bash -c $'printf hello'" },
   { "rule": "D10 sh ANSI payload word", "reason": "raw-ansi-execution-context", "cmd": "sh -c $'printf hello'" },
   { "rule": "D10 zsh ANSI payload word", "reason": "raw-ansi-execution-context", "cmd": "zsh -c $'printf hello'" },

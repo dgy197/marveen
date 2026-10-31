@@ -14,7 +14,7 @@ describe('direct function literal arguments', () => {
     new URL('./fixtures/egress-corpus/ansi-c-positionals.json', import.meta.url), 'utf8',
   ))
   it.each(ansiCProbes)('denies external positionals following ANSI-C quoted data: %s', (cmd) => {
-    expect(classify(cmd).deny).toBe(true)
+    expect(classify(cmd)).toMatchObject({ deny: true, reason: 'raw-ansi-execution-context' })
   })
 
   it.each([

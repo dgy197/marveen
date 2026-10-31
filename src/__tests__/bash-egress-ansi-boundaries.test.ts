@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { classify, shellWords } from '../../scripts/hooks/bash-egress-parser.mjs'
+import { classify, shellCommandCall, shellWords } from '../../scripts/hooks/bash-egress-parser.mjs'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision, maskInertLiterals } from '../../scripts/self-pace-gate.mjs'
 
@@ -11,6 +11,15 @@ describe('ANSI-C boundaries', () => {
   ))
   it.each(structural)('fails closed structurally: $rule', ({ cmd, reason }) => {
     expect(classify(cmd)).toMatchObject({ deny: true, reason })
+  })
+
+  it.each([
+    ['bash', "bash -c $'printf hello'", 'ansi-shell-payload-word'],
+    ['eval', "eval $'printf hello'", 'ansi-shell-payload-word'],
+    ['bash', String.raw`bash -c "printf \$'hello'"`, 'shell-payload-ansi-quote'],
+    ['eval', String.raw`eval "printf \$'hello'"`, 'shell-payload-ansi-quote'],
+  ])('retains the direct %s payload guard: %s', (cmd, text, reason) => {
+    expect(() => shellCommandCall(cmd, text)).toThrow(reason)
   })
 
   it.each([false, true])('distinguishes the new null source in lenient=%s mode', (lenient) => {
