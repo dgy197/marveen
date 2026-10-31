@@ -141,6 +141,30 @@ describe('worker token-swap restart: loop guard', () => {
     expect(st.notes).toEqual([]) // no "restarted" digest line for a failed restart
   })
 
+  it('restart whose session is not alive afterwards: failed, no ok digest line, no hazmester message, counted', () => {
+    const { st } = harness()
+    let calls = 0
+    const dead = createWorkerTokenRestarter({
+      currentFingerprint: () => FP_B,
+      launchFingerprint: () => FP_B, // stamp already shows the new fingerprint
+      restart: () => { st.restarts++ },
+      sessionAlive: () => (++calls === 1), // alive before, dead after the restart
+      allowed: () => true,
+      now: () => st.now,
+      timeLabel: (ms) => `T${ms}`,
+      addDigestNote: (l) => { st.notes.push(l) },
+      notifyHazmester: (t) => { st.hazmester.push(t) },
+      info: () => {},
+      warn: (o, m) => { st.logs.push(JSON.stringify(o) + m) },
+    })
+    expect(dead.check(SESSION)).toBe('failed')
+    expect(st.restarts).toBe(1)
+    expect(st.notes).toEqual([])
+    expect(st.hazmester).toEqual([])
+    expect(st.logs.join('\n')).toContain('did not complete')
+    expect(dead.check(SESSION)).toBe('skipped') // attempted for this fingerprint
+  })
+
   it('a half-written (unreadable) token read in between does not reset the guard', () => {
     const { st, restarter } = harness({ restartWorks: false })
     st.current = FP_B
