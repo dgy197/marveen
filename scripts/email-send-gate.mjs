@@ -1641,6 +1641,16 @@ function createsMail(entry, words) {
     MAIL_CREATE_WORDS.has(w) || MAIL_CREATE_NOUNS.some((n) => w.endsWith(n)))
 }
 
+// "new" + a mail noun (new_email, newEmail, new-mail, new_message, new_draft,
+// newmail) starts a letter: a draft, ledger-checked, like create + mail noun.
+// "new" alone, new_folder and new_label are not mail. Only ADDS: it runs after the
+// verb rules found nothing (card 6151bb4d). Twin: _new_mail in email_extract.py.
+function newMail(words) {
+  return words.some((w, i) =>
+    (w === 'new' && MAIL_CREATE_NOUNS.includes(words[i + 1])) ||
+    (w.startsWith('new') && MAIL_CREATE_NOUNS.includes(w.slice(3))))
+}
+
 function segmentAction(segment) {
   const s = segment
     .replace(/[^\x00-\x7f]/g, '_')
@@ -1656,10 +1666,10 @@ function segmentAction(segment) {
   if (entries.some((e) => MAIL_SEND_ANYWHERE.has(e.verb))) return 'send'
   if (entries.length && MAIL_SEND_VERBS.has(entries[0].verb)) return 'send'
   if (entries.length && MAIL_DRAFT_VERBS.has(entries[0].verb)) {
-    if (entries[0].verb === 'create' && !createsMail(entries[0], words)) return null
+    if (entries[0].verb === 'create' && !createsMail(entries[0], words)) return newMail(words) ? 'draft' : null
     return 'draft'
   }
-  return null
+  return newMail(words) ? 'draft' : null
 }
 
 // 'send', 'draft' or null. Pure, never throws.
