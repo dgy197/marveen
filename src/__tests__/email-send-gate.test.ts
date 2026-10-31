@@ -75,6 +75,16 @@ describe('gateDecision', () => {
       expect(call({ operation: 'send', draft: 'true' }).deny).toBe(false)
     })
 
+    // Card 6164c9cf: `action` can only ADD closure, never re-open an operation.
+    it('lets action close a read-shaped operation but never re-open a closed one', () => {
+      expect(call({ operation: 'search', action: 'send' }).kind).toBe('draft-required')
+      expect(call({ operation: 'search', action: 'Reply-All' }).deny).toBe(true)
+      expect(call({ operation: 'search', action: 'search' }).deny).toBe(false)
+      expect(call({ operation: 'search', action: ['send'] }).deny).toBe(false)
+      expect(call({ operation: 'search', action: 'send', draft: true }).deny).toBe(false)
+      expect(call({ operation: 'send', action: 'search' }).deny).toBe(true)
+    })
+
     it('is name-agnostic across server prefixes but does not match look-alikes', () => {
       expect(gateDecision('manage_email', { operation: 'send' }).deny).toBe(true)
       expect(gateDecision('mcp__other__manage_email', { operation: 'send' }).deny).toBe(true)
