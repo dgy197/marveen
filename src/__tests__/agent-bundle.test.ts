@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, symlinkSync, lstatSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, symlinkSync, linkSync, lstatSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -898,5 +898,98 @@ describe('bundle import: no symlink anywhere in the extracted tree (card 51538eb
     it('peekBundleKind refuses it', () => {
       expect(() => peekBundleKind(manifestLinkBundle())).toThrow(/symlink at manifest\.json$/)
     })
+  })
+
+  // Card 77483439 M1: the structural `agent` (single) and `agents/<x>` (fleet)
+  // links refuse the bundle; the outside tree stays byte-identical, dest untouched.
+  it('(M1) single bundle whose agent entry is a symlink is refused, outside tree and dest untouched', () => {
+    const outside = join(tmp, 'outside')
+    makeAgent(outside, { 'agent-config.json': OUTSIDE_CFG, 'CLAUDE.md': 'live' })
+    const root = join(tmp, 'pack-agentlink')
+    mkdirSync(root, { recursive: true })
+    writeFileSync(join(root, 'manifest.json'), JSON.stringify(SINGLE_MANIFEST))
+    symlinkSync(outside, join(root, 'agent'))
+    const bundle = tarUp(root, ['manifest.json', 'agent'])
+    const destBase = join(tmp, 'dest')
+    mkdirSync(destBase, { recursive: true })
+    expect(() => importAgentBundle(bundle, asNew(destBase))).toThrow(/symlink at agent$/)
+    expect(readdirSync(outside).sort()).toEqual(['CLAUDE.md', 'agent-config.json'])
+    expect(readFileSync(join(outside, 'agent-config.json'), 'utf-8')).toBe(OUTSIDE_CFG)
+    expect(readFileSync(join(outside, 'CLAUDE.md'), 'utf-8')).toBe('live')
+    expect(readdirSync(destBase)).toEqual([])
+  })
+
+  it('(M1) fleet bundle whose agents/x entry is a symlink is refused, outside tree and dest untouched', () => {
+    const outside = join(tmp, 'outside')
+    makeAgent(outside, { 'agent-config.json': OUTSIDE_CFG, 'CLAUDE.md': 'live' })
+    const root = join(tmp, 'pack-fleetlink')
+    mkdirSync(join(root, 'agents'), { recursive: true })
+    writeFileSync(join(root, 'manifest.json'), JSON.stringify(FLEET_MANIFEST))
+    symlinkSync(outside, join(root, 'agents', 'x'))
+    const bundle = tarUp(root, ['manifest.json', 'agents'])
+    const destBase = join(tmp, 'dest')
+    mkdirSync(destBase, { recursive: true })
+    expect(() => importAllAgentsBundle(bundle, asNew(destBase))).toThrow(/symlink at agents[\\/]x$/)
+    expect(readdirSync(outside).sort()).toEqual(['CLAUDE.md', 'agent-config.json'])
+    expect(readFileSync(join(outside, 'agent-config.json'), 'utf-8')).toBe(OUTSIDE_CFG)
+    expect(readFileSync(join(outside, 'CLAUDE.md'), 'utf-8')).toBe('live')
+    expect(readdirSync(destBase)).toEqual([])
+  })
+
+  // Card 77483439 N1: a link at the bundle root next to manifest.json is structural.
+  it('(N1) single bundle with a root-level extra symlink is refused', () => {
+    const outside = join(tmp, 'outside')
+    makeAgent(outside, { 'secret.txt': 'keep me' })
+    const root = join(tmp, 'pack-rootlink-single')
+    makeAgent(join(root, 'agent'), { 'CLAUDE.md': 'x' })
+    writeFileSync(join(root, 'manifest.json'), JSON.stringify(SINGLE_MANIFEST))
+    symlinkSync(outside, join(root, 'extra'))
+    const bundle = tarUp(root, ['manifest.json', 'agent', 'extra'])
+    const destBase = join(tmp, 'dest')
+    mkdirSync(destBase, { recursive: true })
+    expect(() => importAgentBundle(bundle, asNew(destBase))).toThrow(/symlink at extra$/)
+    expect(readdirSync(destBase)).toEqual([])
+    expect(readdirSync(outside)).toEqual(['secret.txt'])
+  })
+
+  it('(N1) fleet bundle with a root-level extra symlink is refused', () => {
+    const outside = join(tmp, 'outside')
+    makeAgent(outside, { 'secret.txt': 'keep me' })
+    const root = join(tmp, 'pack-rootlink-fleet')
+    makeAgent(join(root, 'agents', 'x'), { 'CLAUDE.md': 'x' })
+    writeFileSync(join(root, 'manifest.json'), JSON.stringify(FLEET_MANIFEST))
+    symlinkSync(outside, join(root, 'extra'))
+    const bundle = tarUp(root, ['manifest.json', 'agents', 'extra'])
+    const destBase = join(tmp, 'dest')
+    mkdirSync(destBase, { recursive: true })
+    expect(() => importAllAgentsBundle(bundle, asNew(destBase))).toThrow(/symlink at extra$/)
+    expect(readdirSync(destBase)).toEqual([])
+    expect(readdirSync(outside)).toEqual(['secret.txt'])
+  })
+
+  // Card 77483439 Q6: tar -czf stores the second of two hard-linked files as a
+  // hard-link entry; the extracted pair has nlink 2 and refuses the bundle.
+  it('(Q6) single bundle containing a hard-linked file is refused', () => {
+    const root = join(tmp, 'pack-hard-single')
+    makeAgent(join(root, 'agent'), { 'CLAUDE.md': 'x', 'a.txt': 'shared' })
+    linkSync(join(root, 'agent', 'a.txt'), join(root, 'agent', 'b.txt'))
+    writeFileSync(join(root, 'manifest.json'), JSON.stringify(SINGLE_MANIFEST))
+    const bundle = tarUp(root, ['manifest.json', 'agent'])
+    const destBase = join(tmp, 'dest')
+    mkdirSync(destBase, { recursive: true })
+    expect(() => importAgentBundle(bundle, asNew(destBase))).toThrow(/hard link at agent[\\/][ab]\.txt$/)
+    expect(readdirSync(destBase)).toEqual([])
+  })
+
+  it('(Q6) fleet bundle containing a hard-linked file is refused', () => {
+    const root = join(tmp, 'pack-hard-fleet')
+    makeAgent(join(root, 'agents', 'x'), { 'CLAUDE.md': 'x', 'a.txt': 'shared' })
+    linkSync(join(root, 'agents', 'x', 'a.txt'), join(root, 'agents', 'x', 'b.txt'))
+    writeFileSync(join(root, 'manifest.json'), JSON.stringify(FLEET_MANIFEST))
+    const bundle = tarUp(root, ['manifest.json', 'agents'])
+    const destBase = join(tmp, 'dest')
+    mkdirSync(destBase, { recursive: true })
+    expect(() => importAllAgentsBundle(bundle, asNew(destBase))).toThrow(/hard link at agents[\\/]x[\\/][ab]\.txt$/)
+    expect(readdirSync(destBase)).toEqual([])
   })
 })

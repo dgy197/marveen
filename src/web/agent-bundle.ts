@@ -266,9 +266,11 @@ export function assertNoSymlinksInTree(root: string, label: string): void {
 
 // Card 51538ebc r4 (Brainy decision C): the bundle levels the importers navigate
 // by. A link here would redirect a whole agent or the manifest, so it refuses the
-// bundle; any deeper link is only content and is dropped.
+// bundle; any deeper link is only content and is dropped. Card 77483439 N1: every
+// entry at the bundle ROOT is structural too (only manifest.json, agent and agents
+// legitimately live there), so a stray root-level link refuses instead of vanishing.
 function isStructuralBundleEntry(rel: string): boolean {
-  return rel === 'manifest.json' || rel === 'agent' || rel === 'agents' || dirname(rel) === 'agents'
+  return dirname(rel) === '.' || dirname(rel) === 'agents'
 }
 
 // Card 51538ebc r4 (Brainy decision C): runs on the extract root right after tar,
@@ -276,7 +278,9 @@ function isStructuralBundleEntry(rel: string): boolean {
 // a link at a structural level throws, every deeper link is unlinked (the link
 // itself, never its target) and its extract-root relative path returned, so the
 // importers report it like card 24e137ef BD1. Invariant afterwards: no symbolic
-// link anywhere in the extracted tree (re-checked before returning).
+// link anywhere in the extracted tree (re-checked before returning). Card 77483439
+// Q6: a non-directory entry with nlink > 1 is a hard link (exports stage copies,
+// never hard links), so it refuses the bundle (fail-closed).
 export function stripBundleSymlinks(extractRoot: string): string[] {
   const shown = (rel: string): string => rel.replace(/[^\x20-\x7e]/g, '?')
   if (lstatSync(extractRoot).isSymbolicLink()) throw new Error('Invalid bundle: symlink at .')
@@ -294,6 +298,8 @@ export function stripBundleSymlinks(extractRoot: string): string[] {
         removed.push(rel)
       } else if (st.isDirectory()) {
         stack.push(p)
+      } else if (st.nlink > 1) {
+        throw new Error(`Invalid bundle: hard link at ${shown(rel)}`)
       }
     }
   }
@@ -576,7 +582,7 @@ export function importAgentBundle(
     // Extract into an isolated dir. tar's own path-traversal guard plus our
     // staged layout (manifest.json + agent/) mean nothing escapes extractRoot.
     try {
-      execFileSync('tar', ['-xzf', bundlePath, '-C', extractRoot])
+      execFileSync('tar', ['-xzf', bundlePath, '--no-same-owner', '-C', extractRoot])
     } catch {
       throw new Error('Invalid bundle: could not extract (not a gzip tar archive?)')
     }
@@ -728,7 +734,7 @@ export function peekBundleKind(bundle: Buffer): 'agent' | 'fleet' {
     const bundlePath = join(work, 'bundle.tar.gz')
     writeFileSync(bundlePath, bundle)
     try {
-      execFileSync('tar', ['-xzf', bundlePath, '-C', work, 'manifest.json'])
+      execFileSync('tar', ['-xzf', bundlePath, '--no-same-owner', '-C', work, 'manifest.json'])
     } catch {
       throw new Error('Invalid bundle: could not extract (not a gzip tar archive?)')
     }
@@ -772,7 +778,7 @@ export function importAllAgentsBundle(
     const extractRoot = join(work, 'extracted')
     mkdirSync(extractRoot, { recursive: true })
     try {
-      execFileSync('tar', ['-xzf', bundlePath, '-C', extractRoot])
+      execFileSync('tar', ['-xzf', bundlePath, '--no-same-owner', '-C', extractRoot])
     } catch {
       throw new Error('Invalid bundle: could not extract (not a gzip tar archive?)')
     }
