@@ -9,8 +9,9 @@ import {
   readdirSync,
   statSync,
   lstatSync,
+  renameSync,
 } from 'node:fs'
-import { join, basename } from 'node:path'
+import { join, basename, dirname, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { agentDir } from './agent-config.js'
@@ -100,6 +101,31 @@ function copyEntryInto(srcRoot: string, dstRoot: string, rel: string): void {
   cpSync(src, dst, { recursive: true })
 }
 
+// The relative entries of <root> that make up a portable agent: the
+// PORTABLE_ENTRIES that exist, plus (when <includeChannels>) the per-provider
+// channel secret files/dirs. ONE list: the exporter stages exactly these, and the
+// importers use the same list as the allowlist of what may land in an agent dir.
+function listPortableEntries(root: string, includeChannels: boolean): string[] {
+  const entries: string[] = []
+  for (const rel of PORTABLE_ENTRIES) {
+    if (existsSync(join(root, rel))) entries.push(rel)
+  }
+  if (includeChannels) {
+    const channelsRoot = join(root, CHANNEL_STATE_ROOT)
+    if (existsSync(channelsRoot)) {
+      for (const provider of readdirSync(channelsRoot)) {
+        const providerDir = join(channelsRoot, provider)
+        try { if (!statSync(providerDir).isDirectory()) continue } catch { continue }
+        for (const f of [...CHANNEL_SECRET_FILES, ...CHANNEL_SECRET_DIRS]) {
+          const rel = join(CHANNEL_STATE_ROOT, provider, f)
+          if (existsSync(join(root, rel))) entries.push(rel)
+        }
+      }
+    }
+  }
+  return entries
+}
+
 // Stage the portable subset of an agent's source dir into <stageAgentDir>,
 // optionally including channel secrets. Returns the list of relative entries
 // actually staged. Pure-ish: reads <srcRoot>, writes only the staging dir, and
@@ -113,32 +139,8 @@ export function stageAgentDirForExport(
   if (!existsSync(srcRoot)) throw new Error(`Agent source not found: ${srcRoot}`)
   mkdirSync(stageAgentDir, { recursive: true })
 
-  const staged: string[] = []
-  for (const rel of PORTABLE_ENTRIES) {
-    if (existsSync(join(srcRoot, rel))) {
-      copyEntryInto(srcRoot, stageAgentDir, rel)
-      staged.push(rel)
-    }
-  }
-
-  if (includeSecrets) {
-    const channelsRoot = join(srcRoot, CHANNEL_STATE_ROOT)
-    if (existsSync(channelsRoot)) {
-      for (const provider of readdirSync(channelsRoot)) {
-        const providerDir = join(channelsRoot, provider)
-        try { if (!statSync(providerDir).isDirectory()) continue } catch { continue }
-        for (const f of CHANNEL_SECRET_FILES) {
-          const rel = join(CHANNEL_STATE_ROOT, provider, f)
-          if (existsSync(join(srcRoot, rel))) { copyEntryInto(srcRoot, stageAgentDir, rel); staged.push(rel) }
-        }
-        for (const d of CHANNEL_SECRET_DIRS) {
-          const rel = join(CHANNEL_STATE_ROOT, provider, d)
-          if (existsSync(join(srcRoot, rel))) { copyEntryInto(srcRoot, stageAgentDir, rel); staged.push(rel) }
-        }
-      }
-    }
-  }
-
+  const staged = listPortableEntries(srcRoot, includeSecrets)
+  for (const rel of staged) copyEntryInto(srcRoot, stageAgentDir, rel)
   return staged
 }
 
@@ -269,6 +271,108 @@ export interface ImportResult {
   name: string
   manifest: BundleManifest
   overwritten: boolean
+  // Card 24e137ef B1: staged entries that are NOT on the allowlist and so did not
+  // land (relative names only, e.g. '.claude/settings.local.json').
+  droppedEntries: string[]
+}
+
+// Card 24e137ef B1 (Brainy): local privilege/config state that a bundle must
+// never write, even if somebody later adds it to the allowlist. A
+// `.claude/settings.local.json` can carry `permissions.defaultMode:
+// "bypassPermissions"`; `.claude-config/` is the agent's own login/config root.
+// On overwrite the EXISTING agent's copies of these survive the dir replacement.
+const BUNDLE_NEVER_WRITES = [join('.claude', 'settings.local.json'), '.claude-config'] as const
+
+function isBundleNeverWrites(rel: string): boolean {
+  return BUNDLE_NEVER_WRITES.some(p => rel === p || rel.startsWith(p + sep))
+}
+
+function hasSymlinkAncestor(root: string, rel: string): boolean {
+  const parts = rel.split(sep)
+  let cur = root
+  for (const part of parts.slice(0, -1)) {
+    cur = join(cur, part)
+    try { if (lstatSync(cur).isSymbolicLink()) return true } catch { return true }
+  }
+  return false
+}
+
+// Top-level-relative names of everything in <stagedAgentDir> that is not on the
+// <allowed> list. Directories that only CONTAIN allowed entries (.claude,
+// .claude/channels, ...) are walked, anything else is reported whole.
+function listDroppedEntries(stagedAgentDir: string, allowed: string[]): string[] {
+  const exact = new Set(allowed)
+  const containers = new Set<string>()
+  for (const rel of allowed) {
+    for (let d = dirname(rel); d !== '.' && d !== sep; d = dirname(d)) containers.add(d)
+  }
+  const dropped: string[] = []
+  const walk = (rel: string): void => {
+    let names: string[]
+    try { names = readdirSync(join(stagedAgentDir, rel)) } catch { return }
+    for (const n of names) {
+      const r = rel ? join(rel, n) : n
+      if (exact.has(r)) continue
+      let isDir = false
+      try { isDir = lstatSync(join(stagedAgentDir, r)).isDirectory() } catch { /* dropped below */ }
+      if (isDir && containers.has(r)) walk(r)
+      else dropped.push(r)
+    }
+  }
+  walk('')
+  return dropped.sort()
+}
+
+// Move the existing agent's never-overwritten entries into a holder dir beside
+// <dest> (same parent, so renameSync stays on one filesystem). Returns the
+// restore function; the holder is only removed once everything is back.
+function setAsideLocalState(dest: string): () => void {
+  const holder = mkdtempSync(join(dirname(dest), `.${basename(dest)}.keep-`))
+  const moved: { rel: string; held: string }[] = []
+  const restore = (): void => {
+    for (const { rel, held } of moved.splice(0)) {
+      const back = join(dest, rel)
+      mkdirSync(dirname(back), { recursive: true })
+      rmSync(back, { recursive: true, force: true })
+      renameSync(held, back)
+    }
+    rmSync(holder, { recursive: true, force: true })
+  }
+  try {
+    BUNDLE_NEVER_WRITES.forEach((rel, i) => {
+      const from = join(dest, rel)
+      try { lstatSync(from) } catch { return } // absent before: stays absent
+      const held = join(holder, String(i))
+      renameSync(from, held)
+      moved.push({ rel, held })
+    })
+  } catch (err) {
+    restore()
+    throw err
+  }
+  return restore
+}
+
+// Card 24e137ef B1: install the staged bundle agent into <dest> by ALLOWLIST, not
+// by copying the whole staged dir. Only the entries the exporter itself stages
+// (listPortableEntries, channel files included) land; everything else is
+// dropped and returned by name. On overwrite the existing dest is replaced, but
+// its settings.local.json and .claude-config come through byte-identical (and
+// are put back on a failed copy too).
+function installStagedAgent(stagedAgentDir: string, dest: string, exists: boolean): string[] {
+  const allowed = listPortableEntries(stagedAgentDir, true)
+    .filter(rel => !isBundleNeverWrites(rel) && !hasSymlinkAncestor(stagedAgentDir, rel))
+  const dropped = listDroppedEntries(stagedAgentDir, allowed)
+  mkdirSync(dirname(dest), { recursive: true })
+  const restore = exists ? setAsideLocalState(dest) : null
+  try {
+    if (exists) rmSync(dest, { recursive: true, force: true })
+    mkdirSync(dest, { recursive: true })
+    for (const rel of allowed) copyEntryInto(stagedAgentDir, dest, rel)
+  } finally {
+    if (restore) restore()
+  }
+  return dropped
 }
 
 // Card 89df7a00 N5: what the staged bundle holds that the caller may need a
@@ -349,11 +453,9 @@ export function importAgentBundle(
       throw new Error(`Agent "${name}" already exists on this machine`)
     }
     applyKeptSecurityProfile(stagedAgentDir, exists ? dest : null)
-    if (exists) rmSync(dest, { recursive: true, force: true })
-    mkdirSync(join(dest, '..'), { recursive: true })
-    cpSync(stagedAgentDir, dest, { recursive: true })
+    const droppedEntries = installStagedAgent(stagedAgentDir, dest, exists)
 
-    return { name, manifest, overwritten: exists }
+    return { name, manifest, overwritten: exists, droppedEntries }
   } finally {
     rmSync(work, { recursive: true, force: true })
   }
@@ -492,7 +594,7 @@ export function peekBundleKind(bundle: Buffer): 'agent' | 'fleet' {
 }
 
 export interface FleetImportResult {
-  imported: { name: string; overwritten: boolean }[]
+  imported: { name: string; overwritten: boolean; droppedEntries: string[] }[]
   skipped: { name: string; reason: string }[]
   includesSecrets: boolean
 }
@@ -537,7 +639,7 @@ export function importAllAgentsBundle(
       if (!opts.admit({ channelState, names })) throw new BundleImportRefused()
     }
 
-    const imported: { name: string; overwritten: boolean }[] = []
+    const imported: FleetImportResult['imported'] = []
     const skipped: { name: string; reason: string }[] = []
     for (const entry of readdirSync(agentsRoot)) {
       const stagedAgentDir = join(agentsRoot, entry)
@@ -552,10 +654,8 @@ export function importAllAgentsBundle(
       const exists = existsSync(dest)
       if (exists && !opts.overwrite) { skipped.push({ name, reason: 'already exists' }); continue }
       applyKeptSecurityProfile(stagedAgentDir, exists ? dest : null)
-      if (exists) rmSync(dest, { recursive: true, force: true })
-      mkdirSync(join(dest, '..'), { recursive: true })
-      cpSync(stagedAgentDir, dest, { recursive: true })
-      imported.push({ name, overwritten: exists })
+      const droppedEntries = installStagedAgent(stagedAgentDir, dest, exists)
+      imported.push({ name, overwritten: exists, droppedEntries })
     }
 
     return { imported, skipped, includesSecrets: manifest.includesSecrets }
