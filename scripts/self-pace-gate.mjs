@@ -406,6 +406,9 @@ export function maskInertLiterals(command, heredocs, lenient = false) {
       cur += blank(src.slice(i, end + 1)); i = end + 1; continue
     }
 
+    // Shell-dependent quoting: leave the entire remaining suffix visible to both gates.
+    if (src.startsWith("$$'", i)) return cur + src.slice(i)
+
     if (c === '$' && src[i + 1] === "'") { // ANSI-C: \' does escape
       let j = i + 2
       while (j < src.length && src[j] !== "'") { j += src[j] === '\\' ? 2 : 1 }

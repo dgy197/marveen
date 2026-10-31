@@ -522,6 +522,8 @@ function placeholder(inner, len) {
   const name = BINARY_LOOKUP.test(inner) ? /\b(curl|wget)\b/.exec(inner)?.[1] : undefined
   return name && len > name.length + 1 ? '$'.repeat(len - name.length - 1) + '/' + name : '$'.repeat(len)
 }
+class AmbiguousShellSyntax extends Error {}
+
 export function liftSubstitutions(text) {
   // herestrings: offsets of every LIVE `<<<` operator (blanked in `stripped`, so the caller cannot
   // find them there any more). A `<<<` inside quotes or a heredoc body is text and is not listed.
@@ -595,6 +597,7 @@ export function liftSubstitutions(text) {
       const stop = end === -1 ? text.length : end + 1
       out += text.slice(i, stop); i = stop; continue
     }
+    if (text.startsWith("$$'", i)) throw new AmbiguousShellSyntax('ambiguous-dollar-quote')
     if (c === '$' && text[i + 1] === "'") {
       let j = i + 2
       while (j < text.length && text[j] !== "'") j += text[j] === '\\' ? 2 : 1
@@ -715,6 +718,21 @@ export function shellWords(text) {
     const c = text[i]
     if (/\s/.test(c)) { push(); i++; continue }
     cur ??= ''
+    if (text.startsWith("$$'", i)) throw new AmbiguousShellSyntax('ambiguous-dollar-quote')
+    if (c === '$' && text[i + 1] === "'") {
+      // Keep the dollar marker: undecoded ANSI escapes must not become trusted command/host text.
+      cur += '$'
+      let j = i + 2
+      while (j < text.length && text[j] !== "'") {
+        if (text[j] === '\\' && j + 1 < text.length) {
+          const next = text[j + 1]
+          cur += next === "'" || next === '\\' ? next : text.slice(j, j + 2)
+          j += 2
+        } else { cur += text[j]; j++ }
+      }
+      if (j >= text.length) throw new AmbiguousShellSyntax('unterminated-ansi-quote')
+      i = j + 1; continue
+    }
     if (c === "'") { const e = text.indexOf("'", i + 1); const end = e === -1 ? text.length : e; cur += text.slice(i + 1, end); i = end + 1; continue }
     if (c === '"') {
       let j = i + 1
@@ -1089,11 +1107,29 @@ export function envIndirect(orig, masked) {
 // such a shell call. The shell reads ALL its options first and takes the first non-option word as
 // the string, so `sh -c -- '<body>'` and `bash -c -e '<body>'` carry the body after them (#1931
 // delta review: the word right after -c used to be taken, so the `--` became the body).
+function checkShellPayload(body) {
+  let quote = null
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i]
+    if (quote === "'") { if (c === "'") quote = null; continue }
+    if (c === '\\') { i++; continue }
+    if (quote === '"') { if (c === '"') quote = null; continue }
+    if (body.startsWith("$'", i) || body.startsWith("$$'", i)) {
+      throw new AmbiguousShellSyntax('shell-payload-ansi-quote')
+    }
+    if (c === "'" || c === '"') quote = c
+  }
+}
+
 export function shellCommandCall(cmd, text) {
   const argv = shellWords(text)
+  const payload = (body, args) => {
+    checkShellPayload(body)
+    return { body, args }
+  }
   const at = argv.findIndex((w) => w.split('/').pop() === cmd)
   if (at === -1) return null
-  if (cmd === 'eval') return { body: argv.slice(at + 1).join(' '), args: [] }
+  if (cmd === 'eval') return payload(argv.slice(at + 1).join(' '), [])
   // `trap 'ACTION' SIG...` eval's ACTION in this shell when the signal comes (#1931 delta review
   // 5572280679, 4). One word alone is a signal to reset, and `-` / an empty action resets or ignores.
   if (cmd === 'trap') {
@@ -1105,8 +1141,8 @@ export function shellCommandCall(cmd, text) {
   let sawC = false
   for (let k = at + 1; k < argv.length; k++) {
     const w = argv[k]
-    if (w === '--' || w === '-') return sawC && k + 1 < argv.length ? { body: argv[k + 1], args: argv.slice(k + 2) } : null
-    if (!w.startsWith('-') && !w.startsWith('+')) return sawC ? { body: w, args: argv.slice(k + 1) } : null
+    if (w === '--' || w === '-') return sawC && k + 1 < argv.length ? payload(argv[k + 1], argv.slice(k + 2)) : null
+    if (!w.startsWith('-') && !w.startsWith('+')) return sawC ? payload(w, argv.slice(k + 1)) : null
     if (/^[-+][A-Za-z]+$/.test(w) && w.includes('c')) sawC = true
     if (w === '-o' || w === '+o' || w === '-O' || w === '+O') k++
   }
@@ -1147,8 +1183,8 @@ function substitutePositionals(body, args, quoteArguments = false) {
   let out = ''; let q = null
   for (let k = 0; k < body.length; k++) {
     const c = body[k]
-    // Downstream word parsing cannot faithfully preserve ANSI-C quoting.
-    if (q === null && c === '$' && body[k + 1] === "'") return null
+    // Positional rebinding does not decode ANSI-C words or shell-dependent quoting.
+    if (q === null && (body.startsWith("$$'", k) || (c === '$' && body[k + 1] === "'"))) return null
     if (q === "'") { out += c; if (c === "'") q = null; continue }
     if (c === '\\') { out += body.slice(k, k + 2); k++; continue }
     if (c === "'" && q === null) { q = c; out += c; continue }
@@ -1181,7 +1217,7 @@ function directFunctionBody(body, args, callText) {
   quote = null
   for (let k = 0; k < body.length; k++) {
     const c = body[k]
-    if (quote === null && c === '$' && body[k + 1] === "'") return null
+    if (quote === null && (body.startsWith("$$'", k) || (c === '$' && body[k + 1] === "'"))) return null
     if (c === '\\' && quote !== "'") { k++; continue }
     if (c === quote) quote = null
     else if (quote === null && (c === '"' || c === "'")) quote = c
@@ -1206,6 +1242,7 @@ function insideQuote(text, at) {
       else if (c === "'") q = null
       continue
     }
+    if (q === null && text.startsWith("$$'", k)) throw new AmbiguousShellSyntax('ambiguous-dollar-quote')
     if (q === null && c === '$' && text[k + 1] === "'") {
       q = "$'"; k++; continue
     }
@@ -1667,6 +1704,15 @@ function judgeBody(text, depth, vendorHosts, vendorDomains, tainted) {
 // stdinTainted: this text is a function body whose call may receive curl / wget on stdin (the calling
 // command names either), so a shell in it that reads stdin denies (see 'shell-stdin').
 export function classify(command, depth = 0, vendorHosts = new Set(), vendorDomains = new Set(), stdinTainted = false) {
+  try {
+    return classifyCommand(command, depth, vendorHosts, vendorDomains, stdinTainted)
+  } catch (error) {
+    if (!(error instanceof AmbiguousShellSyntax)) throw error
+    return { deny: true, reason: error.message, hosts: [] }
+  }
+}
+
+function classifyCommand(command, depth, vendorHosts, vendorDomains, stdinTainted) {
   if (depth === 0) fnMemo = new Map()
   const norm = String(command ?? '').replace(/\\\r?\n/g, ' ')
   const lifted = liftSubstitutions(norm)
@@ -1752,6 +1798,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     const variants = f.expands ? loopVariants(f.text, env, loops) : []
     for (const text of [plain, ...(variants ?? [])]) {
       if (shell) {
+        checkShellPayload(text)
         if (depth >= MAX_DEPTH) return NESTING_LIMIT
         const r = classify(text, depth + 1, vendorHosts, vendorDomains)
         if (r.deny) return { ...r, reason: `heredoc-${r.reason}` }
@@ -1793,6 +1840,8 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       const ci = commandIndex(uw)
       const word = uw[ci] ?? mw[i] ?? ''
       const cmd = word.split('/').pop()
+      // Inspect original payloads before copyLive blanks escaped dollar signs.
+      if (SHELL.test(cmd) || cmd === 'eval') shellCommandCall(cmd, norm.slice(a, b))
       const args = uw.slice(ci + 1)
       // A loop variable in the command word is judged in its loop readings, not in the plain one.
       const loopOnly = text === plain && variants !== null && variants.some((v) => v !== plain)
