@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { EMAIL_GATE_MATCHER } from '../web/agent-scaffold.js'
+import { EMAIL_GATE_MATCHER, MAIL_SERVER_ALTERNATIVES, emailGateMatcherStale, injectEmailSendGate } from '../web/agent-scaffold.js'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision, classifyMailTool } from '../../scripts/email-send-gate.mjs'
 
@@ -97,9 +97,11 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
     for (const tool of ['create_draft', 'send_mail', 'send_mail_auto']) {
       expect(full.test(`mcp__harder-mail__${tool}`), tool).toBe(true)
     }
-    // Reads and the local preview stay out of the matcher.
+    // Card 3d6e5181 P1: every tool of a mail server now reaches the gates, reads and
+    // the local preview included; the gate decides, and it lets them through.
     for (const tool of ['search_mail', 'read_mail', 'list_accounts', 'preview_mail']) {
-      expect(full.test(`mcp__harder-mail__${tool}`), tool).toBe(false)
+      expect(full.test(`mcp__harder-mail__${tool}`), tool).toBe(true)
+      expect(gateDecision(`mcp__harder-mail__${tool}`, { account: 'ceges', query: 'x' }, () => false).deny, tool).toBe(false)
     }
     // Sub-agents: a send is the governance block, a draft is ledger-checked.
     const verified = (a: string) => a === 'known@example.com'
@@ -265,6 +267,78 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
         if (!extra) expect(fired, `${script} fires on ${tool}`).toEqual([])
       }
     }
+  })
+
+  it('EVERY tool of a mail-like server reaches all three gate surfaces, channel and other tools stay out (card 3d6e5181 P1)', () => {
+    // The planner's measurement: 24 tool names (rules, filters, forwarding,
+    // settings, reads) on 21 non-gmail mail server-name shapes fired NO gate on
+    // any surface. Explicit vectors, not derived from the constant under test.
+    const servers = [
+      'outlook', 'ms365', 'ms365-v2', 'MS365', 'ms365_mail', 'exchange', 'microsoft-graph', 'msgraph',
+      'imap', 'smtp', 'protonmail', 'fastmail', 'workmail', 'harder-mail', 'mail', 'hotmail',
+      'm365', 'office365', 'o365', 'jmap', 'sieve',
+    ]
+    const tools = [
+      'create_rule', 'createRule', 'create-mail-rule', 'create_inbox_rule', 'update_rule', 'manage_rules',
+      'manage_filters', 'configure_filter', 'define_rule', 'set_messagerules', 'create_filter', 'add_filter',
+      'update_auto_forwarding', 'create_forwarding_address', 'set_forwarding', 'update_mailbox_settings',
+      'update-mailbox-settings', 'set_auto_reply', 'set_vacation', 'update_settings', 'delete_rule',
+      'list_rules', 'get_rules', 'list-mail-messages', 'search_emails', 'read_email', 'move_message', 'mark_read',
+    ]
+    // The channel tools, the other non-mail servers the fleet runs, the ms365
+    // chat tools and a memory-graph server (why `graph` is not a word).
+    const stays = [
+      'mcp__plugin_telegram_telegram__reply', 'mcp__plugin_telegram_telegram__edit_message',
+      'mcp__plugin_telegram_telegram__react', 'mcp__plugin_telegram_telegram__download_attachment',
+      'mcp__plugin_discord_discord__reply', 'mcp__plugin_discord_discord__fetch_messages',
+      'mcp__plugin_slack_slack__reply', 'mcp__plugin_slack-channel_slack__reply', 'mcp__slack__post_message',
+      'mcp__github__create_pull_request', 'mcp__context7__get-library-docs', 'mcp__playwright__browser_click',
+      'mcp__fireeng-rag__search', 'mcp__finance-readonly__query', 'mcp__memory-graph__create_entities',
+      'mcp__ms365__send-chat-message', 'mcp__ms365__list-chats',
+    ]
+    const canonical = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
+    const own = (script: string) => (SETTINGS.hooks?.PreToolUse ?? [])
+      .filter((e) => (e.hooks ?? []).some((h) => (h.command ?? '').includes(script)))
+    const fired = (script: string, tool: string) => own(script).some((e) => new RegExp(`^(${e.matcher ?? ''})$`).test(tool))
+    let checked = 0
+    for (const s of servers) {
+      for (const t of tools) {
+        const tool = `mcp__${s}__${t}`
+        expect(canonical.test(tool), `EMAIL_GATE_MATCHER misses ${tool}`).toBe(true)
+        for (const script of EMAIL_HOOKS) expect(fired(script, tool), `${script} misses ${tool}`).toBe(true)
+        checked++
+      }
+    }
+    expect(checked).toBe(21 * 28)
+    for (const tool of stays) {
+      expect(canonical.test(tool), `EMAIL_GATE_MATCHER fires on ${tool}`).toBe(false)
+      for (const script of EMAIL_HOOKS) {
+        // the copy gate's deliberate Telegram / Discord reply coverage stays
+        const extra = script === 'outgoing-copy-gate.py'
+          && /^mcp__plugin_(telegram|discord)_[a-z]+__(reply|edit_message)$/.test(tool)
+        if (!extra) expect(fired(script, tool), `${script} fires on ${tool}`).toBe(false)
+      }
+    }
+    // the copy gate keeps exactly its Telegram / Discord reply + edit_message groups
+    const copyOnly = ['mcp__plugin_telegram_telegram__reply', 'mcp__plugin_telegram_telegram__edit_message',
+      'mcp__plugin_discord_discord__reply', 'mcp__plugin_discord_discord__edit_message']
+    for (const tool of copyOnly) {
+      expect(fired('outgoing-copy-gate.py', tool), tool).toBe(true)
+      expect(fired('email-approval-gate.py', tool), tool).toBe(false)
+    }
+  })
+
+  it('a sub-agent settings file with the pre-3d6e5181 matcher is stale and is repaired on inject (card 3d6e5181 P1)', () => {
+    const oldMatcher = EMAIL_GATE_MATCHER.replace('|' + MAIL_SERVER_ALTERNATIVES.join('|'), '')
+    expect(oldMatcher).not.toBe(EMAIL_GATE_MATCHER)
+    const cmd = { type: 'command', command: 'node /x/scripts/email-send-gate.mjs' }
+    expect(emailGateMatcherStale([{ matcher: oldMatcher, hooks: [cmd] }])).toBe(true)
+    expect(emailGateMatcherStale([{ matcher: EMAIL_GATE_MATCHER, hooks: [cmd] }])).toBe(false)
+    const existing: Record<string, unknown> = { hooks: { PreToolUse: [{ matcher: oldMatcher, hooks: [cmd] }] } }
+    injectEmailSendGate(existing)
+    const ptu = (existing.hooks as { PreToolUse: { matcher: string }[] }).PreToolUse
+    expect(ptu.map((e) => e.matcher)).toEqual([EMAIL_GATE_MATCHER])
+    expect(emailGateMatcherStale(ptu)).toBe(false)
   })
 
   it('a harder-mail create_draft does NOT ask for approval on the main agent; send_mail does', () => {
