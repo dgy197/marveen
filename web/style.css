@@ -8445,6 +8445,25 @@ body {
 }
 .dev-layout[hidden], .dev-questions[hidden] { display: none; }
 
+/* === Fejlesztes > Ivek (card 46e935d6) === */
+.dev-ivek-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.dev-ivek-title { overflow-wrap: anywhere; }
+.dev-ivek-bar { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 3px; margin: 6px 0; }
+.dev-ivek-step { height: 6px; border-radius: 3px; background: var(--bg-card-hover); }
+.dev-ivek-step.reached { background: color-mix(in srgb, var(--accent) 55%, var(--bg-card-hover)); }
+.dev-ivek-step.current { background: var(--accent); }
+.dev-ivek-result-ok { background: var(--success-soft, var(--accent-soft)); color: var(--success, var(--accent)); }
+.dev-ivek-result-refused, .dev-ivek-result-fail { background: var(--danger-soft); color: var(--danger); }
+.dev-ivek-result-unknown { background: var(--bg-card-hover); color: var(--text-muted); }
+.dev-ivek-childsum { margin-bottom: 6px; }
+.dev-ivek-childbar { height: 6px; border-radius: 3px; background: var(--bg-card-hover); overflow: hidden; margin-top: 4px; }
+.dev-ivek-childfill { display: block; height: 100%; background: var(--accent); }
+.dev-ivek-back { display: none; width: auto; min-height: 40px; padding: 0 14px; margin-bottom: 10px; }
+@media (max-width: 768px) {
+  .dev-ivek-back { display: inline-flex; align-items: center; }
+  .dev-ivek-item { min-height: 44px; }
+}
+
 /* === Fejlesztes > Kerdesek (S3) === */
 .dev-questions { min-width: 0; }
 .dev-q-bar { display: flex; justify-content: flex-end; }

@@ -19901,22 +19901,26 @@ function wireDevTabs() {
   })
 }
 
-// The single Fejlesztes view switcher: funkciok (default), kerdesek (S3), munkanaplo (S4).
+// The single Fejlesztes view switcher: funkciok (default), kerdesek (S3), munkanaplo (S4), ivek (46e935d6).
 function setDevView(view) {
   const fun = document.getElementById('devFunkciokView')
   const wl = document.getElementById('devMunkanaploView')
   const qv = document.getElementById('devKerdesekView')
+  const iv = document.getElementById('devIvekView')
   if (!fun || !wl) return
-  const active = view === 'munkanaplo' || view === 'kerdesek' ? view : 'funkciok'
+  const active = view === 'munkanaplo' || view === 'kerdesek' || view === 'ivek' ? view : 'funkciok'
   devActiveView = active
   fun.hidden = active !== 'funkciok'
   wl.hidden = active !== 'munkanaplo'
   if (qv) qv.hidden = active !== 'kerdesek'
+  if (iv) iv.hidden = active !== 'ivek'
   document.getElementById('devTabFunkciok')?.classList.toggle('active', active === 'funkciok')
   document.getElementById('devTabKerdesek')?.classList.toggle('active', active === 'kerdesek')
   document.getElementById('devTabMunkanaplo')?.classList.toggle('active', active === 'munkanaplo')
+  document.getElementById('devTabIvek')?.classList.toggle('active', active === 'ivek')
   if (active === 'munkanaplo') loadWorklog()
   if (active === 'kerdesek') loadDevQuestions()
+  if (active === 'ivek') loadIvek()
 }
 
 function wlFmtTime(unix, tz) {
@@ -20114,6 +20118,342 @@ function renderWorklogDetail(root, data) {
     pl.appendChild(row)
   }
   root.appendChild(pl)
+}
+
+// ============================================================
+// === Fejlesztes > Ivek (card 46e935d6) ===
+// Read-only arc view (GET /api/ivek, GET /api/ivek/:id). Every server string
+// reaches the DOM through textContent only (devEl); class names come from the
+// fixed whitelists below, never from data; there is no href and no handler
+// built from data. ANY field or block may be missing (null, an { ok: false,
+// reason } object or { nincs_adat: true }): it renders as "nincs adat".
+// Timestamps: unix seconds or ms (number), ISO or YYYYMMDD-HHMMSS (string).
+// ============================================================
+
+let devIvekSelected = null
+let devIvekListSeq = 0
+let devIvekDetailSeq = 0
+const DEV_IVEK_STEPS = ['brief', 'vegrehajtas', 'review', 'deploy_jelolt', 'elesitve']
+const DEV_IVEK_PHASE_ALIASES = {
+  brief: 'brief',
+  vegrehajtas: 'vegrehajtas', 'végrehajtás': 'vegrehajtas',
+  review: 'review',
+  deploy_jelolt: 'deploy_jelolt', 'deploy-jelolt': 'deploy_jelolt', 'deploy-jelölt': 'deploy_jelolt',
+  elesitve: 'elesitve', 'élesítve': 'elesitve',
+  nincs_jel: 'nincs_jel', nincs_gepi_jel: 'nincs_jel',
+}
+const DEV_IVEK_SEVERITIES = [['HIGH', 'dev.ivek.sev.high'], ['MED', 'dev.ivek.sev.med'], ['LOW', 'dev.ivek.sev.low'], ['OTHER', 'dev.ivek.sev.other']]
+const DEV_IVEK_MODES = ['check', 'apply', 'rollback']
+const DEV_IVEK_RESULTS = ['ok', 'refused', 'fail', 'unknown']
+
+// null for a usable value; { reason } when the value is the "nincs adat" marker.
+function devIvekGap(v) {
+  if (v === null || v === undefined) return { reason: '' }
+  if (typeof v === 'string') return v === 'nincs adat' ? { reason: '' } : null
+  if (typeof v === 'object' && !Array.isArray(v) && (v.ok === false || v.nincs_adat === true)) {
+    return { reason: typeof v.reason === 'string' ? v.reason : '' }
+  }
+  return null
+}
+
+// A list block arrives either as a bare array or as { ok: true, <key>: [...] }.
+function devIvekItems(v, key) {
+  if (Array.isArray(v)) return v
+  if (v && typeof v === 'object' && Array.isArray(v[key])) return v[key]
+  return null
+}
+
+function devIvekText(v) {
+  if (typeof v === 'string' && v !== '') return v
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v)
+  return t('dev.ivek.no_data')
+}
+
+function devIvekMs(v) {
+  if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v > 1e11 ? v : v * 1000
+  if (typeof v === 'string' && v) {
+    const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/.exec(v)
+    const ms = m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime() : Date.parse(v)
+    return Number.isFinite(ms) ? ms : null
+  }
+  return null
+}
+
+function devIvekTime(v) {
+  const ms = devIvekMs(v)
+  if (ms === null) return t('dev.ivek.no_data')
+  return new Date(ms).toLocaleString('hu-HU', { dateStyle: 'short', timeStyle: 'short' })
+}
+
+function devIvekAge(sinceMs, nowMs) {
+  const mins = Math.max(0, Math.floor(((nowMs === undefined ? Date.now() : nowMs) - sinceMs) / 60000))
+  if (mins < 60) return t('dev.ivek.age.min', { n: String(mins) })
+  if (mins < 2880) return t('dev.ivek.age.hour', { n: String(Math.floor(mins / 60)) })
+  return t('dev.ivek.age.day', { n: String(Math.floor(mins / 1440)) })
+}
+
+// { key, round, sinceMs } from the server phase, or null (unknown / missing).
+function devIvekPhase(p) {
+  const raw = typeof p === 'string' ? p : (p && typeof p === 'object' ? p.phase : null)
+  if (typeof raw !== 'string') return null
+  const k = raw.trim().toLowerCase()
+  let key = Object.prototype.hasOwnProperty.call(DEV_IVEK_PHASE_ALIASES, k) ? DEV_IVEK_PHASE_ALIASES[k] : null
+  let round = null
+  const rm = /^r(\d+)$/.exec(k)
+  if (rm) { key = 'review'; round = Number(rm[1]) }
+  if (!key) return null
+  if (key === 'review' && round === null && p && typeof p === 'object' && Number.isInteger(p.round) && p.round >= 0 && p.round <= 99) round = p.round
+  const sinceMs = p && typeof p === 'object' ? devIvekMs(p.since) : null
+  return { key, round, sinceMs }
+}
+
+function devIvekPhaseLabel(ph) {
+  if (ph.key === 'review') return ph.round === null ? t('dev.ivek.phase.review') : t('dev.ivek.phase.review_round', { round: String(ph.round) })
+  return t('dev.ivek.phase.' + ph.key)
+}
+
+// "r2, 3 napja" / "nincs gépi jel" / "nincs adat".
+function devIvekPhaseText(p, nowMs) {
+  const ph = devIvekPhase(p)
+  if (!ph) return t('dev.ivek.no_data')
+  const label = devIvekPhaseLabel(ph)
+  if (ph.key === 'nincs_jel' || ph.sinceMs === null) return label
+  return label + ', ' + devIvekAge(ph.sinceMs, nowMs)
+}
+
+// Five-step strip; the steps up to the current phase are highlighted.
+function devIvekPhaseBar(p) {
+  const ph = devIvekPhase(p)
+  const cur = ph ? DEV_IVEK_STEPS.indexOf(ph.key) : -1
+  const bar = devEl('div', 'dev-ivek-bar')
+  bar.setAttribute('role', 'img')
+  bar.setAttribute('aria-label', ph ? devIvekPhaseLabel(ph) : t('dev.ivek.no_data'))
+  DEV_IVEK_STEPS.forEach((step, i) => {
+    const seg = devEl('span', 'dev-ivek-step' + (i <= cur ? ' reached' : '') + (i === cur ? ' current' : ''))
+    seg.title = t('dev.ivek.phase.' + step)
+    bar.appendChild(seg)
+  })
+  return bar
+}
+
+async function loadIvek() {
+  wireDevTabs()
+  const list = document.getElementById('devIvekList')
+  const detail = document.getElementById('devIvekDetail')
+  if (!list || !detail) return
+  const seq = ++devIvekListSeq
+  list.replaceChildren(devEl('div', 'dev-empty', t('dev.detail.loading')))
+  let items = null
+  try {
+    const res = await fetch('/api/ivek')
+    if (!res.ok) throw new Error(String(res.status))
+    const data = await res.json()
+    items = devIvekItems(data, 'ivek')
+    if (items === null) items = []
+  } catch (err) {
+    if (seq === devIvekListSeq) list.replaceChildren(devEl('div', 'dev-error', t('dev.ivek.error', { status: String((err && err.message) || err) })))
+    return
+  }
+  if (seq !== devIvekListSeq) return
+  renderIvekList(items)
+  if (!detail.hasChildNodes()) detail.replaceChildren(devEl('div', 'dev-empty', t('dev.ivek.pick')))
+  if (devIvekSelected && items.some((i) => i && String(i.id) === devIvekSelected)) selectIvek(devIvekSelected)
+}
+
+function renderIvekList(items) {
+  const list = document.getElementById('devIvekList')
+  list.replaceChildren()
+  if (!Array.isArray(items) || items.length === 0) {
+    list.appendChild(devEl('div', 'dev-empty', t('dev.ivek.empty')))
+    return
+  }
+  items.forEach((item) => {
+    if (!item || typeof item !== 'object') return
+    const id = devIvekText(item.id)
+    const btn = devEl('button', 'dev-list-item dev-ivek-item')
+    btn.type = 'button'
+    btn.dataset.id = id
+    if (id === devIvekSelected) btn.classList.add('active')
+    const head = devEl('div', 'dev-ivek-head')
+    head.appendChild(devEl('span', 'dev-mono', id))
+    head.appendChild(devEl('span', 'dev-chip', devIvekText(item.status)))
+    btn.appendChild(head)
+    btn.appendChild(devEl('div', 'dev-list-name dev-ivek-title', devIvekText(item.title)))
+    btn.appendChild(devEl('div', 'dev-list-meta', t('dev.col.assignee') + ': ' + devIvekText(item.assignee)))
+    btn.appendChild(devEl('div', 'dev-list-meta', devIvekPhaseText(item.phase)))
+    btn.appendChild(devIvekPhaseBar(item.phase))
+    btn.addEventListener('click', () => selectIvek(id))
+    list.appendChild(btn)
+  })
+}
+
+function devIvekStacked() {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 768px)').matches
+}
+
+async function selectIvek(id) {
+  devIvekSelected = id
+  document.querySelectorAll('#devIvekList .dev-ivek-item').forEach((b) => b.classList.toggle('active', b.dataset.id === id))
+  const detail = document.getElementById('devIvekDetail')
+  if (!detail) return
+  const seq = ++devIvekDetailSeq
+  detail.replaceChildren(devEl('div', 'dev-empty', t('dev.detail.loading')))
+  let data = null
+  try {
+    const res = await fetch('/api/ivek/' + encodeURIComponent(id))
+    if (!res.ok) throw new Error(String(res.status))
+    data = await res.json()
+  } catch (err) {
+    if (seq === devIvekDetailSeq) detail.replaceChildren(devEl('div', 'dev-error', t('dev.ivek.error', { status: String((err && err.message) || err) })))
+    return
+  }
+  if (seq !== devIvekDetailSeq) return
+  renderIvekDetail(detail, data)
+  if (devIvekStacked() && typeof detail.scrollIntoView === 'function') detail.scrollIntoView({ block: 'start' })
+}
+
+// The "nincs adat" line of a block, with the optional reason code
+// (lower-case letters and underscores only, so a stray string never shows).
+function devIvekGapNote(section, gap) {
+  const reason = gap && /^[a-z_]+$/.test(gap.reason) && gap.reason.length <= 24 ? ' (' + gap.reason + ')' : ''
+  section.appendChild(devEl('div', 'dev-empty', t('dev.ivek.no_data') + reason))
+}
+
+// Opens a block; returns { section, items } with items null when the block is missing.
+function devIvekListBlock(titleKey, value, key) {
+  const gap = devIvekGap(value)
+  const items = gap ? null : devIvekItems(value, key)
+  const section = devBlock(titleKey, items ? items.length : null)
+  if (items === null) devIvekGapNote(section, gap)
+  else if (items.length === 0) devEmpty(section)
+  return { section, items: items || [] }
+}
+
+function devIvekCount(v) {
+  return typeof v === 'number' && Number.isFinite(v) ? String(v) : '-'
+}
+
+function renderIvekDetail(root, data) {
+  root.replaceChildren()
+  if (!data || typeof data !== 'object') {
+    root.appendChild(devEl('div', 'dev-empty', t('dev.ivek.no_data')))
+    return
+  }
+  const back = devEl('button', 'view-btn dev-ivek-back', t('dev.ivek.back'))
+  back.type = 'button'
+  back.addEventListener('click', () => {
+    const list = document.getElementById('devIvekList')
+    if (list && typeof list.scrollIntoView === 'function') list.scrollIntoView({ block: 'start' })
+  })
+  root.appendChild(back)
+  root.appendChild(devEl('h2', null, devIvekText(data.title)))
+  root.appendChild(devEl('div', 'dev-detail-meta', devIvekText(data.id) + ' | ' + devIvekText(data.status) + ' | ' + t('dev.col.assignee') + ': ' + devIvekText(data.assignee)))
+  root.appendChild(devEl('div', 'dev-detail-meta', t('dev.ivek.phase_label') + ': ' + devIvekPhaseText(data.phase)))
+  root.appendChild(devIvekPhaseBar(data.phase))
+
+  // --- Statuszesemenyek ---
+  const ev = devIvekListBlock('dev.ivek.block.events', data.events, 'events')
+  ev.items.forEach((e) => {
+    const x = e && typeof e === 'object' ? e : {}
+    const row = devEl('div', 'dev-row')
+    const head = devEl('div', 'dev-row-head')
+    head.appendChild(devEl('span', 'dev-row-sub', devIvekTime(x.created_at)))
+    head.appendChild(devEl('span', null, (x.from_status ? devIvekText(x.from_status) : '-') + ' -> ' + devIvekText(x.to_status)))
+    if (x.actor) head.appendChild(devEl('span', 'dev-chip', devIvekText(x.actor)))
+    row.appendChild(head)
+    ev.section.appendChild(row)
+  })
+  root.appendChild(ev.section)
+
+  // --- Brief-fajlok (file name + mtime only) ---
+  const br = devIvekListBlock('dev.ivek.block.briefs', data.briefs, 'files')
+  br.items.forEach((f) => {
+    const x = f && typeof f === 'object' ? f : {}
+    const row = devEl('div', 'dev-row')
+    const head = devEl('div', 'dev-row-head')
+    head.appendChild(devEl('span', 'dev-mono', devIvekText(x.name)))
+    head.appendChild(devEl('span', 'dev-row-sub', devIvekTime(x.mtime)))
+    row.appendChild(head)
+    br.section.appendChild(row)
+  })
+  root.appendChild(br.section)
+
+  // --- Review-korok ---
+  const rv = devIvekListBlock('dev.ivek.block.reviews', data.reviews, 'rounds')
+  const rvEvents = data.reviews && typeof data.reviews === 'object' && data.reviews.events && typeof data.reviews.events === 'object' ? data.reviews.events : null
+  if (rvEvents && !devIvekGap(data.reviews)) {
+    rv.section.appendChild(devEl('div', 'dev-note', t('dev.ivek.rev.events', { add: devIvekCount(rvEvents.add), close: devIvekCount(rvEvents.close), reject: devIvekCount(rvEvents.reject) })))
+  }
+  rv.items.forEach((r) => {
+    const x = r && typeof r === 'object' ? r : {}
+    const row = devEl('div', 'dev-row')
+    const head = devEl('div', 'dev-row-head')
+    head.appendChild(devEl('strong', null, Number.isInteger(x.round) ? 'r' + x.round : t('dev.ivek.rev.no_round')))
+    head.appendChild(devEl('span', 'dev-chip', devIvekText(x.reviewer)))
+    row.appendChild(head)
+    const sev = x.bySeverity && typeof x.bySeverity === 'object' ? x.bySeverity : null
+    row.appendChild(devEl('div', 'dev-row-sub', sev
+      ? DEV_IVEK_SEVERITIES.map((s) => t(s[1]) + ' ' + devIvekCount(sev[s[0]])).join(' | ')
+      : t('dev.ivek.no_data')))
+    rv.section.appendChild(row)
+  })
+  root.appendChild(rv.section)
+
+  // --- Commitok ---
+  const cm = devIvekListBlock('dev.ivek.block.commits', data.commits, 'commits')
+  cm.items.forEach((c) => {
+    const x = c && typeof c === 'object' ? c : {}
+    const row = devEl('div', 'dev-row')
+    const head = devEl('div', 'dev-row-head')
+    head.appendChild(devEl('span', 'dev-mono', devIvekText(x.hash)))
+    head.appendChild(devEl('span', 'dev-row-sub', devIvekTime(x.date)))
+    row.appendChild(head)
+    row.appendChild(devEl('div', null, devIvekText(x.subject)))
+    cm.section.appendChild(row)
+  })
+  root.appendChild(cm.section)
+
+  // --- Deploy-futasok ---
+  const dp = devIvekListBlock('dev.ivek.block.deploys', data.deploys, 'runs')
+  dp.items.forEach((d) => {
+    const x = d && typeof d === 'object' ? d : {}
+    const mode = DEV_IVEK_MODES.indexOf(x.mode) >= 0 ? x.mode : null
+    const result = DEV_IVEK_RESULTS.indexOf(x.result) >= 0 ? x.result : 'unknown'
+    const row = devEl('div', 'dev-row')
+    const head = devEl('div', 'dev-row-head')
+    head.appendChild(devEl('span', 'dev-chip', mode ? t('dev.ivek.deploy.mode.' + mode) : t('dev.ivek.no_data')))
+    head.appendChild(devEl('span', 'dev-row-sub', devIvekTime(x.at)))
+    head.appendChild(devEl('span', 'dev-chip dev-ivek-result-' + result, t('dev.ivek.deploy.result.' + result)))
+    row.appendChild(head)
+    row.appendChild(devEl('div', 'dev-row-sub', t('dev.ivek.deploy.range', { base: devIvekText(x.base), tip: devIvekText(x.tip), files: devIvekCount(x.files) })))
+    dp.section.appendChild(row)
+  })
+  root.appendChild(dp.section)
+
+  // --- Gyerekkartyak ---
+  const ch = devIvekListBlock('dev.ivek.block.children', data.children, 'children')
+  if (ch.items.length > 0) {
+    const done = ch.items.filter((c) => c && c.status === 'done').length
+    const wrap = devEl('div', 'dev-ivek-childsum')
+    wrap.appendChild(devEl('span', 'dev-note', t('dev.ivek.children.sum', { done: String(done), total: String(ch.items.length) })))
+    const track = devEl('div', 'dev-ivek-childbar')
+    const fill = devEl('span', 'dev-ivek-childfill')
+    fill.style.width = ((done / ch.items.length) * 100).toFixed(1) + '%'
+    track.appendChild(fill)
+    wrap.appendChild(track)
+    ch.section.appendChild(wrap)
+  }
+  ch.items.forEach((c) => {
+    const x = c && typeof c === 'object' ? c : {}
+    const row = devEl('div', 'dev-row')
+    const head = devEl('div', 'dev-row-head')
+    head.appendChild(devEl('span', 'dev-mono', devIvekText(x.id)))
+    head.appendChild(devEl('span', null, devIvekText(x.title)))
+    head.appendChild(devEl('span', 'dev-chip', devIvekText(x.status)))
+    row.appendChild(head)
+    ch.section.appendChild(row)
+  })
+  root.appendChild(ch.section)
 }
 
 // ============================================================
