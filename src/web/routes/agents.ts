@@ -1844,14 +1844,26 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   if (secGetMatch && method === 'PUT') {
     const name = decodeURIComponent(secGetMatch[1])
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    // Card 24e137ef: a profile change widens or narrows the agent's permissions and
+    // outlives a token rotation; gated before the body is read.
+    const secGated = execGateApplies(ctx.auth, req)
+    if (secGated && !admitCodeExecAdmin(ctx, 'agents.security')) return true
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as { profile?: string }
     const requested = (data.profile || '').trim()
     if (!requested) { json(res, { error: 'profile is required' }, 400); return true }
     const profile = loadProfileTemplate(requested)
     if (profile.id !== requested) { json(res, { error: `Unknown profile: ${requested}` }, 400); return true }
-    writeAgentSecurityProfile(name, requested)
-    writeAgentSettingsFromProfile(name, profile)
+    const secTrail = codeExecAuditTrail(secGated, 'agents.security', ctx.auth)
+    secTrail.start(name)
+    try {
+      writeAgentSecurityProfile(name, requested)
+      writeAgentSettingsFromProfile(name, profile)
+    } catch (err) {
+      secTrail.failed(err)
+      throw err
+    }
+    secTrail.ok()
     json(res, { ok: true, requiresRestart: isAgentRunning(name) })
     return true
   }

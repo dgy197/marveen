@@ -17,6 +17,7 @@ import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeSkillName } from '../sanitize.js'
 import { serializeSkillsDir } from '../skills-dir-queue.js'
+import { execGateApplies, admitCodeExecAdmin, codeExecAuditTrail } from '../code-exec-admin.js'
 import type { RouteContext } from './types.js'
 import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
 
@@ -483,13 +484,20 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
 
     if (!existsSync(globalSkillDir)) { json(res, { error: 'Skill not found' }, 404); return true }
 
+    // Card 24e137ef: assigning copies a skill (instructions, scripts) into agent dirs
+    // where it outlives a token rotation; gated before the body is read.
+    const gated = execGateApplies(ctx.auth, req)
+    if (gated && !admitCodeExecAdmin(ctx, 'skills.assign')) return true
     const body = await readBody(req)
     const { agents: targetAgents } = JSON.parse(body.toString()) as { agents: string[] }
+    const trail = codeExecAuditTrail(gated, 'skills.assign', ctx.auth)
 
     await serializeSkillsDir(async () => {
       // Checked again on the queue: a delete queued before this assign may have removed the source.
       if (!existsSync(globalSkillDir)) { json(res, { error: 'Skill not found' }, 404); return }
       const allAgentNames = listAgentNames()
+      trail.start(skillName)
+      try {
 
       for (const agentName of targetAgents) {
         if (!allAgentNames.includes(agentName)) continue
@@ -508,7 +516,12 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         }
       }
 
+      } catch (err) {
+        trail.failed(err)
+        throw err
+      }
       logger.info({ skillName, agents: targetAgents }, 'Skill assignment updated')
+      trail.ok()
       json(res, { ok: true })
     })
     return true

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT } from '../config.js'
@@ -162,6 +162,101 @@ export function collectAllMcpFilePaths(): Array<{ path: string, label: string }>
     if (existsSync(extMcp)) paths.push({ path: extMcp, label: `external:${basename(extPath)}` })
   }
   return paths
+}
+
+// ---- binding request validation (card 24e137ef, CX1) ----------------------
+// POST /api/vault/bindings writes a vault reference under a caller-chosen key into a
+// caller-chosen JSON file. An env name such as NODE_OPTIONS or LD_PRELOAD turns that into
+// code execution the next time the MCP server starts, and an arbitrary file path turns it
+// into an arbitrary-file rewrite. Everything below is pure (or takes the known-file list
+// as a parameter) so it can be unit-tested without the route.
+
+const ENV_NAME_RE = /^[A-Z_][A-Z0-9_]{0,127}$/
+const HEADER_NAME_RE = /^[A-Za-z0-9-]{1,128}$/
+const HEADER_SCHEME_RE = /^[A-Za-z]{1,32}$/
+const SERVER_NAME_FORBIDDEN = new Set(['__proto__', 'constructor', 'prototype'])
+const DENIED_ENV_EXACT = new Set([
+  'PATH', 'NODE_OPTIONS', 'NODE_PATH', 'BASH_ENV', 'ENV', 'SHELL', 'HOME', 'IFS',
+  'PROMPT_COMMAND', 'RUBYOPT', 'RUBYLIB',
+])
+const DENIED_ENV_PREFIXES = ['LD_', 'DYLD_', 'PYTHON', 'PERL5', 'GIT_', 'NPM_CONFIG_']
+
+export type BindingKeyKind = 'env' | 'header'
+
+/** Returns an error message, or null when the binding key is acceptable. */
+export function validateBindingKey(kind: BindingKeyKind, key: unknown): string | null {
+  if (typeof key !== 'string') return kind === 'header' ? 'headerName must be a string' : 'envVar must be a string'
+  if (kind === 'header') {
+    return HEADER_NAME_RE.test(key) ? null : 'headerName must match ^[A-Za-z0-9-]{1,128}$'
+  }
+  const upper = key.toUpperCase()
+  if (DENIED_ENV_EXACT.has(upper) || DENIED_ENV_PREFIXES.some(p => upper.startsWith(p))) {
+    return 'This env var name is not allowed (it changes how a process starts)'
+  }
+  return ENV_NAME_RE.test(key) ? null : 'envVar must match ^[A-Z_][A-Z0-9_]{0,127}$'
+}
+
+/** An absent or empty scheme is allowed (empty means the raw secret is the header value). */
+export function validateHeaderScheme(scheme: unknown): string | null {
+  if (scheme === undefined || scheme === null) return null
+  if (typeof scheme !== 'string') return 'headerScheme must be a string'
+  if (scheme === '') return null
+  return HEADER_SCHEME_RE.test(scheme) ? null : 'headerScheme must match ^[A-Za-z]{1,32}$'
+}
+
+/** Server names become object keys of mcpServers: refuse the prototype-pollution names. */
+export function validateServerName(name: unknown): string | null {
+  if (typeof name !== 'string' || name.length === 0 || name.length > 256) return 'serverName must be a non-empty string'
+  if (SERVER_NAME_FORBIDDEN.has(name)) return 'serverName is not allowed'
+  return null
+}
+
+/**
+ * Maps a caller-supplied path onto one of the known MCP files, or null. The comparison is on
+ * real paths, so a relative form or a symlinked parent still resolves to the listed file, but
+ * a file that is itself a symlink (listed or asked for) never matches: a link planted in a
+ * known directory must not redirect the rewrite elsewhere. Missing files never match.
+ */
+export function resolveKnownMcpFile(
+  candidate: unknown,
+  known: Array<{ path: string }> = collectAllMcpFilePaths(),
+): string | null {
+  if (typeof candidate !== 'string' || candidate === '' || candidate.includes('\0')) return null
+  const realOf = (p: string): string | null => {
+    try {
+      if (lstatSync(p).isSymbolicLink()) return null
+      return realpathSync(p)
+    } catch { return null }
+  }
+  const want = realOf(candidate)
+  if (!want) return null
+  for (const k of known) {
+    if (realOf(k.path) === want) return k.path
+  }
+  return null
+}
+
+export interface BindingTargetsCheck {
+  error?: string
+  /** The targets with every path replaced by the listed (canonical) one. */
+  targets?: VaultBindingTarget[]
+}
+
+/** Every target must name a safe server and one of the known MCP files. */
+export function validateBindingTargets(
+  targets: unknown,
+  known: Array<{ path: string }> = collectAllMcpFilePaths(),
+): BindingTargetsCheck {
+  if (!Array.isArray(targets)) return { error: 'targets must be an array' }
+  const out: VaultBindingTarget[] = []
+  for (const t of targets) {
+    const nameErr = validateServerName(t?.serverName)
+    if (nameErr) return { error: nameErr }
+    const canonical = resolveKnownMcpFile(t?.mcpFilePath, known)
+    if (!canonical) return { error: 'mcpFilePath is not a known MCP config file' }
+    out.push({ mcpFilePath: canonical, serverName: t.serverName })
+  }
+  return { targets: out }
 }
 
 function maskValue(val: string): string {

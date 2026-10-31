@@ -26,6 +26,14 @@ vi.mock('../web/vault.js', () => ({
   getSecretsForEnv: () => ({}),
 }))
 
+// Card 24e137ef: POST /api/vault/bindings is code-exec gated for a bare token. These tests are about
+// the SSH-key guard behind that gate (the gate has its own suite, vault-bindings-gate.test.ts), so the
+// gate is let through here and the token-based principal assertions below stay as they were.
+vi.mock('../web/code-exec-admin.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../web/code-exec-admin.js')>()),
+  execGateApplies: () => false,
+}))
+
 const { readVaultAcl, principalOf, evaluateVaultRead, logVaultRead, isSshPrivateKeyId } = await import('../web/vault-acl.js')
 const { tryHandleConnectors } = await import('../web/routes/connectors.js')
 

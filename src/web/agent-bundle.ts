@@ -230,6 +230,41 @@ export function sanitizeImportedConfig(stagedAgentDir: string): void {
   if (changed) atomicWriteFileSync(cfgPath, JSON.stringify(cfg, null, 2))
 }
 
+// Card 24e137ef N3b (Brainy D1): a bundle never chooses the agent's privilege
+// profile. On overwrite of an existing agent the EXISTING securityProfile (and
+// the existing .claude/settings.json, which is derived from it) stays; for a new
+// agent the bundle's securityProfile is dropped so it falls back to 'default'.
+// Runs on the staged dir, before the existing dir is removed.
+export function applyKeptSecurityProfile(stagedAgentDir: string, existingDest: string | null): void {
+  const cfgPath = join(stagedAgentDir, 'agent-config.json')
+  let kept: string | undefined
+  if (existingDest) {
+    try {
+      const old = JSON.parse(readFileSync(join(existingDest, 'agent-config.json'), 'utf-8'))
+      if (typeof old.securityProfile === 'string' && old.securityProfile.trim()) kept = old.securityProfile.trim()
+    } catch { /* no readable config: default */ }
+  }
+  if (existsSync(cfgPath)) {
+    let cfg: Record<string, unknown> | null = null
+    try { cfg = JSON.parse(readFileSync(cfgPath, 'utf-8')) } catch { /* unreadable: left as is */ }
+    if (cfg && typeof cfg === 'object') {
+      delete cfg.securityProfile
+      if (kept) cfg.securityProfile = kept
+      atomicWriteFileSync(cfgPath, JSON.stringify(cfg, null, 2))
+    }
+  }
+  if (existingDest) {
+    const oldSettings = join(existingDest, '.claude', 'settings.json')
+    const stagedSettings = join(stagedAgentDir, '.claude', 'settings.json')
+    if (existsSync(oldSettings)) {
+      mkdirSync(join(stagedSettings, '..'), { recursive: true })
+      cpSync(oldSettings, stagedSettings)
+    } else {
+      rmSync(stagedSettings, { force: true })
+    }
+  }
+}
+
 export interface ImportResult {
   name: string
   manifest: BundleManifest
@@ -313,6 +348,7 @@ export function importAgentBundle(
     if (exists && !opts.overwrite) {
       throw new Error(`Agent "${name}" already exists on this machine`)
     }
+    applyKeptSecurityProfile(stagedAgentDir, exists ? dest : null)
     if (exists) rmSync(dest, { recursive: true, force: true })
     mkdirSync(join(dest, '..'), { recursive: true })
     cpSync(stagedAgentDir, dest, { recursive: true })
@@ -515,6 +551,7 @@ export function importAllAgentsBundle(
       const dest = resolveDest(name) // agentDir: safeJoin rejects traversal
       const exists = existsSync(dest)
       if (exists && !opts.overwrite) { skipped.push({ name, reason: 'already exists' }); continue }
+      applyKeptSecurityProfile(stagedAgentDir, exists ? dest : null)
       if (exists) rmSync(dest, { recursive: true, force: true })
       mkdirSync(join(dest, '..'), { recursive: true })
       cpSync(stagedAgentDir, dest, { recursive: true })

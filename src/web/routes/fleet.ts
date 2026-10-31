@@ -3,6 +3,7 @@ import { FLEET_IMPORT_APPLY_ENV, isAdminSwitchOn, callerLabel } from '../admin-s
 import { readBody, json } from '../http-helpers.js'
 import { exportFleet, importFleet, MIN_VAULT_PASSWORD_LEN, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
 import { serializeSkillsDir } from '../skills-dir-queue.js'
+import { execGateApplies, admitCodeExecAdmin, codeExecAuditTrail } from '../code-exec-admin.js'
 import type { RouteContext } from './types.js'
 
 // Card 053f4e66: applying a fleet import overwrites the main agent's persona,
@@ -63,6 +64,11 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
+    // Card 24e137ef: applying overwrites personas, settings and hooks of every agent;
+    // gated before the body is read. The dry-run preview stays open.
+    const gated = apply && execGateApplies(ctx.auth, req)
+    if (gated && !admitCodeExecAdmin(ctx, 'fleet.import')) return true
+
     // M1: check vault password length for import side too
     if (vaultPassword !== undefined && vaultPassword.length < MIN_VAULT_PASSWORD_LEN) {
       json(res, { error: `X-Vault-Password must be at least ${MIN_VAULT_PASSWORD_LEN} characters.` }, 400)
@@ -81,7 +87,16 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
     // importFleet handles JSON parse (and encrypted blob detection) internally
     try {
       // The import writes skill directories; it waits for an export's zip or an assign's copy still running.
-      const result = await serializeSkillsDir(() => importFleet(rawBody, { vaultPassword: vaultPassword || undefined, apply }))
+      const trail = codeExecAuditTrail(gated, 'fleet.import', ctx.auth)
+      if (apply) trail.start('fleet')
+      let result: Awaited<ReturnType<typeof importFleet>>
+      try {
+        result = await serializeSkillsDir(() => importFleet(rawBody, { vaultPassword: vaultPassword || undefined, apply }))
+      } catch (err) {
+        trail.failed(err)
+        throw err
+      }
+      trail.ok()
       if ('dryRun' in result && result.errors.length > 0) {
         json(res, result, 400)
       } else {

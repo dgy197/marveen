@@ -96,11 +96,11 @@ describe('connectors.ts: every route that reaches `claude mcp add` or a clone is
 
   it('the four entry points each call the gate once, under their own action, behind execGateApplies', () => {
     const c = code()
-    for (const action of ['connectors.add', 'mcp_catalog.install', 'connectors.github_repo.add', 'connectors.github_repo.update']) {
+    for (const action of ['connectors.add', 'mcp_catalog.install', 'connectors.github_repo.add', 'connectors.github_repo.update', 'vault.bindings.add']) {
       expect(c.match(new RegExp(`admitCodeExecAdmin\\(ctx, '${action.replace(/\./g, '\\.')}'\\)`, 'g')), action).toHaveLength(1)
     }
-    expect(c.match(/admitCodeExecAdmin\(/g)).toHaveLength(4)
-    expect(c.match(/execGateApplies\(ctx\.auth, req\)/g)).toHaveLength(4)
+    expect(c.match(/admitCodeExecAdmin\(/g)).toHaveLength(5)
+    expect(c.match(/execGateApplies\(ctx\.auth, req\)/g)).toHaveLength(5)
   })
 
   it('the gate stands before the first body read or catalog lookup of its handler', () => {
@@ -110,6 +110,7 @@ describe('connectors.ts: every route that reaches `claude mcp add` or a clone is
       ['mcp_catalog.install', "catalogInstallMatch && method === 'POST'"],
       ['connectors.github_repo.add', "path === '/api/connectors/github-repos' && method === 'POST'"],
       ['connectors.github_repo.update', "githubRepoMatch && method === 'PATCH'"],
+      ['vault.bindings.add', "path === '/api/vault/bindings' && method === 'POST'"],
     ]
     for (const [action, header] of handlers) {
       const head = lines.findIndex(l => l.includes(header))
@@ -267,7 +268,7 @@ describe('the audit start stands before the first write, the outcome after (N6, 
   it('connectors.ts records through the trail only: no direct recordCodeExecAdmin, no after-the-fact audit helper', () => {
     const text = codeLines(file('web/routes/connectors.ts').text).join('\n')
     expect(text).not.toMatch(/recordCodeExecAdmin|auditGatedInstall/)
-    expect(text.match(/codeExecAuditTrail\(/g)).toHaveLength(4)
+    expect(text.match(/codeExecAuditTrail\(/g)).toHaveLength(5)
   })
 
   it('every `claude mcp add` of the install routes has trail.start on the line before it', () => {
@@ -303,4 +304,27 @@ describe('the audit start stands before the first write, the outcome after (N6, 
     const text = codeLines(file('web/code-exec-admin.ts').text).join('\n')
     expect(text).not.toMatch(/\.message\b|String\(err\)|\$\{err\}/)
   })
+})
+
+// Card 24e137ef: privilege-widening routes that outlive a token rotation.
+describe('security / capabilities / skills.assign / fleet.import are gated before the body is read (card 24e137ef)', () => {
+  const cases: Array<[string, string, string]> = [
+    ['agents.security', 'web/routes/agents.ts', "secGetMatch && method === 'PUT'"],
+    ['agents.capabilities', 'web/routes/fleet-q.ts', "capMatch && method === 'PUT'"],
+    ['skills.assign', 'web/routes/skills.ts', "globalSkillAssignMatch && method === 'POST'"],
+    ['fleet.import', 'web/routes/fleet.ts', "path === '/api/fleet/import' && method === 'POST'"],
+  ]
+  for (const [action, rel, header] of cases) {
+    it(`${action}: one admitCodeExecAdmin call in ${rel}, after the handler header and before its first readBody`, () => {
+      const lines = codeLines(file(rel).text)
+      const text = lines.join('\n')
+      expect(text.match(new RegExp(`admitCodeExecAdmin\\(ctx, '${action.replace(/\./g, '\\.')}'\\)`, 'g')), action).toHaveLength(1)
+      const head = lines.findIndex(l => l.includes(header))
+      const gate = lines.findIndex(l => l.includes(`admitCodeExecAdmin(ctx, '${action}')`))
+      const firstRead = lines.findIndex((l, i) => i > head && /readBody\(/.test(l))
+      expect(head, `${action}: handler found`).toBeGreaterThan(-1)
+      expect(gate, `${action}: gate inside the handler`).toBeGreaterThan(head)
+      expect(firstRead, `${action}: gate before the first read`).toBeGreaterThan(gate)
+    })
+  }
 })

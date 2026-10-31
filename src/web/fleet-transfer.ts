@@ -1226,14 +1226,27 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
   const claudeDir = safeJoin(dir, '.claude')
   trackedMkdir(claudeDir, tracker)
 
-  trackedWrite(join(dir, 'agent-config.json'), JSON.stringify(agent.config, null, 2), tracker)
+  // Card 24e137ef N3b: the bundle never chooses the privilege profile. An existing
+  // agent keeps its own securityProfile and settings.json; a new agent gets no
+  // profile (default). A new agent's settings.json still comes from the bundle.
+  const existingAgent = existsSync(join(dir, 'agent-config.json'))
+  let keptProfile: unknown
+  if (existingAgent) {
+    try { keptProfile = JSON.parse(readFileSync(join(dir, 'agent-config.json'), 'utf-8')).securityProfile } catch { /* default */ }
+  }
+  const importedConfig: Record<string, unknown> = { ...(agent.config as Record<string, unknown>) }
+  delete importedConfig.securityProfile
+  if (typeof keptProfile === 'string' && keptProfile.trim()) importedConfig.securityProfile = keptProfile.trim()
+  trackedWrite(join(dir, 'agent-config.json'), JSON.stringify(importedConfig, null, 2), tracker)
   if (agent.claudeMd) trackedWrite(join(dir, 'CLAUDE.md'), agent.claudeMd, tracker)
   if (agent.soulMd) trackedWrite(join(dir, 'SOUL.md'), agent.soulMd, tracker)
 
   // .mcp.json: de-placeholder vault refs (path denormalization happens at fleet level)
   trackedWrite(join(dir, '.mcp.json'), JSON.stringify(deplaceholderMcp(agent.mcp), null, 2), tracker)
 
-  trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(agent.settings, null, 2), tracker)
+  if (!existsSync(join(claudeDir, 'settings.json'))) {
+    trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(agent.settings, null, 2), tracker)
+  }
 
   for (const [provider, access] of Object.entries(agent.channelsAccess ?? {})) {
     const provDir = safeJoin(claudeDir, 'channels', provider)

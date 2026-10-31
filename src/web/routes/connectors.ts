@@ -23,6 +23,7 @@ import { getCreditGateRuntime } from '../credit-gate/runtime.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
   syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
+  validateBindingKey, validateHeaderScheme, validateBindingTargets,
 } from '../vault-bindings.js'
 import type { RouteContext } from './types.js'
 
@@ -952,6 +953,11 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/vault/bindings' && method === 'POST') {
+    // Card 24e137ef (CX1): a binding writes a vault reference under a caller-chosen key into
+    // an MCP config file, which is code execution at the next server start; gated before the
+    // body is read, like the connector installs. The validation below applies to every caller.
+    const gated = execGateApplies(ctx.auth, req)
+    if (gated && !admitCodeExecAdmin(ctx, 'vault.bindings.add')) return true
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as {
       vaultSecretId: string
@@ -965,6 +971,12 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     }
     // A binding is either env-var based (local/stdio servers) or header based
     // (remote http/sse servers). Header bindings key on the header name.
+    for (const v of [data.vaultSecretId, data.envVar, data.headerName, data.headerScheme, data.serverName]) {
+      if (v !== undefined && v !== null && typeof v !== 'string') {
+        json(res, { error: 'vaultSecretId, envVar, headerName, headerScheme and serverName must be strings' }, 400)
+        return true
+      }
+    }
     const bindingKey = data.headerName?.trim() || data.envVar?.trim()
     if (!data.vaultSecretId || !bindingKey) {
       json(res, { error: 'vaultSecretId and (envVar or headerName) required' }, 400)
@@ -983,6 +995,11 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'SSH private keys cannot be bound to an env var or a header' }, 400)
       return true
     }
+
+    // CX1: the key, the scheme and the target files are checked for every caller, before any write.
+    const keyError = validateBindingKey(data.headerName?.trim() ? 'header' : 'env', bindingKey)
+      ?? validateHeaderScheme(data.headerScheme?.trim())
+    if (keyError) { json(res, { error: keyError }, 400); return true }
 
     let targets = data.targets || []
     if (data.serverName && targets.length === 0) {
@@ -1019,14 +1036,30 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'No targets found for this server' }, 400)
       return true
     }
+    const targetCheck = validateBindingTargets(targets)
+    if (targetCheck.error || !targetCheck.targets) {
+      json(res, { error: targetCheck.error ?? 'Invalid targets' }, 400)
+      return true
+    }
+    targets = targetCheck.targets
     const binding: any = { vaultSecretId: data.vaultSecretId, envVar: bindingKey, targets }
     if (data.headerName?.trim()) {
       binding.headerName = data.headerName.trim()
       binding.headerScheme = data.headerScheme?.trim() ?? 'Bearer'
     }
-    addBinding(binding)
-    const syncResult = syncSecret(data.vaultSecretId)
-    json(res, { ok: true, synced: syncResult.updated, errors: syncResult.errors })
+    // Subject = ids only, never the secret value.
+    const trail = codeExecAuditTrail(gated, 'vault.bindings.add', ctx.auth)
+    const auditSubject = `${data.vaultSecretId} ${[...new Set(targets.map(t => t.serverName))].join(',')}`
+    trail.start(auditSubject)
+    try {
+      addBinding(binding)
+      const syncResult = syncSecret(data.vaultSecretId)
+      trail.ok(auditSubject)
+      json(res, { ok: true, synced: syncResult.updated, errors: syncResult.errors })
+    } catch (err) {
+      trail.failed(err)
+      throw err
+    }
     return true
   }
 

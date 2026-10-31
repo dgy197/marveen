@@ -1,5 +1,6 @@
 import { listAgentNames, readAgentCapabilities, writeAgentCapabilities, isKnownAgent } from '../agent-config.js'
 import { readBody, json } from '../http-helpers.js'
+import { execGateApplies, admitCodeExecAdmin, codeExecAuditTrail } from '../code-exec-admin.js'
 import type { RouteContext } from './types.js'
 
 // GET /.well-known/fleetq
@@ -26,13 +27,25 @@ export async function tryHandleFleetQ(ctx: RouteContext): Promise<boolean> {
   if (capMatch && method === 'PUT') {
     const name = decodeURIComponent(capMatch[1])
     if (!isKnownAgent(name)) { json(res, { error: 'Agent nem található' }, 404); return true }
+    // Card 24e137ef: capability tags steer routing and outlive a token rotation;
+    // gated before the body is read.
+    const gated = execGateApplies(ctx.auth, req)
+    if (gated && !admitCodeExecAdmin(ctx, 'agents.capabilities')) return true
     const body = await readBody(req)
     const parsed = JSON.parse(body.toString()) as { capabilities?: unknown }
     if (!Array.isArray(parsed.capabilities) || !parsed.capabilities.every((c: unknown) => typeof c === 'string')) {
       json(res, { error: 'capabilities: string[] required' }, 400)
       return true
     }
-    writeAgentCapabilities(name, parsed.capabilities)
+    const trail = codeExecAuditTrail(gated, 'agents.capabilities', ctx.auth)
+    trail.start(name)
+    try {
+      writeAgentCapabilities(name, parsed.capabilities)
+    } catch (err) {
+      trail.failed(err)
+      throw err
+    }
+    trail.ok()
     json(res, { ok: true, capabilities: parsed.capabilities })
     return true
   }
