@@ -254,6 +254,25 @@ r = api(['memory-save', 'iroda', 'warm', 'kw', pf], FESZEK_FILE)
 check('api: memory-save for iroda still sends the feszek key, never the iroda one',
       r.returncode == 0 and SEEN[0]['key'] == [KEY_FESZEK])
 
+# card f137f980: the close (PUT /api/messages/<id>) is signed like every other verb, so the dashboard can record
+# who closed the row (closer_auth); the key is the env's, never one picked by the id or the result text
+r = api(['message-close', '5', '--no-notify'], FESZEK_FILE)
+check('api: message-close is a signed PUT on /api/messages/5, exit 0',
+      r.returncode == 0 and SEEN[0]['method'] == 'PUT' and SEEN[0]['path'] == '/api/messages/5' and SEEN[0]['key'] == [KEY_FESZEK],
+      repr(SEEN) + r.stderr)
+check('api: message-close still sends the bearer token', SEEN[0]['auth'] == 'Bearer test-token-0123456789')
+with open(pf, 'w') as f:
+    f.write('result for iroda')
+r = api(['message-close', '6', '--failed', '--result-file', pf], FESZEK_FILE)
+check('api: message-close --failed --result-file is signed with the env key, never another agent\'s',
+      r.returncode == 0 and SEEN[0]['key'] == [KEY_FESZEK] and KEY_IRODA not in r.stdout + r.stderr, repr(SEEN) + r.stderr)
+r = api(['message-close', '5', '--no-notify'], None)
+check('api: message-close without a key file closes unsigned, exit 0, no header',
+      r.returncode == 0 and SEEN[0]['method'] == 'PUT' and SEEN[0]['key'] is None, repr(SEEN) + r.stderr)
+r = api(['message-close', '5', '--no-notify'], two)
+check('api: message-close with a malformed key file closes unsigned, nothing smuggled',
+      r.returncode == 0 and SEEN[0]['key'] is None and SEEN[0]['evil'] is None, repr(SEEN))
+
 for label, kf in (('unset', None), ('missing', os.path.join(KEYS, 'nope')), ('directory', KEYS),
                   ('two lines', two), ('other header', bad), ('empty', empty)):
     r = api(['directive-verify', '5'], kf)
