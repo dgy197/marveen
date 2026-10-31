@@ -304,6 +304,33 @@ describe('pure validators', () => {
     expect(vb.validateBindingKey('env', 5)).not.toBeNull()
   })
 
+  // Card 24e137ef B2: interpreter / runtime injection, proxy and CA redirection,
+  // shell and config-root relocation. Asserts the rejection, not its message: the
+  // lower-case forms may be refused by the name regex instead of the denylist.
+  it('validateBindingKey(env): the widened denylist refuses every injection name, in any case', () => {
+    const exact = [
+      'PERLLIB', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JDK_JAVA_OPTIONS', 'CLASSPATH', 'ZDOTDIR',
+      'HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY', 'NO_PROXY',
+      'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE',
+      'GEM_HOME', 'GEM_PATH', 'ELECTRON_RUN_AS_NODE', 'TMPDIR', 'CLAUDE_CONFIG_DIR', 'ANTHROPIC_BASE_URL',
+    ]
+    const prefixed = [
+      'NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS', 'NODE_TLS_REJECT_UNAUTHORIZED', 'NODE_ANYTHING',
+      'RUBY', 'RUBYOPT', 'RUBYLIB', 'RUBY_ANYTHING', 'PIP_INDEX_URL', 'PIP_EXTRA_INDEX_URL', 'UV_INDEX_URL', 'UV_PYTHON', 'XDG_CONFIG_HOME', 'XDG_DATA_DIRS',
+    ]
+    for (const name of [...exact, ...prefixed]) {
+      for (const variant of [name, name.toLowerCase(), name[0] + name.slice(1).toLowerCase()]) {
+        expect(vb.validateBindingKey('env', variant), variant).not.toBeNull()
+      }
+    }
+    // the exact names are refused by the denylist itself in their canonical case
+    for (const name of [...exact, ...prefixed]) expect(vb.validateBindingKey('env', name), name).toMatch(/not allowed/)
+    // look-alikes that must stay usable
+    for (const fine of ['TMPDIR_NAME', 'MY_CLASSPATH', 'PROXY_URL', 'HTTPS_PROXY_USER', 'SSL_CERT_PASSWORD', 'UVICORN_PORT', 'PIPELINE_TOKEN', 'NODEMAILER_KEY', 'XDGTOKEN', 'GEM_API_KEY']) {
+      expect(vb.validateBindingKey('env', fine), fine).toBeNull()
+    }
+  })
+
   it('validateBindingKey(header)', () => {
     for (const ok of ['Authorization', 'X-Api-Key', 'x', 'A'.repeat(128)]) expect(vb.validateBindingKey('header', ok), ok).toBeNull()
     for (const bad of ['', 'Bad Header', 'A_B', 'A:B', 'A\r\nB', 'A'.repeat(129)]) expect(vb.validateBindingKey('header', bad), bad).not.toBeNull()

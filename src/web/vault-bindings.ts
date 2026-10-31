@@ -178,8 +178,17 @@ const SERVER_NAME_FORBIDDEN = new Set(['__proto__', 'constructor', 'prototype'])
 const DENIED_ENV_EXACT = new Set([
   'PATH', 'NODE_OPTIONS', 'NODE_PATH', 'BASH_ENV', 'ENV', 'SHELL', 'HOME', 'IFS',
   'PROMPT_COMMAND', 'RUBYOPT', 'RUBYLIB',
+  // Card 24e137ef B2: interpreter and runtime injection, proxy / CA redirection
+  // (a bound secret would travel to, or be trusted by, an attacker host), shell and
+  // config-root relocation, temp-dir hijack.
+  'PERLLIB', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JDK_JAVA_OPTIONS', 'CLASSPATH', 'ZDOTDIR',
+  'HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY', 'NO_PROXY',
+  'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE',
+  'GEM_HOME', 'GEM_PATH', 'ELECTRON_RUN_AS_NODE', 'TMPDIR',
+  'CLAUDE_CONFIG_DIR', 'ANTHROPIC_BASE_URL',
 ])
-const DENIED_ENV_PREFIXES = ['LD_', 'DYLD_', 'PYTHON', 'PERL5', 'GIT_', 'NPM_CONFIG_']
+// NODE_ covers NODE_OPTIONS, NODE_PATH, NODE_EXTRA_CA_CERTS, NODE_TLS_REJECT_UNAUTHORIZED.
+const DENIED_ENV_PREFIXES = ['LD_', 'DYLD_', 'PYTHON', 'PERL5', 'GIT_', 'NPM_CONFIG_', 'NODE_', 'RUBY', 'PIP_', 'UV_', 'XDG_']
 
 export type BindingKeyKind = 'env' | 'header'
 
