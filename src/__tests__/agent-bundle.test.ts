@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, symlinkSync, lstatSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -388,15 +388,21 @@ describe('bundle import allowlist (card 24e137ef B1)', () => {
 
   // A staged agent dir with extras the exporter would never stage, packed the way
   // an attacker's tar would be: manifest.json + agent/.
-  function evilSingleBundle(files: Record<string, string> = BUNDLE_FILES): Buffer {
+  // <extra> runs on the staged agent dir after the files are written (BD5: plant
+  // symlinks there); `tar -czf` without -h stores them as symlinks.
+  type Extra = (agentRoot: string) => void
+
+  function evilSingleBundle(files: Record<string, string> = BUNDLE_FILES, extra?: Extra): Buffer {
     const root = join(tmp, 'pack-single')
     makeAgent(join(root, 'agent'), files)
+    extra?.(join(root, 'agent'))
     return packBundle(root, 'victim', false)
   }
 
-  function evilFleetBundle(files: Record<string, string> = BUNDLE_FILES): Buffer {
+  function evilFleetBundle(files: Record<string, string> = BUNDLE_FILES, extra?: Extra): Buffer {
     const root = join(tmp, 'pack-fleet')
     makeAgent(join(root, 'agents', 'victim'), files)
+    extra?.(join(root, 'agents', 'victim'))
     writeFileSync(join(root, 'manifest.json'), JSON.stringify({
       schemaVersion: BUNDLE_SCHEMA_VERSION, kind: 'fleet', agents: ['victim'], includesSecrets: false,
     }))
@@ -408,22 +414,61 @@ describe('bundle import allowlist (card 24e137ef B1)', () => {
   type Dropped = { droppedEntries: string[]; droppedSettings: string[] }
   const importers: {
     label: string
-    pack: (files?: Record<string, string>) => Buffer
+    pack: (files?: Record<string, string>, extra?: Extra) => Buffer
     run: (bundle: Buffer, destBase: string, overwrite: boolean) => Dropped
   }[] = [
     {
       label: 'single-agent importer',
-      pack: (files) => evilSingleBundle(files),
+      pack: (files, extra) => evilSingleBundle(files, extra),
       run: (bundle, destBase, overwrite) =>
         importAgentBundle(bundle, { resolveDest: (n) => join(destBase, n), overwrite }),
     },
     {
       label: 'fleet importer',
-      pack: (files) => evilFleetBundle(files),
+      pack: (files, extra) => evilFleetBundle(files, extra),
       run: (bundle, destBase, overwrite) =>
         importAllAgentsBundle(bundle, { resolveDest: (n) => join(destBase, n), overwrite }).imported[0],
     },
   ]
+
+  // Card 24e137ef BD5(b): a copy that fails half-way on an overwrite must leave the
+  // EXISTING agent's settings.local.json and .claude-config intact and no .keep-
+  // holder behind. The tar is built with python3 tarfile so the entry carries mode
+  // 000 in its header (`tar -c` itself cannot read a 000 file); the importer
+  // extracts it as an unreadable staged file, so cpSync fails with EACCES.
+  it.skipIf(process.getuid?.() === 0)('BD5 overwrite: a copy failure mid-way restores the local state and leaves no holder dir', () => {
+    const root = join(tmp, 'pack-locked')
+    makeAgent(join(root, 'agent'), { 'CLAUDE.md': '# from bundle', '.claude/skills/x/locked': 'unreadable once staged' })
+    writeFileSync(join(root, 'manifest.json'), JSON.stringify({
+      schemaVersion: BUNDLE_SCHEMA_VERSION, agentName: 'victim', includesSecrets: false,
+    }))
+    const out = join(tmp, 'locked.tar.gz')
+    const py = [
+      'import sys, tarfile',
+      'out, root = sys.argv[1], sys.argv[2]',
+      'def f(ti):',
+      '    if ti.name.endswith("/locked"): ti.mode = 0',
+      '    return ti',
+      'with tarfile.open(out, "w:gz") as t:',
+      '    t.add(root + "/manifest.json", "manifest.json")',
+      '    t.add(root + "/agent", "agent", filter=f)',
+    ].join('\n')
+    execFileSync('python3', ['-I', '-c', py, out, root])
+
+    const destBase = join(tmp, 'agents')
+    const mine = '{"permissions":{"defaultMode":"default"},"note":"mine"}'
+    makeAgent(join(destBase, 'victim'), {
+      'CLAUDE.md': 'old',
+      '.claude/settings.local.json': mine,
+      '.claude-config/x': 'my own login state',
+    })
+    expect(() => importAgentBundle(readFileSync(out), { resolveDest: (n) => join(destBase, n), overwrite: true })).toThrow()
+    const dest = join(destBase, 'victim')
+    expect(readFileSync(join(dest, '.claude', 'settings.local.json'), 'utf-8')).toBe(mine)
+    expect(readFileSync(join(dest, '.claude-config', 'x'), 'utf-8')).toBe('my own login state')
+    // no .keep- holder left in the parent
+    expect(readdirSync(destBase)).toEqual(['victim'])
+  })
 
   for (const { label, pack, run } of importers) {
     const mk = () => pack()
@@ -477,6 +522,33 @@ describe('bundle import allowlist (card 24e137ef B1)', () => {
         expect(existsSync(join(dest, '.claude', 'settings.local.json'))).toBe(false)
         expect(existsSync(join(dest, '.claude-config'))).toBe(false)
         expect(readFileSync(join(dest, 'CLAUDE.md'), 'utf-8')).toBe('# from bundle')
+      })
+
+      // Card 24e137ef BD1/BD5: no symlink from a bundle ever lands, neither an
+      // allowlisted entry that IS a link (memory -> outside dir) nor a link inside a
+      // real allowlisted dir. Both are reported, the outside dir is never touched.
+      it('BD1 symlinks (entry and nested) never land on a new agent or an overwrite, outside dir untouched', () => {
+        const outside = join(tmp, 'outside')
+        makeAgent(outside, { 'secret.txt': 'keep me' })
+        const bundle = pack({ 'CLAUDE.md': 'x', '.claude/skills/x/SKILL.md': 'real' }, (agent) => {
+          symlinkSync(outside, join(agent, 'memory'))
+          symlinkSync(outside, join(agent, '.claude', 'skills', 'x', 'evil'))
+        })
+        const nested = join('.claude', 'skills', 'x', 'evil')
+        for (const overwrite of [false, true]) {
+          const destBase = join(tmp, `agents-${overwrite}`)
+          if (overwrite) makeAgent(join(destBase, 'victim'), { 'CLAUDE.md': 'old' })
+          const dropped = run(bundle, destBase, overwrite).droppedEntries
+          const dest = join(destBase, 'victim')
+          expect(() => lstatSync(join(dest, 'memory')), `memory overwrite=${overwrite}`).toThrow(/ENOENT/)
+          expect(() => lstatSync(join(dest, nested)), `nested overwrite=${overwrite}`).toThrow(/ENOENT/)
+          expect(dropped).toContain('memory (symlink)')
+          expect(dropped).toContain(`${nested} (symlink)`)
+          // the real file next to the nested link still landed
+          expect(readFileSync(join(dest, '.claude', 'skills', 'x', 'SKILL.md'), 'utf-8')).toBe('real')
+          expect(readdirSync(outside)).toEqual(['secret.txt'])
+          expect(readFileSync(join(outside, 'secret.txt'), 'utf-8')).toBe('keep me')
+        }
       })
 
       // Card 24e137ef D4: a NEW agent's settings.json is generated from the default
