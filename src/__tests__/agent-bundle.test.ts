@@ -551,6 +551,96 @@ describe('bundle import allowlist (card 24e137ef B1)', () => {
         }
       })
 
+      // Card 51538ebc B1: a staged .claude / hooks / settings.json that is a symlink
+      // would make the keep step rm/cp/write OUTSIDE staging. The import is refused
+      // before anything is touched; the outside tree and the existing agent stay as
+      // they were.
+      const symlinkCases: { label: string; plant: (agent: string, outside: string) => void; match: RegExp }[] = [
+        { label: '.claude', plant: (agent, outside) => symlinkSync(outside, join(agent, '.claude')), match: /symlink at .*\.claude$/ },
+        {
+          label: '.claude/hooks',
+          plant: (agent, outside) => { mkdirSync(join(agent, '.claude'), { recursive: true }); symlinkSync(join(outside, 'hooks'), join(agent, '.claude', 'hooks')) },
+          match: /symlink at .*hooks$/,
+        },
+        {
+          label: '.claude/settings.json',
+          plant: (agent, outside) => { mkdirSync(join(agent, '.claude'), { recursive: true }); symlinkSync(join(outside, 'settings.json'), join(agent, '.claude', 'settings.json')) },
+          match: /symlink at .*settings\.json$/,
+        },
+      ]
+      for (const c of symlinkCases) {
+        it(`B1 overwrite with a staged ${c.label} symlink is refused, outside tree and existing agent untouched`, () => {
+          const outside = join(tmp, 'outside')
+          makeAgent(outside, { 'hooks/guard.py': 'print("fleet gate")', 'settings.json': '{"outside":true}' })
+          const destBase = join(tmp, 'agents')
+          makeAgent(join(destBase, 'victim'), {
+            'CLAUDE.md': 'old',
+            '.claude/settings.json': '{"mine":true}\n',
+            '.claude/hooks/mine.py': 'print("local")',
+          })
+          const bundle = pack({ 'CLAUDE.md': 'x' }, (agent) => c.plant(agent, outside))
+          expect(() => run(bundle, destBase, true)).toThrow(c.match)
+          expect(readFileSync(join(outside, 'hooks', 'guard.py'), 'utf-8')).toBe('print("fleet gate")')
+          expect(readFileSync(join(outside, 'settings.json'), 'utf-8')).toBe('{"outside":true}')
+          expect(readdirSync(join(outside, 'hooks'))).toEqual(['guard.py'])
+          const dest = join(destBase, 'victim')
+          expect(readFileSync(join(dest, 'CLAUDE.md'), 'utf-8')).toBe('old')
+          expect(readFileSync(join(dest, '.claude', 'hooks', 'mine.py'), 'utf-8')).toBe('print("local")')
+          expect(readFileSync(join(dest, '.claude', 'settings.json'), 'utf-8')).toBe('{"mine":true}\n')
+          expect(readdirSync(destBase)).toEqual(['victim'])
+        })
+      }
+
+      it('B1 a staged agent-config.json symlink is refused too, the file it points to is untouched', () => {
+        const outside = join(tmp, 'outside')
+        makeAgent(outside, { 'target.json': '{"outside":true}' })
+        const destBase = join(tmp, 'agents')
+        makeAgent(join(destBase, 'victim'), { 'CLAUDE.md': 'old' })
+        const bundle = pack({ 'CLAUDE.md': 'x' }, (agent) => symlinkSync(join(outside, 'target.json'), join(agent, 'agent-config.json')))
+        expect(() => run(bundle, destBase, true)).toThrow(/symlink at .*agent-config\.json$/)
+        expect(readFileSync(join(outside, 'target.json'), 'utf-8')).toBe('{"outside":true}')
+        expect(readFileSync(join(destBase, 'victim', 'CLAUDE.md'), 'utf-8')).toBe('old')
+      })
+
+      // Card 51538ebc B1 (existing side): a symlinked existing hooks dir / settings.json
+      // is treated as absent, no link is carried into the new agent.
+      it('B1 overwrite where the EXISTING hooks dir and settings.json are symlinks: neither lands as a link', () => {
+        const outside = join(tmp, 'outside')
+        makeAgent(outside, { 'hooks/guard.py': 'print("elsewhere")', 'settings.json': '{"elsewhere":true}' })
+        const destBase = join(tmp, 'agents')
+        makeAgent(join(destBase, 'victim'), { 'CLAUDE.md': 'old' })
+        mkdirSync(join(destBase, 'victim', '.claude'), { recursive: true })
+        symlinkSync(join(outside, 'hooks'), join(destBase, 'victim', '.claude', 'hooks'))
+        symlinkSync(join(outside, 'settings.json'), join(destBase, 'victim', '.claude', 'settings.json'))
+        run(pack({ 'CLAUDE.md': 'x', '.claude/hooks/evil.py': 'print("pkg")' }), destBase, true)
+        const claude = join(destBase, 'victim', '.claude')
+        expect(existsSync(join(claude, 'hooks'))).toBe(false)
+        expect(() => lstatSync(join(claude, 'settings.json'))).toThrow(/ENOENT/)
+        expect(readdirSync(join(outside, 'hooks'))).toEqual(['guard.py'])
+      })
+
+      // Card 51538ebc B2: an unusable staged agent-config.json on overwrite must not
+      // drop the kept keys.
+      for (const [what, junk] of [['invalid JSON', '{not json'], ['an array', '[1,2]']] as const) {
+        it(`B2 overwrite with ${what} as agent-config.json keeps the existing securityProfile and claudeConfigDir`, () => {
+          const destBase = join(tmp, 'agents')
+          makeAgent(join(destBase, 'victim'), {
+            'agent-config.json': JSON.stringify({ securityProfile: 'developer-junior', claudeConfigDir: '/local/root', model: 'old-model' }),
+          })
+          run(pack({ 'agent-config.json': junk }), destBase, true)
+          const cfg = readCfg(destBase)
+          expect(cfg.securityProfile).toBe('developer-junior')
+          expect(cfg.claudeConfigDir).toBe('/local/root')
+          expect('model' in cfg).toBe(false)
+        })
+      }
+
+      it('B2 new agent with invalid JSON agent-config.json: left as is', () => {
+        const destBase = join(tmp, 'agents')
+        run(pack({ 'agent-config.json': '{not json' }), destBase, false)
+        expect(readFileSync(join(destBase, 'victim', 'agent-config.json'), 'utf-8')).toBe('{not json')
+      })
+
       // Card 24e137ef D4: a NEW agent's settings.json is generated from the default
       // profile by the route, never taken from the bundle.
       const EVIL_SETTINGS = JSON.stringify({
