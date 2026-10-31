@@ -536,12 +536,19 @@ _VERSION_WORD = re.compile(r"v[0-9]+")
 # Applied to what follows "mcp__". ASCII-only case folding, like the JS twin
 # (_NON_MAIL_SERVER_RE <-> NON_MAIL_SERVER_RE in scripts/email-send-gate.mjs).
 _NON_MAIL_SERVER_RE = re.compile(
-    r"(?:slack__(?![\s\S]*mail)|ms365[^_]*__[^\n\r]*(?:chat|channel|activity))",
+    r"(?:slack__(?![\s\S]*mail)|ms365[^_]*__(?![\s\S]*mail)[^\n\r]*(?:chat|channel|activity))",
     re.IGNORECASE | re.ASCII)
 # "create" only drafts a letter when a mail noun comes with it (create_draft,
 # create_message, create_mail, create_reply_draft): create_filter,
 # create_filter_from_template and createGoogleDoc are not drafts (card 6151bb4d).
 _MAIL_CREATE_NOUNS = ("draft", "drafts", "message", "messages", "msg", "mail", "email", "emails")
+# ... or a sending verb (create_reply, createForward, create_compose) or a calendar
+# invite (create_event mails the attendees): those stay draft, as before the
+# narrowing. Twin: MAIL_CREATE_WORDS in scripts/email-send-gate.mjs.
+_MAIL_CREATE_WORDS = frozenset({
+    "reply", "replyall", "forward", "fwd", "send", "compose",
+    "event", "events", "invite", "invites", "invitation", "invitations", "meeting", "meetings",
+})
 _GLUED_READ_VERB = re.compile(r"[a-z0-9]{1,2}(get|delete)")
 
 
@@ -562,9 +569,10 @@ def _mail_verb(word: str):
 
 
 def _creates_mail(noun: str, words, index: int) -> bool:
-    if noun in _MAIL_CREATE_NOUNS:
+    if noun in _MAIL_CREATE_NOUNS or noun == "reply":
         return True
-    return any(w.endswith(n) for w in words[index + 1:] for n in _MAIL_CREATE_NOUNS)
+    return any(w in _MAIL_CREATE_WORDS or any(w.endswith(n) for n in _MAIL_CREATE_NOUNS)
+               for w in words[index + 1:])
 
 
 def _action_words(segment: str):

@@ -1609,7 +1609,7 @@ const CHANNEL_PLUGIN_RE = /^mcp__plugin_(?:telegram|discord|slack)[-_]/
 // in), and the ms365 chat / channel / activity tools (its mail tools stay in).
 // Applied to what follows "mcp__". A chat reply is the owner's channel, not a
 // letter. Twin: _NON_MAIL_SERVER_RE in scripts/hooks/email_extract.py.
-const NON_MAIL_SERVER_RE = /^(?:slack__(?![\s\S]*mail)|ms365[^_]*__[^\n\r]*(?:chat|channel|activity))/i
+const NON_MAIL_SERVER_RE = /^(?:slack__(?![\s\S]*mail)|ms365[^_]*__(?![\s\S]*mail)[^\n\r]*(?:chat|channel|activity))/i
 // "create" only drafts a letter when a mail noun comes with it (create_draft,
 // create_message, create_mail, create_reply_draft): create_filter,
 // create_filter_from_template and createGoogleDoc are not drafts (card 6151bb4d).
@@ -1629,9 +1629,16 @@ function mailVerb(word) {
   return null
 }
 
+// ... or a sending verb (create_reply, createForward, create_compose) or a
+// calendar invite (create_event mails the attendees): those stay draft, as before
+// the narrowing. Twin: _MAIL_CREATE_WORDS in scripts/hooks/email_extract.py.
+const MAIL_CREATE_WORDS = new Set(['reply', 'replyall', 'forward', 'fwd', 'send', 'compose',
+  'event', 'events', 'invite', 'invites', 'invitation', 'invitations', 'meeting', 'meetings'])
+
 function createsMail(entry, words) {
-  if (MAIL_CREATE_NOUNS.includes(entry.noun)) return true
-  return words.slice(entry.index + 1).some((w) => MAIL_CREATE_NOUNS.some((n) => w.endsWith(n)))
+  if (MAIL_CREATE_NOUNS.includes(entry.noun) || entry.noun === 'reply') return true
+  return words.slice(entry.index + 1).some((w) =>
+    MAIL_CREATE_WORDS.has(w) || MAIL_CREATE_NOUNS.some((n) => w.endsWith(n)))
 }
 
 function segmentAction(segment) {
