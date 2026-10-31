@@ -298,6 +298,10 @@ export function stripBundleSymlinks(extractRoot: string): string[] {
         removed.push(rel)
       } else if (st.isDirectory()) {
         stack.push(p)
+      } else if (!st.isFile()) {
+        // Card 068eda52: FIFO, socket, block/char device. Refused before any read
+        // (a readFileSync on a FIFO would block the dashboard).
+        throw new Error(`Invalid bundle: not a regular file at ${shown(rel)}`)
       } else if (st.nlink > 1) {
         throw new Error(`Invalid bundle: hard link at ${shown(rel)}`)
       }

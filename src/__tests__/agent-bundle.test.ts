@@ -992,4 +992,41 @@ describe('bundle import: no symlink anywhere in the extracted tree (card 51538eb
     expect(() => importAllAgentsBundle(bundle, asNew(destBase))).toThrow(/hard link at agents[\\/]x[\\/][ab]\.txt$/)
     expect(readdirSync(destBase)).toEqual([])
   })
+
+  // Card 068eda52: a FIFO entry must be refused in the lstat walk, before any read
+  // (a read on a FIFO would hang). The elapsed check guards against a hang.
+  function fifoBundle(name: string, agentRel: string, files: string[]): Buffer | null {
+    const root = join(tmp, name)
+    makeAgent(join(root, agentRel), { 'CLAUDE.md': 'x' })
+    try {
+      execFileSync('mkfifo', [join(root, agentRel, 'pipe')])
+    } catch {
+      console.warn('mkfifo unavailable, skipping FIFO bundle test')
+      return null
+    }
+    writeFileSync(join(root, 'manifest.json'), JSON.stringify(agentRel === 'agent' ? SINGLE_MANIFEST : FLEET_MANIFEST))
+    return tarUp(root, files)
+  }
+
+  it('(068eda52) single bundle containing a FIFO is refused without hanging', () => {
+    const bundle = fifoBundle('pack-fifo-single', 'agent', ['manifest.json', 'agent'])
+    if (!bundle) return
+    const destBase = join(tmp, 'dest')
+    mkdirSync(destBase, { recursive: true })
+    const t0 = Date.now()
+    expect(() => importAgentBundle(bundle, asNew(destBase))).toThrow(/not a regular file at agent[\\/]pipe$/)
+    expect(Date.now() - t0).toBeLessThan(10000)
+    expect(readdirSync(destBase)).toEqual([])
+  })
+
+  it('(068eda52) fleet bundle containing a FIFO is refused without hanging', () => {
+    const bundle = fifoBundle('pack-fifo-fleet', 'agents/x', ['manifest.json', 'agents'])
+    if (!bundle) return
+    const destBase = join(tmp, 'dest')
+    mkdirSync(destBase, { recursive: true })
+    const t0 = Date.now()
+    expect(() => importAllAgentsBundle(bundle, asNew(destBase))).toThrow(/not a regular file at agents[\\/]x[\\/]pipe$/)
+    expect(Date.now() - t0).toBeLessThan(10000)
+    expect(readdirSync(destBase)).toEqual([])
+  })
 })
