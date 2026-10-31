@@ -70,7 +70,25 @@
       "mcp__workmail__create_reply",
       "mcp__harder-mail__create_reply",
       "mcp__gmail__create_event",
-      "mcp__google-calendar__create_event"
+      "mcp__google-calendar__create_event",
+      "mcp__outlook__new_email",
+      "mcp__exchange__new_email",
+      "mcp__ms365__new_email",
+      "mcp__imap__new_email",
+      "mcp__smtp__new_email",
+      "mcp__protonmail__new_email",
+      "mcp__fastmail__new_email",
+      "mcp__workmail__new_email",
+      "mcp__harder-mail__new_email",
+      "mcp__unknownmail__new_email",
+      "mcp__outlook__newEmail",
+      "mcp__outlook__new-mail",
+      "mcp__ms365__new-email",
+      "mcp__imap__newMail",
+      "mcp__exchange__new_message",
+      "mcp__fastmail__new_draft",
+      "mcp__smtp__newDraft",
+      "mcp__workmail__new-message"
     ]
   },
   "gate_only": {

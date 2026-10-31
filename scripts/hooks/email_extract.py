@@ -586,6 +586,16 @@ def _action_words(segment: str):
     return words
 
 
+def _new_mail(words) -> bool:
+    """"new" + a mail noun (new_email, newEmail, new-mail, new_draft, newmail) starts a
+    letter: a draft, ledger-checked. "new" alone, new_folder and new_label are not mail.
+    Only ADDS, after the verb rules found nothing (card 6151bb4d). Twin: newMail in
+    scripts/email-send-gate.mjs."""
+    return any((w == "new" and i + 1 < len(words) and words[i + 1] in _MAIL_CREATE_NOUNS)
+               or (w.startswith("new") and w[3:] in _MAIL_CREATE_NOUNS)
+               for i, w in enumerate(words))
+
+
 def _segment_action(segment: str):
     words = _action_words(segment)
     entries = [(v, i) for i, v in ((i, _mail_verb(w)) for i, w in enumerate(words)) if v]
@@ -596,9 +606,9 @@ def _segment_action(segment: str):
     if entries and entries[0][0][0] in _MAIL_DRAFT_VERBS:
         (verb, noun), index = entries[0]
         if verb == "create" and not _creates_mail(noun, words, index):
-            return None
+            return "draft" if _new_mail(words) else None
         return "draft"
-    return None
+    return "draft" if _new_mail(words) else None
 
 
 def is_ms365_tool(tool_name) -> bool:
