@@ -200,6 +200,12 @@ describe('a non-strict agent keeps the curl recipes', () => {
     expect(file).not.toContain('marveen-api.sh')
     expect(file).not.toContain('strict-api')
     for (const part of file.split('<!-- BEGIN GENERATED: ').slice(1)) {
+      // Card f137f980: the message-close block closes through the signing helper, not a raw curl.
+      if (part.startsWith('message-close ')) {
+        expect(part, part.slice(0, 60)).toContain('scripts/agent-msg-close.sh')
+        expect(part, part.slice(0, 60)).not.toContain('Authorization: Bearer $(cat ')
+        continue
+      }
       expect(part, part.slice(0, 60)).toContain('Authorization: Bearer $(cat ')
     }
   })
