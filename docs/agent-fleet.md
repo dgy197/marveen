@@ -86,6 +86,24 @@ A mező gép-specifikus: bundle-importkor eltávolításra kerül (lásd lent).
 
 ---
 
+### Tokencsere (a közös flotta-token cseréje után)
+
+A flotta közös tokenjének cseréje után a már futó ügynökök még a régi tokennel élnek, amíg újra nem indulnak. A rendszer így kezeli (kártya acdb8045):
+
+- **Worker-ügynökök**: maguk indulnak újra, egyszer tokencserénként, a saját zárjukon belül. A heartbeat-összefoglalóba egy sor kerül (ügynök, idő, ok: tokencsere). Azonnali Telegram nincs; ha ugyanaz az ügynök 1 órán belül kétszer indul újra, üzenet megy a `hazmester`-nek.
+- **Al-ügynökök** (nem worker, nem main): nem indulnak újra maguktól. A dashboard ügynök-kártyáján "régi token" (vagy "token ismeretlen") jelvény jelenik meg, és a rendszerállapotban a "Flotta-token" sor mutatja az összesítést. Az ügynökönkénti újraindító gomb változatlan.
+- **Main ügynök**: érintetlen. Az újraindításáról Gyuri dönt.
+- **Mindet sorban**: ha legalább egy ügynök régi tokennel fut, az Ügynökök oldalon megjelenik a "Mindet sorban újraindítani (régi token)" gomb. Csak bejelentkezett tulajdonos (session) indíthatja; a megosztott Bearer-token és az eszközkulcs 403-at kap. A sorban-újraindítás ügynökönként szünettel megy, ezért N x néhány másodpercig tarthat; közben a gomb le van tiltva, a végén ügynökönként látszik az eredmény (újraindítva, kihagyva, sikertelen). A main és a szándékosan leállított ügynök kimarad.
+
+**Ellenőrzés a csere után**
+1. `GET /api/agents/<név>/status` válaszában a `fleetToken` mező: `current`, `stale`, `unknown`, `current-estimated` (nincs pecsét, de a session a tokenfájl utolsó változása után jött létre) vagy `n/a`.
+2. A rendszerállapot "Flotta-token" sora és az Ügynökök oldal jelvényei: a sweep után nem marad "régi token".
+3. A tokenek értéke sehol nem látszik; csak az ujjlenyomat és az ügynök neve kerülhet a naplóba és az API-ra. Kézi `.credentials.json` elhelyezése tilos, a javítás mindig a token-forrás.
+
+**Visszaállítás**: a `fix/acdb8045-token-refresh` ág visszavonása (revert) és a szolgáltatás újraindítása a gazda jóváhagyásával. Állandó állapotot csak a `store/fleet-token-launch.json` őriz (ügynökönkénti indítási pecsét); ez az operátor által törölhető, ilyenkor az ügynökök `unknown` / `current-estimated` állapotba kerülnek, és a következő indításukkor új pecsétet kapnak.
+
+---
+
 ## 🌐 Távoli (remote) ügynökök
 
 Marveen egy always-on orchestrator gépen fut. Egy ügynök beállítható úgy, hogy a **tmux-session-je egy távoli gépen** (pl. egy fejlesztői gépen) fusson egy ott megadott munkakönyvtárban, miközben Marveen az orchestratorról indítja, állítja le, kérdezi le és üzen neki -- mindezt ssh-n keresztül.
