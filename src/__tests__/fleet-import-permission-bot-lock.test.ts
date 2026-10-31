@@ -84,7 +84,11 @@ function snapshot(): Record<string, string> {
   return out
 }
 
-const row = (id: unknown) => ({ id, label: `label-${String(id)}`, encrypted: 'x', createdAt: 't', updatedAt: 't' })
+// Never throws, whatever `id` is (String() throws on a hostile toString).
+const labelOf = (id: unknown): string =>
+  typeof id === 'string' || typeof id === 'number' ? String(id) : `<${typeof id}>`
+
+const row = (id: unknown) => ({ id, label: `label-${labelOf(id)}`, encrypted: 'x', createdAt: 't', updatedAt: 't' })
 
 // A bundle that would write in EVERY phase if it were accepted: an agent dir, a
 // global skill, a scheduled task, a memory row, a kanban card, the vault files.
