@@ -159,9 +159,11 @@ describe('manage_email operations: python and JS agree on the shared block', () 
 describe('manage_email operations: the sub-agent gate follows the block', () => {
   const ME = 'mcp__google-workspace__manage_email'
   OPS.forEach((r) => {
-    it(`${JSON.stringify(r.op)}: ${r.outbound ? 'draft-required' : 'passes'}`, () => {
+    // card d8d3441e: the closed rule (outbound OR unreadable) decides, same row as the twins
+    const closed = r.closed ?? r.outbound
+    it(`${JSON.stringify(r.op)}: ${closed ? 'draft-required' : 'passes'}`, () => {
       const v = gateDecision(ME, { operation: r.op, to: ['a@b.hu'], body: 'Kedves Ugyfelunk!' }, () => true)
-      expect(v).toEqual(r.outbound ? { deny: true, kind: 'draft-required' } : { deny: false })
+      expect(v).toEqual(closed ? { deny: true, kind: 'draft-required' } : { deny: false })
     })
   })
 
@@ -176,12 +178,13 @@ describe('manage_email operations: the sub-agent gate follows the block', () => 
     }
   })
 
-  it('a missing or non-string operation keeps the pre-r5 reading (String(), not outbound unless it spells one)', () => {
-    for (const v of [undefined, null, 123, {}, true]) {
-      expect(gateDecision(ME, { operation: v, to: ['a@b.hu'] }, () => true), String(v)).toEqual({ deny: false })
+  it('a missing or non-string operation is closed: address check + draft rule (card d8d3441e)', () => {
+    for (const v of [undefined, null, 123, {}, true, ['reply_all'], ['send']]) {
+      expect(gateDecision(ME, { operation: v, to: ['a@b.hu'] }, () => true), String(v))
+        .toEqual({ deny: true, kind: 'draft-required' })
+      expect(gateDecision(ME, { operation: v, draft: true, to: ['a@b.hu'] }, () => false).kind, String(v))
+        .toBe('unverified-recipient')
     }
-    // String(['reply_all']) is 'reply_all': an array holding one outbound name was outbound before, too.
-    expect(gateDecision(ME, { operation: ['reply_all'], to: ['a@b.hu'] }, () => true).kind).toBe('draft-required')
   })
 })
 

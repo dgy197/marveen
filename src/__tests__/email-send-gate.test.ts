@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { gateDecision, buildUnverifiedRecipientMsg, buildUnparseableRecipientMsg, readBrandEnv, extractAddress, threadReplyRequest } from '../../scripts/email-send-gate.mjs'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { isValidSource, normalizeAddress, splitAddresses, parseAddresses, loadLedger, inspectLedger, isVerifiedIn } from '../../scripts/recipient-ledger.mjs'
-import { injectEmailSendGate, agentGetsEmailGate } from '../web/agent-scaffold.js'
+import { injectEmailSendGate, agentGetsEmailGate, EMAIL_GATE_MATCHER } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
 
 // The PreToolUse gate decision: which tool calls count as outbound email-send.
@@ -70,7 +70,7 @@ describe('gateDecision', () => {
     it('fails safe on a missing or non-boolean draft flag', () => {
       expect(call({ operation: 'send', draft: 'yes' }).deny).toBe(true)
       expect(call({ operation: 'send', draft: 1 }).deny).toBe(true)
-      expect(call({}).deny).toBe(false) // no operation at all is not send-shaped
+      expect(call({}).deny).toBe(true) // no operation at all is unreadable, so closed (card d8d3441e)
       // the string 'true' survives a JSON round-trip that stringified the flag
       expect(call({ operation: 'send', draft: 'true' }).deny).toBe(false)
     })
@@ -369,16 +369,7 @@ describe('injectEmailSendGate', () => {
     injectEmailSendGate(s)
     const hooks = (s.hooks as Record<string, unknown>).PreToolUse as Array<Record<string, unknown>>
     expect(hooks).toHaveLength(1)
-    expect(hooks[0].matcher).toBe('Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail.*__.*|.*draft_email.*'
-      + '|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*'
-      + '|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*'
-      + '|.*send[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]draft.*|.*send[-_]draft[-_]message.*'
-      + '|.*reply[-_]mail[-_]message.*|.*reply[-_]all[-_]mail[-_]message.*|.*forward[-_]mail[-_]message.*'
-      + '|.*reply[-_]shared[-_]mailbox[-_]mail.*|.*reply[-_]all[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]shared[-_]mailbox[-_]mail.*'
-      + '|.*forward[-_]calendar[-_]event.*|.*reply[-_]to[-_]group[-_]thread.*|.*draft[-_]email.*'
-      + '|.*create[-_]shared[-_]mailbox[-_]draft.*|.*create[-_]reply[-_]draft.*|.*create[-_]reply[-_]all[-_]draft.*|.*create[-_]forward[-_]draft.*'
-      + '|.*create[-_]shared[-_]mailbox[-_]reply[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]all[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]forward[-_]draft.*'
-      + '|.*update[-_]mail[-_]message.*|.*update[-_]shared[-_]mailbox[-_]message.*')
+    expect(hooks[0].matcher).toBe(EMAIL_GATE_MATCHER)
     const inner = (hooks[0].hooks as Array<{ command: string }>)[0]
     expect(inner.command).toContain('email-send-gate.mjs')
   })
