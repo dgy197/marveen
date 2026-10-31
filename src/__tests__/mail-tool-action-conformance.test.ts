@@ -242,8 +242,13 @@ describe('sub-agent hard gate (gateDecision) on every case', () => {
     expect(verdict).toEqual({ deny: true, kind: 'unverified-recipient', addresses: ['nincs@x.hu'] })
   })
 
-  it('a draft-path call with no recipient (a label) is not blocked', () => {
+  it('a label / filter creation (not a draft since card 6151bb4d) with no recipient is not blocked', () => {
     expect(gateDecision('mcp__gmail__create_label', { name: 'Ugyfel' }, () => false)).toEqual({ deny: false })
+    expect(gateDecision('mcp__gmail__create_filter', { criteria: { from: 'x@y.hu' } }, () => false)).toEqual({ deny: false })
+    expect(mailToolAction('mcp__gmail__create_label')).toBe(null)
+    expect(mailToolAction('mcp__gmail__create_filter')).toBe(null)
+    // the draft path itself stays gated
+    expect(gateDecision('mcp__gmail__create_draft', { to: ['nincs@x.hu'] }, () => false).deny).toBe(true)
   })
 })
 

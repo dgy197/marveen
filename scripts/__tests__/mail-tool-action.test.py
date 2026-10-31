@@ -211,12 +211,16 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
             check(f"copy gate em-dash probe: {tool} {'audited' if want else 'not audited'} (exit {want})",
                   code == want, f"exit={code} err={err[:160]!r}")
 
-    # A draft verb also names label, filter and settings calls (spec G2: create/update/save). They
-    # carry no text of ours: no approval, no copy block, as before N1b.
-    for tool, ti in (("mcp__gmail__create_label", {"name": "Ügyfél — fontos"}),
-                     ("mcp__gmail-v2__v2_update_label", {"id": "L1", "name": "Ajánlat"}),
-                     ("mcp__gmail__create_filter", {"criteria": {"from": "x@y.hu"}, "action": {"addLabelIds": ["L1"]}})):
-        check(f"{tool} is on the draft path", ee.mail_tool_action(tool) == "draft")
+    # A draft verb also names label, filter and settings calls (spec G2: update/save). They
+    # carry no text of ours: no approval, no copy block, as before N1b. Since card 6151bb4d
+    # create_label / create_filter are not drafts at all (create needs a mail noun); update_label
+    # still rides the draft path.
+    for tool, ti, draft in (("mcp__gmail__create_label", {"name": "Ügyfél — fontos"}, False),
+                            ("mcp__gmail-v2__v2_update_label", {"id": "L1", "name": "Ajánlat"}, True),
+                            ("mcp__gmail__create_filter", {"criteria": {"from": "x@y.hu"}, "action": {"addLabelIds": ["L1"]}}, False)):
+        got = ee.mail_tool_action(tool)
+        check(f"{tool} is {'on the draft path' if draft else 'not a draft (card 6151bb4d)'}",
+              got == ("draft" if draft else None), f"got {got!r}")
         code, _, err = run(GATE, s1, tool, ti)
         check(f"approval gate L1: {tool} passes", code == 0, f"exit={code} err={err[:160]!r}")
         code, _, err = run(COPY, s1, tool, ti)
