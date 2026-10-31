@@ -304,7 +304,10 @@ const NAME_CASES = JSON.parse(
   bases: Record<string, { kind: Kind; needs_gmail?: boolean }>
   matcher_must_not_fire: string[]
   cases: Array<{ name: string; expected: Kind; matcher_exempt?: string }>
+  // classifier-null names the sub-agent gate still denies (mailToolAction), card 6151bb4d
+  gate_only: { kind: string; names: string[] }
 }
+const GATE_ONLY = new Set(NAME_CASES.gate_only.names)
 
 function expectedFor(server: string, prefix: string, base: string): Kind {
   const b = NAME_CASES.bases[base]
@@ -515,10 +518,16 @@ describe('mail-tool names are classified by suffix, identically in Python and JS
 
   it('sub-agent gate: every prefixed send / send_draft is denied, drafts are ledger-checked, reads pass', () => {
     const verified = (a: string) => a === 'known@example.com'
+    // gate_only is an exception list, not a loophole: each entry is a real fixture name with a null kind
+    const nullNames = new Set(all.filter((c) => c.expected === null).map((c) => c.name))
+    expect(NAME_CASES.gate_only.names.filter((n) => !nullNames.has(n))).toEqual([])
     for (const c of all) {
       if (c.name === 'Bash') continue
       const d = gateDecision(c.name, { to: ['invented@example.com'], operation: 'send' }, verified)
-      expect(d.deny, c.name).toBe(c.expected !== null)
+      // classifier-null names listed in gate_only are denied fail-closed by mailToolAction
+      // (card 6151bb4d: bare verb on a mail server); every other null name passes.
+      expect(d.deny, c.name).toBe(c.expected !== null || GATE_ONLY.has(c.name))
+      if (c.expected === null && GATE_ONLY.has(c.name)) expect(d.kind, c.name).toBe(NAME_CASES.gate_only.kind)
       if (c.expected === 'draft') {
         expect(d.kind, c.name).toBe('unverified-recipient')
         expect(gateDecision(c.name, { to: ['known@example.com'] }, verified).deny, c.name).toBe(false)
