@@ -29,6 +29,7 @@ afterEach(() => {
   agentKeyFsSeam.uid = undefined
   agentKeyFsSeam.beforeRename = undefined
   agentKeyFsSeam.afterRename = undefined
+  agentKeyFsSeam.afterVerify = undefined
   rmSync(root, { recursive: true, force: true })
 })
 
@@ -95,6 +96,15 @@ describe('Q3c: the final key file is re-checked', () => {
     agentKeyFsSeam.afterRename = () => linkSync(join(keysDir, 'iroda'), join(root, 'stolen-link'))
     expect(() => provisionAgentSendKey('iroda', keysDir, root)).toThrow(/hard links/)
     expect(existsSync(join(keysDir, 'iroda'))).toBe(false)
+    expect(keyRows()).toBe(0)
+  })
+
+  it('the dir is swapped AFTER the final key-file verification -> refused, no hash', () => {
+    agentKeyFsSeam.afterVerify = () => {
+      renameSync(keysDir, join(storeDir, 'moved-away'))
+      mkdirSync(keysDir, { mode: 0o700 })
+    }
+    expect(() => provisionAgentSendKey('iroda', keysDir, root)).toThrow(/swapped/)
     expect(keyRows()).toBe(0)
   })
 

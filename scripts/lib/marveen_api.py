@@ -153,8 +153,8 @@ def load_key_file(path):
     check and the read see the same inode. It must be a regular file owned by the current uid, mode
     exactly 0600 (no group/other bit, nothing extra), at most 256 bytes. Absent or unreadable stays
     quiet (today's behaviour); a file that exists but fails a check prints a one-line warning that
-    carries no path and no content. MARVEEN_AGENT_KEY_EXPECT_UID is a TEST SEAM for the foreign-uid
-    case (a test cannot chown without root); it only changes which uid is expected.
+    carries no path and no content. A file with more than one hard link is refused too. No environment
+    variable can change the uid check; tests patch os.geteuid from their own sitecustomize.
     """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -167,10 +167,11 @@ def load_key_file(path):
         if not stat.S_ISREG(st.st_mode):
             _key_file_warn('not a regular file')
             return None
-        expect = os.environ.get('MARVEEN_AGENT_KEY_EXPECT_UID')
-        expect_uid = int(expect) if expect and expect.isdigit() else os.geteuid()
-        if st.st_uid != expect_uid:
+        if st.st_uid != os.geteuid():
             _key_file_warn('owner')
+            return None
+        if st.st_nlink != 1:
+            _key_file_warn('extra hard links')
             return None
         if (st.st_mode & 0o7777) != 0o600:
             _key_file_warn('mode is not 0600')
