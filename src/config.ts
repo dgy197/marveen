@@ -502,6 +502,12 @@ export const AGENT_API_ORIGIN = cfg('AGENT_API_ORIGIN') ?? ''
 // Resolved by fleet-venv.ts, the same function channels.sh reaches through
 // scripts/fleet-venv-prefix.mjs, so the two launch paths cannot disagree.
 export const FLEET_PYTHON_VENV = resolveFleetVenvDir(PROJECT_ROOT, homedir(), process.env.CLAUDECLAW_ENV_DIR ?? PROJECT_ROOT)
+// "Ivek" view (card 46e935d6): the two 8T folders the read-only view lists. Fixed
+// constants, deliberately NOT a setting and not env-overridable: a root that one
+// shared dashboard token could re-point would widen the set of readable files.
+// src/web/ivek-sources.ts fences every read below these roots.
+export const IVEK_EZERMESTER_ROOT = '/Volumes/8T/10_LOCAL/Brainy/_ezermester'
+export const IVEK_DEPLOY_ROOT = '/Volumes/8T/10_LOCAL/Brainy/_brainy-deploy'
 // Extra browser origins allowed to make state-changing dashboard requests
 // (CORS + CSRF allowlist), comma-separated, e.g. for VPN/LAN addresses that
 // aren't covered by WEB_HOST or DASHBOARD_PUBLIC_URL. Empty by default so
