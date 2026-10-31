@@ -196,3 +196,56 @@ export function fleetTokenStateFor(
 ): FleetTokenState {
   return fleetTokenState(launchFingerprint(key, registryPath, io), fingerprintFleetToken(tokenPath, io))
 }
+
+export type LaunchStampOutcome = 'stamped' | 'cleared' | 'skipped-main' | 'failed'
+
+export interface LaunchStampOpts {
+  isMain?: boolean
+  nowMs?: number
+  tokenPath?: string
+  registryPath?: string
+  io?: FleetTokenIO
+}
+
+/**
+ * K3: record (or clear) the launch stamp of sub-agent `name` from the launcher's
+ * own `oauthTokenEnv` string -- the single place the launcher decides what the
+ * session exports. The stamp is written only when that string reads the FLEET
+ * token file (`$(cat '<fleet file>')`); an own-token-file, BYO/custom, own_team
+ * or token-less launch carries no fleet token, so any older stamp is dropped. The
+ * main agent is never stamped (it comes up via channels.sh). Never throws, and
+ * the outcome is a fixed label: no fingerprint leaves this function.
+ */
+export function stampAgentLaunch(name: string, oauthTokenEnv: string, opts: LaunchStampOpts = {}): LaunchStampOutcome {
+  if (opts.isMain) return 'skipped-main'
+  const tokenPath = opts.tokenPath ?? fleetTokenFilePath()
+  const registryPath = opts.registryPath ?? launchRegistryPath()
+  const io = opts.io ?? realFleetTokenIO
+  const key = `agent:${name}`
+  const exportsFleet = oauthTokenEnv.includes(`$(cat '${tokenPath}')`)
+  const fp = exportsFleet ? fingerprintFleetToken(tokenPath, io) : null
+  if (!fp) {
+    // Not a fleet-token launch, or the file cannot be fingerprinted: no stamp
+    // (state stays `unknown`, never a false `stale`), and drop an older one.
+    return clearLaunch(key, registryPath, io).ok ? 'cleared' : 'failed'
+  }
+  return recordLaunch(key, fp, opts.nowMs ?? Date.now(), registryPath, io).ok ? 'stamped' : 'failed'
+}
+
+/**
+ * Stamp, THEN run `launch` (the `tmux new-session`). The order is the contract:
+ * a token swap between the stamp and the pane's `$(cat)` can then only give a
+ * false `stale`, never a stale session shown as current. A failed stamp does not
+ * block the launch (a session up beats a session down). `onStamp` gets the
+ * outcome label only.
+ */
+export function launchWithStamp<T>(
+  name: string,
+  oauthTokenEnv: string,
+  launch: () => T,
+  opts: LaunchStampOpts & { onStamp?: (outcome: LaunchStampOutcome) => void } = {},
+): T {
+  const outcome = stampAgentLaunch(name, oauthTokenEnv, opts)
+  opts.onStamp?.(outcome)
+  return launch()
+}
