@@ -11,7 +11,7 @@ import {
   lstatSync,
   renameSync,
 } from 'node:fs'
-import { join, basename, dirname, sep } from 'node:path'
+import { join, basename, dirname, relative, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { agentDir } from './agent-config.js'
@@ -301,6 +301,28 @@ function hasSymlinkAncestor(root: string, rel: string): boolean {
   return false
 }
 
+// Card 24e137ef BD1: import-side copy of one allowlisted entry. A bundle must never
+// land a symlink (a `memory -> /etc` link or a link inside .claude/skills would let
+// a later write through the agent dir escape it), so every source path is lstat'ed
+// and any symlink -- the entry itself or anything inside it -- is skipped. Skipped
+// paths (relative to the staged agent dir) are pushed onto <skipped>. The export
+// path keeps copyEntryInto unchanged.
+function copyEntryIntoNoSymlinks(stagedRoot: string, dstRoot: string, rel: string, skipped: string[]): void {
+  const src = join(stagedRoot, rel)
+  try { lstatSync(src) } catch { return }
+  const dst = join(dstRoot, rel)
+  mkdirSync(join(dst, '..'), { recursive: true })
+  cpSync(src, dst, {
+    recursive: true,
+    filter: (path: string): boolean => {
+      let isLink: boolean
+      try { isLink = lstatSync(path).isSymbolicLink() } catch { return false }
+      if (isLink) skipped.push(`${relative(stagedRoot, path)} (symlink)`)
+      return !isLink
+    },
+  })
+}
+
 // Top-level-relative names of everything in <stagedAgentDir> that is not on the
 // <allowed> list. Directories that only CONTAIN allowed entries (.claude,
 // .claude/channels, ...) are walked, anything else is reported whole.
@@ -367,16 +389,17 @@ function installStagedAgent(stagedAgentDir: string, dest: string, exists: boolea
   const allowed = listPortableEntries(stagedAgentDir, true)
     .filter(rel => !isBundleNeverWrites(rel) && !hasSymlinkAncestor(stagedAgentDir, rel))
   const dropped = listDroppedEntries(stagedAgentDir, allowed)
+  const skippedLinks: string[] = []
   mkdirSync(dirname(dest), { recursive: true })
   const restore = exists ? setAsideLocalState(dest) : null
   try {
     if (exists) rmSync(dest, { recursive: true, force: true })
     mkdirSync(dest, { recursive: true })
-    for (const rel of allowed) copyEntryInto(stagedAgentDir, dest, rel)
+    for (const rel of allowed) copyEntryIntoNoSymlinks(stagedAgentDir, dest, rel, skippedLinks)
   } finally {
     if (restore) restore()
   }
-  return dropped
+  return [...dropped, ...skippedLinks].sort()
 }
 
 // Card 24e137ef D4: a bundle does not choose a NEW agent's settings.json (its
