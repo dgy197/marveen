@@ -128,6 +128,8 @@ function registrationCorpus(): string {
 // every agent. Keep every reason concrete and sourced (docstring, docs, PR):
 // a "misc" entry here would re-open exactly the blind spot this split closes.
 const CHECKOUT_ONLY: Record<string, string> = {
+  'egress-gate-shadow.mjs':
+    'main-agent-only shadow egress logger (card 59d87635): sub-agents already run the enforcing egress gate; must not be seeded',
   'email-approval-gate.py':
     'level-aware email gate for the MAIN agent (EMAILKAPU901 PR2, #1149): its docstring scopes it to sessions rooted at PROJECT_ROOT, and sub-agents keep their unconditional hard-deny (email-send-gate.mjs), behind which this gate would be a no-op',
   'inbox-drain.py':
