@@ -22,7 +22,7 @@
 //
 // --main-scope behaves as in the enforcing hook: only a session on a config dir of its own is judged.
 
-import { readFileSync, openSync, writeSync, closeSync, lstatSync, renameSync, mkdirSync, realpathSync, constants } from 'node:fs'
+import { readFileSync, openSync, writeSync, closeSync, lstatSync, renameSync, unlinkSync, mkdirSync, realpathSync, constants } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -71,16 +71,52 @@ export function shadowRecord(payload, deps = {}) {
   }
 }
 
-export function appendShadowLog(record, path = SHADOW_LOG) {
+// Rotation lock (card 362dd786): two concurrent hooks at the cap boundary could both see "too big", and the
+// second rename would move the FRESH small file over ".1", losing up to ROTATE_AT bytes. The lock is a short
+// O_EXCL file next to the log; a lock older than LOCK_STALE_MS (by mtime) is taken over.
+export const LOCK_STALE_MS = 10_000
+
+function acquireRotLock(lock) {
+  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try { closeSync(openSync(lock, flags, 0o600)); return true } catch (e) {
+      if (e?.code !== 'EEXIST') return false
+      try {
+        if (Date.now() - lstatSync(lock).mtimeMs <= LOCK_STALE_MS) return false
+        unlinkSync(lock)
+      } catch { return false }
+    }
+  }
+  return false
+}
+
+// Rotate only if, under the lock, the live log is still the same inode and still over the cap.
+// Any failure or contention skips the rotation; the caller just appends. `seam.afterLock` is for tests only.
+function rotateIfStillBig(path, first, lineBytes, seam) {
+  const lock = `${path}.rotlock`
+  let locked = false
+  try {
+    locked = acquireRotLock(lock)
+    if (!locked) return
+    seam?.afterLock?.()
+    const now = lstatSync(path)
+    if (now.ino !== first.ino || now.size + lineBytes <= ROTATE_AT) return
+    renameSync(path, `${path}.1`)
+  } catch { /* keep appending rather than lose the line */ } finally {
+    if (locked) { try { unlinkSync(lock) } catch { /* ignore */ } }
+  }
+}
+
+export function appendShadowLog(record, path = SHADOW_LOG, seam = undefined) {
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
     const line = JSON.stringify(record) + '\n'
     // Rotate BEFORE opening, and when this line would cross the cap, so the live file never exceeds it.
     // (Renaming after the open would send the line into the renamed file: the fd follows the inode.)
-    let size = 0
-    try { size = lstatSync(path).size } catch { /* no log yet */ }
-    if (size > 0 && size + Buffer.byteLength(line) > ROTATE_AT) {
-      try { renameSync(path, `${path}.1`) } catch { /* keep appending to the big file rather than lose the line */ }
+    let first = null
+    try { first = lstatSync(path) } catch { /* no log yet */ }
+    if (first && first.size > 0 && first.size + Buffer.byteLength(line) > ROTATE_AT) {
+      rotateIfStillBig(path, first, Buffer.byteLength(line), seam)
     }
     // O_NOFOLLOW: a planted symlink at the log path is refused (the write is then simply lost).
     const fd = openSync(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
