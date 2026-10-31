@@ -5,6 +5,7 @@ import {
   markMessageDone, closeOpenMessage, getAgentMessage,
   closeOtelSpan,
   getPendingBacklogByAgent,
+  getSenderAuthReport,
   countNewerMessagesForRows,
   getHeartbeatKanbanLive,
   COMPLETION_REPORT_PREFIX,
@@ -645,6 +646,24 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   // each with its count + most-recent message, recency computed per-peer.
   if (path === '/api/messages/threads' && method === 'GET') {
     json(res, getAgentConversationThreads())
+    return true
+  }
+
+  // Card 0d7e2c04 (N5): sender_auth shadow report, read-only. Counts per (from, sender_auth) and last-seen time;
+  // never content, keys or hashes. The global gate already authenticates every /api/* call; a request that
+  // reaches here without a principal is refused anyway (defence in depth).
+  if (path === '/api/messages/sender-auth-report' && method === 'GET') {
+    if (!ctx.auth) {
+      json(res, { error: 'authentication required' }, 401)
+      return true
+    }
+    const raw = url.searchParams.get('days')
+    const days = raw === null ? 7 : Number(raw)
+    if (!Number.isInteger(days) || days < 1 || days > 90) {
+      json(res, { error: 'days must be an integer between 1 and 90' }, 400)
+      return true
+    }
+    json(res, { mode: MESSAGE_SENDER_AUTH, days, rows: getSenderAuthReport(days) })
     return true
   }
 
