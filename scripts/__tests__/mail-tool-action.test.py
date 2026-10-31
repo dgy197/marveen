@@ -188,9 +188,73 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     check("walk: over-long JSON-looking string is forwarding", ee._has_forward_key({"b": "{" + "a" * 100001}) is True)
     check("walk: parse that blows the stack is forwarding", ee._has_forward_key({"b": "[" * 200000 + "]" * 200000}) is True)
     check("mail_rule_forward: name only is False", ee.mail_rule_forward("mcp__gmail__create_rule") is False)
-    check("mail_rule_forward: create_label with forwardTo is False (no rule noun)", ee.mail_rule_forward("mcp__gmail__create_label", {"forwardTo": "x"}) is False)
+    check("mail_rule_forward: create_label with forwardTo is True (name-independent, card 3d6e5181 N3; was False under the closed list)", ee.mail_rule_forward("mcp__gmail__create_label", {"forwardTo": "x"}) is True)
+    check("mail_rule_forward: create_label with a clean input is False", ee.mail_rule_forward("mcp__gmail__create_label", {"name": "X"}) is False)
     check("mail_rule_forward: slack server is no mail", ee.mail_rule_forward("mcp__slack__create_rule", {"forwardTo": "x"}) is False)
     check("the case list holds every G7 class", {c["expected"] for c in CASES} == {"send", "draft", "nonsend"})
+
+    # --- 1b. card 3d6e5181 N3: the name-independent forwarding rule ------------
+    print("name-independent forwarding rule")
+    NI = VECTORS["name_independent"]
+    bad_fwd = bad_reader = bad_clean = 0
+    for s in NI["servers"]:
+        for nm in NI["forward_names"] + NI["disguised_names"]:
+            for f in NI["forward_shapes"]:
+                t = f"mcp__{s}__{nm}"
+                if ee.mail_tool_action(t, f["input"]) != "send" or ee.mail_rule_forward(t, f["input"]) is not True:
+                    bad_fwd += 1
+        for nm in NI["reader_names"]:
+            for f in NI["reader_inputs"]:
+                t = f"mcp__{s}__{nm}"
+                if ee.mail_tool_action(t, f["input"]) is not None or ee.mail_rule_forward(t, f["input"]) is not False:
+                    bad_reader += 1
+    for c in NI["clean"]:
+        if ee.mail_tool_action(c["tool"], c["input"]) != c["expected"] or ee.mail_rule_forward(c["tool"], c["input"]) is not False:
+            bad_clean += 1
+            print("   clean case differs:", c["tool"], c["note"])
+    n_fwd = len(NI["servers"]) * (len(NI["forward_names"]) + len(NI["disguised_names"])) * len(NI["forward_shapes"])
+    check(f"{n_fwd} forward calls (servers x names x shapes) are a send via mail_rule_forward", bad_fwd == 0, f"{bad_fwd} differ")
+    check("readers stay None whatever the input", bad_reader == 0, f"{bad_reader} differ")
+    check("clean non-reader calls and prose drafts keep their class", bad_clean == 0, f"{bad_clean} differ")
+    check("D-B2: update_auto_forwarding with a forwardTo is a send on outlook, ms365, claude_ai_Outlook",
+          all(ee.mail_tool_action(f"mcp__{s}__update_auto_forwarding", {"forwardTo": "x"}) == "send" for s in ("outlook", "ms365", "claude_ai_Outlook")))
+    check("6151bb4d rule keeps counting a bare address for a filter name", ee.mail_tool_action("mcp__gmail__create_filter", {"criteria": {"from": "x@y.hu"}}) == "send")
+    check("a bare address does NOT count for a name-independent tool (Q4)", ee.mail_tool_action("mcp__imap__move_message", {"messageId": "<abc@host>"}) is None)
+    check("channel plugin and ms365 chat are out of scope", ee.mail_tool_action("mcp__plugin_telegram_telegram__edit_message", {"forwardTo": "x"}) is None
+          and ee.mail_tool_action("mcp__ms365__send-chat-message", {"forwardTo": "x"}) is None)
+    check("non-object input: a non-reader is a send (fail-closed), a reader stays None",
+          ee.mail_tool_action("mcp__outlook__manage_rules", "x") == "send" and ee.mail_tool_action("mcp__outlook__get_rules", "x") is None)
+    reads = lambda n: ee._is_read_action(n.split("__"))
+    check("_is_read_action: readers", all(reads(n) for n in ("get_rules", "list_rules", "getrules", "search_emails", "v2_get_settings", "read_email",
+          "listEmails", "export_rules", "watch_mailbox", "search_address_book", "describe_filter", "fetch_message")))
+    check("_is_read_action: writes, disguised writes, unknown verbs", not any(reads(n) for n in ("get_or_create_rule", "list_and_forward",
+          "searchAndForward", "manage_rules", "define_rule", "frobnicate_rules", "rules", "get_and_purge", "list_then_move", "v2_manage_rules", "update_settings")))
+    hk = ee._has_forward_key_name
+    check("_has_forward_key_name: keys at any depth and in JSON strings", hk({"a": [{"B": {"ForwardTo": 1}}]}) and hk({"body": '{"forwardTo":"x"}'}))
+    check("_has_forward_key_name: words in non-free values (incl. a non-free key that merely contains 'name')",
+          hk({"type": "forward"}) and hk({"script": 'redirect :copy "x"'}) and hk({"actionName": "forward"}) and hk({"x": "autoForward"}))
+    check("_has_forward_key_name: prose, free-text keys and bare addresses do not count",
+          not hk({"x": "straightforward"}) and not hk({"body": "looking forward", "subject": "Fwd: forwarded", "message_body": "forward it"})
+          and not hk({"to": "x@y.hu", "id": "<a@b>"}) and not hk({"x": "forward"}, False))
+    check("_has_forward_key_name: not a container = forwarding", hk("x") is True and hk(None) is True)
+    # the main agent's gates, measured on a disposable store (card 3d6e5181 N3, R5): the approval gate
+    # puts a forwarding rule behind the autonomy level (level 1 denies, level 3 passes, like any send), a
+    # reader and a clean rule pass; the copy gate has no text to inspect on a rule, so it denies a forwarding
+    # rule at EVERY level (fail-closed: the main agent cannot set a forwarding rule through an MCP tool).
+    fwd_t, fwd_i = "mcp__outlook__manage_rules", {"rules": [{"actions": {"forwardTo": ["invented@example.com"]}}]}
+    with tempfile.TemporaryDirectory() as td_ni:
+        for level, want_approval in ((1, 2), (3, 0)):
+            st = make_store(os.path.join(td_ni, f"l{level}"), level)
+            code, _, _ = run(GATE, st, fwd_t, fwd_i)
+            check(f"approval gate level {level}: forwarding rule exit {want_approval}", code == want_approval, f"exit={code}")
+            code, _, _ = run(COPY, st, fwd_t, fwd_i)
+            check(f"copy gate level {level}: forwarding rule is denied (no text to inspect)", code == 2, f"exit={code}")
+        st = make_store(os.path.join(td_ni, "l1b"), 1)
+        for tool, ti, label in (("mcp__outlook__list_rules", {"forwardTo": "x"}, "reader"),
+                                ("mcp__outlook__manage_rules", {"rules": [{"actions": {"moveToFolder": "F1"}}]}, "clean rule")):
+            for script in (GATE, COPY):
+                code, _, _ = run(script, st, tool, ti)
+                check(f"{os.path.basename(script)} level 1: {label} passes", code == 0, f"exit={code}")
 
     # --- 2. the call forms the pinned helper and the golden use (G6) ----------
     print("call forms")

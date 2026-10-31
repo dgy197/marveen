@@ -403,7 +403,7 @@
     {"tool": "mcp__gmail__create_rule", "input": "x", "expected": "send", "note": "card 6151bb4d r2 (B2, forwarding rule = send): an input that is not an object cannot be inspected: fail-closed"},
     {"tool": "mcp__gmail__createRule", "input": {"actions": {"markAsRead": true}}, "expected": null, "note": "card 6151bb4d (msg 6348): camelCase, clean input"},
     {"tool": "mcp__gmail__create_filter", "input": {"forwardTo": "a@b.hu"}, "expected": "send", "note": "card 6151bb4d r2 (B2, forwarding rule = send): forwardTo at the top level"},
-    {"tool": "mcp__gmail__create_label", "input": {"forwardTo": "a@b.hu"}, "expected": null, "note": "card 6151bb4d (msg 6348): the closed list holds regardless of the input"},
+    {"tool": "mcp__gmail__create_label", "input": {"forwardTo": "a@b.hu"}, "expected": "send", "note": "card 3d6e5181 N3: was null under the closed list (6151bb4d); create_label is a non-reader and a forwardTo key forwards under any name"},
     {"tool": "mcp__gmail__create_reply_to_contact", "expected": "draft", "note": "card 6151bb4d r2: B1: a word outside the closed noun / modifier lists after create keeps it a draft"},
     {"tool": "mcp__gmail__createReplyToContact", "expected": "draft", "note": "card 6151bb4d r2: B1: a word outside the closed noun / modifier lists after create keeps it a draft"},
     {"tool": "mcp__gmail__create_forward_to_contact", "expected": "draft", "note": "card 6151bb4d r2: B1: a word outside the closed noun / modifier lists after create keeps it a draft"},
@@ -432,7 +432,7 @@
     {"tool": "mcp__gmail__set_rule", "input": {"actions": {"redirectTo": 1}}, "expected": "send", "note": "card 6151bb4d r2: B2: set_rule with forwarding"},
     {"tool": "mcp__gmail__set_rule", "input": {"actions": {"markAsRead": true}}, "expected": null, "note": "card 6151bb4d r2: B2: set_rule with a clean input is no letter"},
     {"tool": "mcp__gmail__update_filter", "input": {"action": {"addLabelIds": ["L1"]}}, "expected": "draft", "note": "card 6151bb4d r2: B2: update_filter with a clean input stays a draft (update verb)"},
-    {"tool": "mcp__gmail__delete_filter", "input": {"forwardTo": "x"}, "expected": null, "note": "card 6151bb4d r2: B2: delete is no rule write"},
+    {"tool": "mcp__gmail__delete_filter", "input": {"forwardTo": "x"}, "expected": "send", "note": "card 3d6e5181 N3: was null (6151bb4d: delete is no rule write); delete is a non-reader and a forwardTo key forwards under any name"},
     {"tool": "mcp__gmail__get_filter", "input": {"forwardTo": "x"}, "expected": null, "note": "card 6151bb4d r2: B2: a read is no rule write"},
     {"tool": "mcp__outlook__createReply", "expected": "draft", "note": "card 6151bb4d r1: create + sending verb stays draft"},
     {"tool": "mcp__outlook__createReplyAll", "expected": "draft", "note": "card 6151bb4d r1"},
@@ -933,5 +933,295 @@
       "outbound": false,
       "note": "full-width letters are not ASCII"
     }
-  ]
+  ],
+  "name_independent": {
+    "_comment": "card 3d6e5181 N3: the name-independent forwarding rule. A tool of a mail server (servers x names) that is not a reader and whose input forwards (a forward / redirect KEY, or a forward / redirect WORD in a value outside the free-text keys; a bare address does not count) is a send for mail_tool_action / mailToolAction and mail-rule-forward for gateDecision, under any name. readers stay None whatever the input; disguised = reader-looking names that carry a write or forward word (non-reader); clean = non-reader calls without forwarding, which keep their old class. Read by src/__tests__/mail-tool-action-conformance.test.ts and scripts/__tests__/mail-tool-action.test.py.",
+    "servers": [
+      "gmail",
+      "outlook",
+      "ms365",
+      "claude_ai_Outlook",
+      "harder-mail",
+      "workmail",
+      "imap"
+    ],
+    "forward_names": [
+      "manage_rules",
+      "manage_filters",
+      "configure_filter",
+      "make_filter",
+      "define_rule",
+      "change_rule",
+      "write_filter",
+      "toggle_rule",
+      "post_filter",
+      "createinboxrule",
+      "set_messagerules",
+      "create_mailrule",
+      "create_inbox_rule",
+      "create_messagerule",
+      "update_auto_forwarding",
+      "create_forwarding_address",
+      "update_mailbox_settings",
+      "set_vacation",
+      "update_settings"
+    ],
+    "forward_shapes": [
+      {
+        "label": "stringified JSON with a forward key",
+        "input": {
+          "body": "{\"forwardTo\": \"x\"}"
+        }
+      },
+      {
+        "label": "stringified JSON, key hidden by a unicode escape",
+        "input": {
+          "body": "{\"\\u0066orwardTo\": 1}"
+        }
+      },
+      {
+        "label": "double-encoded JSON",
+        "input": {
+          "body": "\"{\\\"redirectTo\\\": 1}\""
+        }
+      },
+      {
+        "label": "Sieve redirect",
+        "input": {
+          "script": "require [\"copy\"]; redirect :copy \"x@y.hu\";"
+        }
+      },
+      {
+        "label": "actions list, type forward",
+        "input": {
+          "actions": [
+            {
+              "type": "forward",
+              "address": "x@y.hu"
+            }
+          ]
+        }
+      },
+      {
+        "label": "autoForward key",
+        "input": {
+          "actions": {
+            "autoForward": "x@y.hu"
+          }
+        }
+      },
+      {
+        "label": "dotted action.forward key",
+        "input": {
+          "action.forward": "x@y.hu"
+        }
+      },
+      {
+        "label": "forwardTo",
+        "input": {
+          "forwardTo": [
+            "invented@example.com"
+          ]
+        }
+      },
+      {
+        "label": "redirectTo nested",
+        "input": {
+          "actions": {
+            "redirectTo": [
+              {
+                "emailAddress": {
+                  "address": "invented@example.com"
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "label": "forwardAsAttachmentTo, empty",
+        "input": {
+          "ACTIONS": {
+            "ForwardAsAttachmentTo": []
+          }
+        }
+      },
+      {
+        "label": "rules list, forwarding_address",
+        "input": {
+          "rules": [
+            {
+              "ok": 1
+            },
+            {
+              "forwarding_address": "invented@example.com"
+            }
+          ]
+        }
+      },
+      {
+        "label": "value-only: action redirect",
+        "input": {
+          "enabled": true,
+          "action": "redirect",
+          "target": "invented@example.com"
+        }
+      }
+    ],
+    "disguised_names": [
+      "get_or_create_rule",
+      "list_and_forward",
+      "searchAndForward",
+      "v2_manage_rules",
+      "gmail_set_forwarding"
+    ],
+    "reader_names": [
+      "list_rules",
+      "get_rules",
+      "get_settings",
+      "search_emails",
+      "read_email",
+      "list_messages",
+      "export_rules",
+      "get_vacation_settings",
+      "watch_mailbox",
+      "search_address_book",
+      "fetch_message",
+      "describe_filter"
+    ],
+    "reader_inputs": [
+      {
+        "label": "forward key",
+        "input": {
+          "forwardTo": [
+            "invented@example.com"
+          ]
+        }
+      },
+      {
+        "label": "forward word in a value",
+        "input": {
+          "filter": {
+            "action": "forward",
+            "to": "invented@example.com"
+          }
+        }
+      },
+      {
+        "label": "address in a query",
+        "input": {
+          "query": "from:x@y.hu"
+        }
+      }
+    ],
+    "clean": [
+      {
+        "tool": "mcp__outlook__manage_rules",
+        "input": {
+          "rules": [
+            {
+              "name": "News",
+              "actions": {
+                "moveToFolder": "F1"
+              }
+            }
+          ]
+        },
+        "expected": null,
+        "note": "rule write without forwarding"
+      },
+      {
+        "tool": "mcp__imap__move_message",
+        "input": {
+          "messageId": "<abc@host>",
+          "folder": "Archive"
+        },
+        "expected": null,
+        "note": "IMAP Message-ID is no forwarding (Q4)"
+      },
+      {
+        "tool": "mcp__imap__mark_read",
+        "input": {
+          "messageId": "<abc@host>"
+        },
+        "expected": null,
+        "note": "bare address"
+      },
+      {
+        "tool": "mcp__gmail__modify_thread",
+        "input": {
+          "id": "18c3fa",
+          "addLabelIds": [
+            "L1"
+          ]
+        },
+        "expected": null,
+        "note": "label change"
+      },
+      {
+        "tool": "mcp__gmail__create_filter",
+        "input": {
+          "criteria": {
+            "from": "news"
+          },
+          "action": {
+            "addLabelIds": [
+              "X"
+            ]
+          }
+        },
+        "expected": null,
+        "note": "AC12 label-only filter"
+      },
+      {
+        "tool": "mcp__ms365__update_settings",
+        "input": {
+          "timeZone": "Europe/Budapest"
+        },
+        "expected": "draft",
+        "note": "update is a draft verb by name, no forwarding: class unchanged"
+      },
+      {
+        "tool": "mcp__gmail__create_draft",
+        "input": {
+          "to": [
+            "known@example.com"
+          ],
+          "subject": "Hi",
+          "body": "I am looking forward to it"
+        },
+        "expected": "draft",
+        "note": "AC8 prose in a free-text key"
+      },
+      {
+        "tool": "mcp__outlook__create_draft",
+        "input": {
+          "to": [
+            "known@example.com"
+          ],
+          "subject": "Re: forwarded invoice",
+          "message_body": "<p>Please forward the file</p>"
+        },
+        "expected": "draft",
+        "note": "subject and a *_body key are free text"
+      },
+      {
+        "tool": "mcp__imap__delete_message",
+        "input": {
+          "messageId": "<abc@host>"
+        },
+        "expected": null,
+        "note": "bare address"
+      },
+      {
+        "tool": "mcp__gmail__manage_email",
+        "input": {
+          "operation": "forward",
+          "messageId": "x"
+        },
+        "expected": null,
+        "note": "manage_email keeps its own operation branch: the value forward is not read here (kind stays draft-required)"
+      }
+    ]
+  }
 }
