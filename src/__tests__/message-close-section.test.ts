@@ -64,10 +64,10 @@ describe('message-close section: what it says (ACKONCLOSE927)', () => {
     expect(body).toMatch(/DELEGÁLT FELADAT[\s\S]{0,120}szokásos módon/)
   })
 
-  it('the example sends a real JSON boolean false, not the string', () => {
-    expect(body).toContain(`'{"status":"done","notify":false}'`)
+  it('the example passes notify as true/false to the helper (which sends a real JSON boolean), not the string', () => {
+    expect(body).toContain('agent-msg-close.sh <id> done --notify false')
     expect(body).not.toContain('"notify":"false"')
-    expect(body).toMatch(/string 400-at kap/)
+    expect(body).toMatch(/`--notify` csak\s+`true` vagy `false` lehet[\s\S]{0,40}valódi JSON booleant/)
   })
 
   it('says a second close of a closed message is a 409 that needs no retry or report', () => {
@@ -75,9 +75,32 @@ describe('message-close section: what it says (ACKONCLOSE927)', () => {
     expect(body).toMatch(/Ez nem hiba, nem kell ismételni vagy jelenteni\./)
   })
 
-  it('the example is a PUT on the message id, with the bearer token', () => {
-    expect(body).toMatch(/curl -s -X PUT \S+\/api\/messages\/<id>/)
-    expect(body).toMatch(/Authorization: Bearer \$\(cat /)
+  // Card f137f980 (E12, Brainy 6367): the close is SIGNED, so the recipe is the helper, not a raw curl PUT.
+  it('the example is the signed close helper at the install path: no raw curl, no token substitution', () => {
+    expect(body).toContain(`bash ${join(tmpRoot, 'scripts', 'agent-msg-close.sh')} <id> done --notify false`)
+    expect(body).not.toMatch(/^curl /m)
+    expect(body).not.toContain('Authorization: Bearer')
+    expect(body).not.toContain('$(cat ')
+    expect(body).toMatch(/Nyers `curl -X PUT` lezárást ne használj/)
+  })
+
+  it('a delegated task closes with the result from a file, and failed replaces done', () => {
+    expect(body).toMatch(/Delegált feladatnál[\s\S]{0,80}--result-file <fájl>/)
+    expect(body).toMatch(/`failed` áll a `done` helyett/)
+  })
+
+  it('says the close is signed and who reads the key, in both profiles', () => {
+    for (const text of [body, buildMessageCloseBody(true)]) {
+      expect(text).toMatch(/A lezárás aláírt: a szerver a küldő-kulcs \(`X-Agent-Key`\)/)
+      expect(text).toContain('MARVEEN_AGENT_KEY_FILE')
+      expect(text).toMatch(/te nem írod ki és nem másolod át/)
+    }
+  })
+
+  it('the strict profile keeps the allow-listed marveen-api.sh verb (which signs too)', () => {
+    const strict = buildMessageCloseBody(true)
+    expect(strict).toContain('marveen-api.sh message-close <id> --no-notify')
+    expect(strict).not.toContain('agent-msg-close.sh')
   })
 })
 
