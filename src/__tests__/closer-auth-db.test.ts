@@ -137,12 +137,14 @@ describe('closer_auth is stored, never served', () => {
   beforeAll(() => {
     // POST /api/messages only accepts a registered fleet agent as `from` (isKnownAgent: agents/<id>/ exists).
     mkdirSync(agentDir(FROM), { recursive: true })
+    mkdirSync(agentDir(TO), { recursive: true })
     initDatabase(':memory:')
     id = createAgentMessage(FROM, TO, 'closer served-rows probe', null, null, { senderAuth: 'mismatch' }).id
     expect(closeOpenMessage(id, 'done', 'res', 'unsigned')).toBe(true)
   })
   afterAll(() => {
     rmSync(agentDir(FROM), { recursive: true, force: true })
+    rmSync(agentDir(TO), { recursive: true, force: true })
   })
 
   it('positive control: both verdicts are really stored on the row', () => {
