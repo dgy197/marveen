@@ -45,6 +45,11 @@
 #   MARVEEN_TOKEN_FILE bearer token file (default <repo>/store/.dashboard-token)
 #   MARVEEN_HOMOGLYPH_BIN  the checker (default <repo>/scripts/lib/homoglyph.py)
 #   MARVEEN_QUEUE_WARN_AT  queue depth that triggers the stderr notice (default 3, 0 = off)
+#   MARVEEN_AGENT_KEY_FILE this agent's send key file (card 0d7e2c04), set by the dashboard at launch.
+#     It holds ONE line, "X-Agent-Key: <key>". The path comes ONLY from this variable: never from
+#     <from> or any argument (a sender must not pick another agent's file). A missing, unreadable or
+#     malformed file means the unsigned send of before; it is never a FAIL. The key reaches curl on
+#     STDIN (`-H @-`), so it is in no argv, and it is redacted from the failure log.
 # MEASURED 2026-09-13: a remote agent runs this helper OUTSIDE this repo, where localhost:3420
 # does not exist -- it had to fall back to raw curl, i.e. exactly the unchecked pattern this file was
 # written to eliminate. A hardcoded base URL silently un-installs the helper for everyone not on this
@@ -136,6 +141,22 @@ else
   echo "WARN: homoglyph checker not found at $HG -- sending UNCHECKED." >&2
 fi
 
+# --- Per-agent send key (card 0d7e2c04) ------------------------------------
+# The file is chosen by the environment alone. Only a regular file whose content is exactly one
+# well-formed "X-Agent-Key: <key>" line is used; anything else (unset, missing, unreadable, a
+# directory, several lines, other headers) sends unsigned, as before. The validated line is fed to
+# curl on stdin below, so the key is in no argv and a header smuggled into the file never goes out.
+KEY_LINE=""; KEY_VAL=""
+if [ -n "${MARVEEN_AGENT_KEY_FILE:-}" ] && [ -f "$MARVEEN_AGENT_KEY_FILE" ] && [ -r "$MARVEEN_AGENT_KEY_FILE" ]; then
+  KEY_RAW="$(head -c 300 "$MARVEEN_AGENT_KEY_FILE" 2>/dev/null || true)"
+  KEY_RE='^X-Agent-Key: ([A-Za-z0-9_.~-]{1,128})$'
+  case "$KEY_RAW" in
+    *$'\n'*|*$'\r'*) : ;;
+    *) if [[ "$KEY_RAW" =~ $KEY_RE ]]; then KEY_LINE="$KEY_RAW"; KEY_VAL="${BASH_REMATCH[1]}"; fi ;;
+  esac
+  unset KEY_RAW
+fi
+
 BODY="$(FROM="$FROM" TO="$TO" C="$C" P="$PRIORITY" python3 -c 'import json,os
 d={"from":os.environ["FROM"],"to":os.environ["TO"],"content":os.environ["C"]}
 if os.environ.get("P"): d["priority"]=os.environ["P"]
@@ -144,7 +165,11 @@ print(json.dumps(d))')"
 attempt=0; max=3; CODE=""; ID=""
 while [ "$attempt" -lt "$max" ]; do
   attempt=$((attempt+1))
-  RESP="$(curl -s -X POST "$URL" -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
+  if [ -n "$KEY_LINE" ]; then
+    RESP="$(printf '%s\n' "$KEY_LINE" | curl -s -X POST "$URL" -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -H @- -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
+  else
+    RESP="$(curl -s -X POST "$URL" -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
+  fi
   CODE="$(printf '%s' "$RESP" | tail -n1)"
   JSON="$(printf '%s' "$RESP" | sed '$d')"
   # An id ALONE is not delivery. The router answers 200 WITH an id even when the
@@ -226,5 +251,8 @@ sys.exit(0 if isinstance(d,dict) and d.get("downgraded") is True else 1)' 2>/dev
   sleep 1
 done
 echo "FAIL from=$FROM to=$TO url=$URL http=${CODE:-?} id='$ID' (after $max tries)"
-printf '%s\tFAIL\tfrom=%s\tto=%s\turl=%s\thttp=%s\tresp=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$FROM" "$TO" "$URL" "${CODE:-?}" "$(printf '%s' "${JSON:-}" | head -c 200)" >> "$LOG" 2>/dev/null || true
+# The response text is the server's: if one ever echoed the send key, it must not reach the log.
+LOG_RESP="$(printf '%s' "${JSON:-}" | head -c 200)"
+[ -n "$KEY_VAL" ] && LOG_RESP="${LOG_RESP//"$KEY_VAL"/[redacted]}"
+printf '%s\tFAIL\tfrom=%s\tto=%s\turl=%s\thttp=%s\tresp=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$FROM" "$TO" "$URL" "${CODE:-?}" "$LOG_RESP" >> "$LOG" 2>/dev/null || true
 exit 1
