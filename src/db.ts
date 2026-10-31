@@ -4881,6 +4881,18 @@ export function createAgentMessage(
   }
 }
 
+export interface SenderAuthReportRow { from: string; sender_auth: string; count: number; last_seen: number }
+
+// Card 0d7e2c04 (N5): the shadow report. Counts per (from_agent, sender_auth) over the last `days` days plus the
+// last-seen time. Aggregates ONLY: no content, no key, no hash is read. A row from before the column (NULL) is 'legacy'.
+export function getSenderAuthReport(days: number, nowSec: number = Math.floor(Date.now() / 1000)): SenderAuthReportRow[] {
+  const since = nowSec - Math.max(1, Math.floor(days)) * 86400
+  return db.prepare(
+    "SELECT substr(from_agent, 1, 64) AS \"from\", COALESCE(sender_auth, 'legacy') AS sender_auth, COUNT(*) AS count, MAX(created_at) AS last_seen " +
+    'FROM agent_messages WHERE created_at >= ? GROUP BY 1, 2 ORDER BY 1, 2'
+  ).all(since) as unknown as SenderAuthReportRow[]
+}
+
 // The router's pre-delivery re-read: the CURRENT status of one row, or null if
 // the row is gone.
 //
