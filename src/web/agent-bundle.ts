@@ -233,6 +233,28 @@ export function sanitizeImportedConfig(stagedAgentDir: string): void {
   if (changed) atomicWriteFileSync(cfgPath, JSON.stringify(cfg, null, 2))
 }
 
+// Card 51538ebc B1: the staged tree comes out of an untrusted tar, and the keep
+// step (applyKeptSecurityProfile) rmSync/cpSync/atomic-writes inside it. A staged
+// agent dir, .claude, .claude/hooks, .claude/settings.json or agent-config.json
+// that is a symlink would make those writes act OUTSIDE staging (e.g. on
+// PROJECT_ROOT/scripts), so a bundle carrying one is refused. Absent is fine.
+// Checked top-down, so a linked parent is reported before its children. <label> is
+// the entry's name relative to the bundle root ('agent', 'agents/<name>'); the
+// message names relative entries only.
+const STAGED_SYMLINK_CHECKS = ['', '.claude', join('.claude', 'hooks'), join('.claude', 'settings.json'), 'agent-config.json'] as const
+
+export function assertNoStagedSymlinks(stagedAgentDir: string, label = 'agent'): void {
+  for (const rel of STAGED_SYMLINK_CHECKS) {
+    let isLink = false
+    try { isLink = lstatSync(rel ? join(stagedAgentDir, rel) : stagedAgentDir).isSymbolicLink() } catch { continue }
+    if (isLink) throw new Error(`Invalid bundle: symlink at ${rel ? join(label, rel) : label}`)
+  }
+}
+
+function isSymlinkPath(p: string): boolean {
+  try { return lstatSync(p).isSymbolicLink() } catch { return false }
+}
+
 // Card 24e137ef N3b (Brainy D1) + card 51538ebc BD2/BD3: a bundle never chooses
 // the agent's privilege profile or login/host settings. On overwrite of an
 // existing agent every PACKAGE_UNTRUSTED_CONFIG_KEYS entry (securityProfile,
@@ -243,19 +265,30 @@ export function sanitizeImportedConfig(stagedAgentDir: string): void {
 // defaults apply.
 // Runs on the staged dir, before the existing dir is removed.
 export function applyKeptSecurityProfile(stagedAgentDir: string, existingDest: string | null): void {
+  // Defence in depth (51538ebc B1): both import paths already checked, but this
+  // function does the rm/cp/write, so it refuses a linked staged tree itself.
+  assertNoStagedSymlinks(stagedAgentDir)
   const cfgPath = join(stagedAgentDir, 'agent-config.json')
   const existing = existingDest ? readExistingConfigForKeep(join(existingDest, 'agent-config.json')) : null
   if (existsSync(cfgPath)) {
     let cfg: Record<string, unknown> | null = null
-    try { cfg = JSON.parse(readFileSync(cfgPath, 'utf-8')) } catch { /* unreadable: left as is */ }
+    try { cfg = JSON.parse(readFileSync(cfgPath, 'utf-8')) } catch { /* unparseable: handled below */ }
     if (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) {
       atomicWriteFileSync(cfgPath, JSON.stringify(applyKeptConfigKeys(cfg, existing), null, 2))
+    } else if (existingDest) {
+      // Card 51538ebc B2: on overwrite an unusable bundle config must not leave the
+      // agent without its kept keys (securityProfile, login root, ...): write only
+      // the existing values. A new agent's bad config is left as is.
+      atomicWriteFileSync(cfgPath, JSON.stringify(applyKeptConfigKeys({}, existing), null, 2))
     }
   }
   if (existingDest) {
     const oldSettings = join(existingDest, '.claude', 'settings.json')
     const stagedSettings = join(stagedAgentDir, '.claude', 'settings.json')
-    if (existsSync(oldSettings)) {
+    // An existing settings.json / hooks that is itself a symlink is treated as
+    // absent (51538ebc B1): copying it would carry a link whose target is outside
+    // the agent dir into the staged tree.
+    if (existsSync(oldSettings) && !isSymlinkPath(oldSettings)) {
       mkdirSync(join(stagedSettings, '..'), { recursive: true })
       cpSync(oldSettings, stagedSettings)
     } else {
@@ -266,7 +299,7 @@ export function applyKeptSecurityProfile(stagedAgentDir: string, existingDest: s
     const oldHooks = join(existingDest, '.claude', 'hooks')
     const stagedHooks = join(stagedAgentDir, '.claude', 'hooks')
     rmSync(stagedHooks, { recursive: true, force: true })
-    if (existsSync(oldHooks)) {
+    if (existsSync(oldHooks) && !isSymlinkPath(oldHooks)) {
       mkdirSync(join(stagedHooks, '..'), { recursive: true })
       cpSync(oldHooks, stagedHooks, { recursive: true })
     }
@@ -481,6 +514,7 @@ export function importAgentBundle(
 
     const manifest = readBundleManifest(extractRoot)
     const stagedAgentDir = join(extractRoot, 'agent')
+    assertNoStagedSymlinks(stagedAgentDir)
     if (!existsSync(stagedAgentDir) || !statSync(stagedAgentDir).isDirectory()) {
       throw new Error('Invalid bundle: agent/ directory missing')
     }
@@ -675,6 +709,12 @@ export function importAllAgentsBundle(
     const agentsRoot = join(extractRoot, 'agents')
     if (!existsSync(agentsRoot) || !statSync(agentsRoot).isDirectory()) {
       throw new Error('Invalid bundle: agents/ directory missing')
+    }
+
+    // Card 51538ebc B1: refuse a linked staged tree up front, for every agent, so a
+    // bad entry late in the bundle cannot leave earlier agents half-installed.
+    for (const entry of readdirSync(agentsRoot)) {
+      assertNoStagedSymlinks(join(agentsRoot, entry), `agents/${entry.replace(/[^\x20-\x7e]/g, '?')}`)
     }
 
     // One admission for the whole bundle, before the first agent dir is touched.
