@@ -350,10 +350,19 @@ describe('mail-tool fallback narrowing (card 6151bb4d)', () => {
 
   it('create is a draft by default: appointment, entry, rsvp, response, answer are ledger-checked', () => {
     for (const t of ['create_appointment', 'create_calendar_entry', 'create_rsvp', 'create_response',
-      'create_answer', 'create_contact_invite', 'create_filter_from_template', 'create_new_email'].map((n) => `mcp__google-calendar__${n}`)) {
+      'create_answer', 'create_contact_invite', 'create_new_email'].map((n) => `mcp__google-calendar__${n}`)) {
       expect(mailToolAction(t, input), t).toBe('draft')
       expect(gateDecision(t, input, verified).deny, t).toBe(true)
       expect(gateDecision(t, { to: ['known@example.com'] }, verified).deny, t).toBe(false)
+    }
+  })
+
+  it('a filter / rule write with an address in its input is a forward: denied even for a known address', () => {
+    const t = 'mcp__google-calendar__create_filter_from_template'
+    for (const inp of [input, { to: ['known@example.com'] }]) {
+      const d = gateDecision(t, inp, verified)
+      expect(d.deny, t).toBe(true)
+      expect(d.kind, t).toBe('mail-rule-forward')
     }
   })
 
