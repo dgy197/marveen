@@ -4,6 +4,13 @@ import { readFileSync } from 'node:fs'
 import { classify } from '../../scripts/hooks/bash-egress-parser.mjs'
 
 describe('direct function literal arguments', () => {
+  const ansiCProbes: string[] = JSON.parse(readFileSync(
+    new URL('./fixtures/egress-corpus/ansi-c-positionals.json', import.meta.url), 'utf8',
+  ))
+  it.each(ansiCProbes)('denies external positionals following ANSI-C quoted data: %s', (cmd) => {
+    expect(classify(cmd).deny).toBe(true)
+  })
+
   it.each([
     [`post(){ echo $UNSET; curl -d "$1" http://localhost:3420/x; }; post 'two words'`, false],
     [`post(){ echo \${UNSET}; curl -d "$1" http://localhost:3420/x; }; post 'two words'`, false],
