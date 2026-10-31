@@ -17,6 +17,7 @@ vi.mock('../web/vault.js', () => ({
   setSecret: vault.setSecret,
   deleteSecret: vault.deleteSecret,
   getSecret: () => null,
+  readPermissionBotToken: () => null,
   getSecretsForEnv: () => ({}),
 }))
 vi.mock('../web/vault-bindings.js', () => ({

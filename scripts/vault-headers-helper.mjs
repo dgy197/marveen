@@ -48,7 +48,17 @@ for (const arg of process.argv.slice(2)) {
     process.stderr.write(`vault-headers-helper: refused, SSH private keys are not sent as headers: "${vaultId}"\n`)
     continue
   }
-  const secret = getSecret(vaultId)
+  // Card 8e9f4670 (N2, r3): getSecret refuses the permission bot's token; it never leaves as a header.
+  let secret
+  try {
+    secret = getSecret(vaultId)
+  } catch (e) {
+    if (e && e.name === 'VaultEntryReadLockedError') {
+      process.stderr.write(`vault-headers-helper: refused, this vault entry is locked and not resolvable here: "${vaultId}"\n`)
+      continue
+    }
+    throw e
+  }
   if (secret === null) {
     process.stderr.write(`vault-headers-helper: vault secret "${vaultId}" not found\n`)
     continue

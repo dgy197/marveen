@@ -26,7 +26,7 @@ import { SCHEDULED_TASKS_DIR, type ScheduledTaskWritten } from './scheduled-task
 import { registerScheduledTask } from './schedule-registry.js'
 import { getBindings } from './vault-bindings.js'
 import { resolveMasterKeyForExport } from './vault.js'
-import { isPermissionBotVaultId, PERMISSION_BOT_VAULT_ID, PERMISSION_BOT_VAULT_LOCKED_ERROR } from './permission-bot-vault.js'
+import { isPermissionBotVaultId, PERMISSION_BOT_VAULT_ID, PERMISSION_BOT_VAULT_LOCKED_ERROR, PERMISSION_BOT_VAULT_READ_LOCKED_ERROR } from './permission-bot-vault.js'
 import { getDb, backfillEmbeddings } from '../db.js'
 import { logger } from '../logger.js'
 import { isValidModelId } from '../model-id.js'
@@ -892,6 +892,42 @@ function validateModels(fleet: FleetJson): string[] {
   return errors
 }
 
+// Card 8e9f4670 (N2, r3): the vault id a bundle .mcp.json env/headers value refers to, as
+// {{VAULT:<id>}} (the export form, turned into vault:<id> by deplaceholderMcp) or as a
+// literal vault:<id> (written through as is), or null if the value is no vault ref.
+function mcpVaultRefId(v: unknown): string | null {
+  if (typeof v !== 'string') return null
+  if (v.startsWith('{{VAULT:') && v.endsWith('}}')) return v.slice(8, -2)
+  if (v.startsWith('vault:')) return v.slice(6)
+  return null
+}
+
+function validateMcpVaultRefs(fleet: FleetJson): string[] {
+  const mcps: Array<{ owner: string, mcp: unknown }> = []
+  if (fleet.mainAgent) mcps.push({ owner: 'mainAgent', mcp: fleet.mainAgent.mcp })
+  for (const agent of Array.isArray(fleet.agents) ? fleet.agents : []) {
+    mcps.push({ owner: `agent ${String((agent as { name?: unknown } | null)?.name ?? '?').slice(0, 60)}`, mcp: (agent as { mcp?: unknown } | null)?.mcp })
+  }
+  for (const { owner, mcp } of mcps) {
+    const servers = (mcp as { mcpServers?: unknown } | null | undefined)?.mcpServers
+    if (!servers || typeof servers !== 'object') continue
+    for (const [serverName, cfg] of Object.entries(servers as Record<string, unknown>)) {
+      if (!cfg || typeof cfg !== 'object') continue
+      for (const field of ['env', 'headers'] as const) {
+        const dict = (cfg as Record<string, unknown>)[field]
+        if (!dict || typeof dict !== 'object') continue
+        for (const [key, value] of Object.entries(dict as Record<string, unknown>)) {
+          const ref = mcpVaultRefId(value)
+          if (ref !== null && isPermissionBotVaultId(ref)) {
+            return [`${PERMISSION_BOT_VAULT_READ_LOCKED_ERROR} -- the import bundle's .mcp.json (${owner}, server "${serverName.slice(0, 60)}", ${field} "${key.slice(0, 60)}") refers to it, nothing was imported.`]
+          }
+        }
+      }
+    }
+  }
+  return []
+}
+
 // Card 8e9f4670 (B5): the import writes the Vault as whole files
 // (importVaultSection), not through setSecret/deleteSecret, so the storage-layer
 // lock on the permission bot's token (vault.ts) never runs for it. This check is
@@ -901,6 +937,11 @@ function validateModels(fleet: FleetJson): string[] {
 // any kind (agent files, DB, skills, vault), so a refused import leaves nothing
 // behind. Fail-closed on a malformed section and on an unreadable live vault.
 function validateVaultLock(fleet: FleetJson): string[] {
+  // Card 8e9f4670 (N2, r3): a vault ref in an imported .mcp.json (env/headers) is resolved at
+  // runtime by vault-resolve.mjs / vault-headers-helper.mjs. A ref to the locked id is refused
+  // whether or not the bundle carries a vault section.
+  const mcpLockErrors = validateMcpVaultRefs(fleet)
+  if (mcpLockErrors.length > 0) return mcpLockErrors
   const vault = fleet.vault
   if (vault === undefined || vault === null) return []
   if (typeof vault !== 'object' || !Array.isArray(vault.entries)) {

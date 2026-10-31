@@ -339,3 +339,61 @@ describe('N2 B1: a bundle binding on the locked id refuses the whole import', ()
     expect(result.ok).toBe(true)
   })
 })
+
+// Card 8e9f4670 (N2, r3): the import writes the bundle's .mcp.json with {{VAULT:<id>}}
+// turned into vault:<id>, which vault-resolve.mjs / vault-headers-helper.mjs resolve at
+// runtime. A ref to the locked id is refused before the first write, with or without a
+// vault section in the bundle.
+describe('N2 r3: a bundle .mcp.json that refers to the locked id refuses the whole import', () => {
+  const agentWithMcp = (mcp: unknown) => [{
+    name: 'lockprobe', config: { id: 'lockprobe' }, claudeMd: '# c', soulMd: '# s', mcp, settings: {},
+    channelsAccess: {}, avatar: null, avatarExt: 'png', agentSkills: [],
+  }]
+  const mcpOf = (field: 'env' | 'headers', value: unknown) => ({ mcpServers: { srv: { command: 'x', [field]: { K: value } } } })
+  const placeholder = (id: string) => `{{VAULT:${id}}}`
+
+  for (const field of ['env', 'headers'] as const) {
+    for (const [label, value] of [
+      ['exact placeholder', placeholder(PERMISSION_BOT_VAULT_ID)],
+      ['upper case placeholder', placeholder(PERMISSION_BOT_VAULT_ID.toUpperCase())],
+      ['padded placeholder', placeholder(`  ${PERMISSION_BOT_VAULT_ID}  `)],
+      ['literal vault: ref', `vault:${PERMISSION_BOT_VAULT_ID}`],
+    ] as const) {
+      it(`apply, agent ${field}: ${label} -> refused, whole tree unchanged, no vault section needed`, () => {
+        const before = snapshot()
+        const result = importFleet(bundle(undefined, { agents: agentWithMcp(mcpOf(field, value)) }), { apply: true })
+        const r = asDiff(result)
+        expect(r.dryRun).toBe(true)
+        expect(r.errors[0]).toContain('locked')
+        expect(r.errors[0]).toContain(PERMISSION_BOT_VAULT_ID)
+        expect(snapshot()).toEqual(before)
+      })
+    }
+  }
+
+  it('dry-run: the same bundle reports the refusal and writes nothing', () => {
+    const before = snapshot()
+    const result = asDiff(importFleet(bundle(undefined, { agents: agentWithMcp(mcpOf('env', placeholder(PERMISSION_BOT_VAULT_ID))) }), { apply: false }))
+    expect(result.dryRun).toBe(true)
+    expect(result.errors.length).toBeGreaterThan(0)
+    expect(snapshot()).toEqual(before)
+  })
+
+  it('apply: a mainAgent .mcp.json with the locked placeholder is refused, whole tree unchanged', () => {
+    const before = snapshot()
+    const result = importFleet(
+      bundle(undefined, { mainAgent: { mcp: mcpOf('env', placeholder(PERMISSION_BOT_VAULT_ID)) } }),
+      { apply: true },
+    )
+    expect(asDiff(result).dryRun).toBe(true)
+    expect(asDiff(result).errors.length).toBeGreaterThan(0)
+    expect(snapshot()).toEqual(before)
+  })
+
+  it('an .mcp.json that refers to another vault id imports normally and keeps the vault: ref', () => {
+    const result = importFleet(bundle(undefined, { agents: agentWithMcp(mcpOf('env', placeholder('other'))) }), { apply: true }) as { ok?: true }
+    expect(result.ok).toBe(true)
+    const written = JSON.parse(readFileSync(join(T.agents, 'lockprobe', '.mcp.json'), 'utf-8')) as { mcpServers: { srv: { env: { K: string } } } }
+    expect(written.mcpServers.srv.env.K).toBe('vault:other')
+  })
+})

@@ -42,11 +42,12 @@ vi.mock('../channel-provider.js', async (importOriginal) => {
 
 vi.mock('../web/vault.js', () => ({
   getSecret: vi.fn((id: string) => (id === 'telegram-engedely-bot-token' ? state.permToken : null)),
+  readPermissionBotToken: vi.fn(() => state.permToken),
 }))
 
 import { initDatabase, getApproval, getPendingMessages, getDb, listApprovals } from '../db.js'
 import { logger } from '../logger.js'
-import { getSecret } from '../web/vault.js'
+import { readPermissionBotToken } from '../web/vault.js'
 import { ownerNotificationsSettled, buildPermissionBotText, PERMISSION_BOT_VAULT_ID } from '../web/routes/approvals.js'
 import { RAG_RESERVED_PREFIX } from '../web/rag-approval-payload.js'
 import {
@@ -75,7 +76,7 @@ beforeEach(() => {
   state.permToken = PERM_TOKEN
   state.pinnedId = PERM_BOT
   tg.reset()
-  vi.mocked(getSecret).mockClear()
+  vi.mocked(readPermissionBotToken).mockClear()
   vi.stubGlobal('fetch', tg.fetch)
   logged = []
   responses = []
@@ -120,7 +121,7 @@ describe('POST /api/approvals: the permission-bot categories', () => {
     expect(out.status).toBe(201)
     await ownerNotificationsSettled()
 
-    expect(getSecret).toHaveBeenCalledWith(PERMISSION_BOT_VAULT_ID)
+    expect(readPermissionBotToken).toHaveBeenCalled()
     expect(tg.calls).toHaveLength(1)
     const [msg] = tg.calls
     // The permission bot's token, never the main bot's.
@@ -211,7 +212,7 @@ describe('POST /api/approvals: the permission-bot categories', () => {
     const out = await post({ agent_id: 'Fejlesztő Bitang', category: 'deploy_prod', action_description: 'x', timeout_seconds: 600 })
     expect(out.status).toBe(201)
     await ownerNotificationsSettled()
-    expect(getSecret).not.toHaveBeenCalled()
+    expect(readPermissionBotToken).not.toHaveBeenCalled()
     expect(tg.sends()).toHaveLength(1)
     expect(tg.sends()[0]!.url).toBe(`https://api.telegram.org/bot${MAIN_TOKEN}/sendMessage`)
     expect(tg.sends()[0]!.body.reply_markup).toBeUndefined()

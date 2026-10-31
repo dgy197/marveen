@@ -68,7 +68,20 @@ for (const line of input.trim().split('\n')) {
     refused++
     continue
   }
-  const value = getSecret(secretId)
+  // Card 8e9f4670 (N2, r3): getSecret refuses the permission bot's token (it is read only in-process by
+  // the relay and the approvals route). Only that refusal is turned into a value-free "refused" line;
+  // any other error (e.g. a wrong master key) still ends the script loudly.
+  let value
+  try {
+    value = getSecret(secretId)
+  } catch (e) {
+    if (e && e.name === 'VaultEntryReadLockedError') {
+      process.stderr.write(`vault-resolve: refused, this vault entry is locked and not resolvable here: ${secretId}\n`)
+      refused++
+      continue
+    }
+    throw e
+  }
   if (value !== null) {
     process.stdout.write(`${envVar}=${value}\n`)
   } else {

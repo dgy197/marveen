@@ -17,7 +17,7 @@ import { sendOwnerMessage } from '../../notify.js'
 import { channelStateDir, readChannelToken } from '../../channel-provider.js'
 import { TEST_RUN_PREFIX } from '../../test-run-marker.js'
 import { sendTelegramMessage, clearTelegramInlineKeyboard, type TelegramInlineKeyboard } from '../telegram.js'
-import { getSecret } from '../vault.js'
+import { readPermissionBotToken } from '../vault.js'
 import { PERMISSION_BOT_VAULT_ID } from '../permission-bot-vault.js'
 import {
   RAG_RESERVED_PREFIX, isPermissionBotCategory, parseRagApprovalPayload,
@@ -577,7 +577,7 @@ export { PERMISSION_BOT_VAULT_ID }
 
 type PermissionBotTokenReader = () => string | null
 const vaultPermissionBotToken: PermissionBotTokenReader = () => {
-  try { return getSecret(PERMISSION_BOT_VAULT_ID) } catch { return null }
+  try { return readPermissionBotToken() } catch { return null }
 }
 let permissionBotTokenReader: PermissionBotTokenReader = vaultPermissionBotToken
 

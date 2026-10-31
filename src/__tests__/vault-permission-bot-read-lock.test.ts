@@ -44,7 +44,7 @@ vi.mock('../db.js', () => ({
 }))
 vi.mock('../store-watcher.js', () => ({ setStoreWriteActor: () => undefined }))
 
-const { setSecret, getSecret } = await import('../web/vault.js')
+const { setSecret, getSecret, readPermissionBotToken, getSecretsForEnv, VaultEntryReadLockedError } = await import('../web/vault.js')
 const { tryHandleConnectors } = await import('../web/routes/connectors.js')
 const { _exportVaultForTest } = await import('../web/fleet-transfer.js')
 const { PERMISSION_BOT_VAULT_ID } = await import('../web/permission-bot-vault.js')
@@ -165,8 +165,30 @@ describe('GET /api/vault/<locked id>', () => {
     expect(out.body).toEqual({ id: 'other-secret', value: OTHER_VALUE })
   })
 
-  it('in-process getSecret still returns the token (the relay reads it this way)', () => {
-    expect(getSecret(PERMISSION_BOT_VAULT_ID)).toBe(TOKEN)
+  it('readPermissionBotToken returns the token (the relay and the approvals route read it this way)', () => {
+    expect(readPermissionBotToken()).toBe(TOKEN)
+  })
+
+  // Card 8e9f4670 (N2, r3): the lock sits in getSecret itself, for every caller.
+  describe('getSecret / getSecretsForEnv refuse the locked id', () => {
+    for (const id of [PERMISSION_BOT_VAULT_ID, PERMISSION_BOT_VAULT_ID.toUpperCase(), `  ${PERMISSION_BOT_VAULT_ID}  `]) {
+      it(`getSecret(${JSON.stringify(id)}) throws a value-free VaultEntryReadLockedError`, () => {
+        let err: unknown
+        try { getSecret(id) } catch (e) { err = e }
+        expect(err).toBeInstanceOf(VaultEntryReadLockedError)
+        expect(String((err as Error).message)).not.toContain(TOKEN)
+        expect(String((err as Error).stack ?? '')).not.toContain(TOKEN)
+      })
+    }
+
+    it('getSecretsForEnv with the locked id among others throws and returns nothing', () => {
+      expect(() => getSecretsForEnv({ A: 'other-secret', B: PERMISSION_BOT_VAULT_ID })).toThrow(VaultEntryReadLockedError)
+    })
+
+    it('another id is unchanged for getSecret and getSecretsForEnv', () => {
+      expect(getSecret('other-secret')).toBe(OTHER_VALUE)
+      expect(getSecretsForEnv({ A: 'other-secret' })).toEqual({ A: OTHER_VALUE })
+    })
   })
 })
 

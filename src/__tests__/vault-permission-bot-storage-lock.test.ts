@@ -40,7 +40,7 @@ vi.mock('../web/vault-bindings.js', () => ({
 vi.mock('../db.js', () => ({ logConfigChange: () => undefined }))
 vi.mock('../store-watcher.js', () => ({ setStoreWriteActor: () => undefined }))
 
-const { setSecret, getSecret, deleteSecret, VaultEntryLockedError } = await import('../web/vault.js')
+const { setSecret, getSecret, readPermissionBotToken, deleteSecret, VaultEntryLockedError } = await import('../web/vault.js')
 const { tryHandleConnectors } = await import('../web/routes/connectors.js')
 const { PERMISSION_BOT_VAULT_ID } = await import('../web/permission-bot-vault.js')
 
@@ -90,14 +90,14 @@ describe('vault.ts storage lock', () => {
       expect(() => setSecret(id, 'x', 'swapped')).toThrow(VaultEntryLockedError)
       expect(() => deleteSecret(id)).toThrow(VaultEntryLockedError)
     }
-    expect(getSecret(PERMISSION_BOT_VAULT_ID)).toBe(ORIGINAL_TOKEN)
+    expect(readPermissionBotToken()).toBe(ORIGINAL_TOKEN)
   })
 
   it('other ids still write, read and delete', () => {
     setSecret('some-other-secret', 'o', 'v1')
     expect(getSecret('some-other-secret')).toBe('v1')
     expect(deleteSecret('some-other-secret')).toBe(true)
-    expect(getSecret(PERMISSION_BOT_VAULT_ID)).toBe(ORIGINAL_TOKEN)
+    expect(readPermissionBotToken()).toBe(ORIGINAL_TOKEN)
   })
 })
 
@@ -111,7 +111,7 @@ describe('POST /api/connectors cannot reach the locked entry through slugify', (
       expect(out.body.error).toContain('locked')
     }
     expect(h.exec).toEqual([])
-    expect(getSecret(PERMISSION_BOT_VAULT_ID)).toBe(ORIGINAL_TOKEN)
+    expect(readPermissionBotToken()).toBe(ORIGINAL_TOKEN)
   })
 
   it('a different connector name still installs and vaults its secret', async () => {
@@ -122,6 +122,6 @@ describe('POST /api/connectors cannot reach the locked entry through slugify', (
     expect(out.body.ok).toBe(true)
     expect(h.exec.length).toBe(1)
     expect(getSecret('other-server-token')).toBe('abc')
-    expect(getSecret(PERMISSION_BOT_VAULT_ID)).toBe(ORIGINAL_TOKEN)
+    expect(readPermissionBotToken()).toBe(ORIGINAL_TOKEN)
   })
 })

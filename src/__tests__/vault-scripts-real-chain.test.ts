@@ -183,3 +183,72 @@ describe('the real chain, macOS-like (platform darwin, `security` always fails):
     }
   })
 })
+
+// Card 8e9f4670 (N2, r3): the lock is in getSecret, so the two helper scripts resolve nothing for
+// the permission bot's token id. The locked row is made by cloning KNOWN's encrypted blob (same
+// master key), because setSecret refuses that id. The value of the row is VALUE.
+describe('the real chain: the permission bot token id resolves nothing in the helper scripts', () => {
+  const LOCKED = 'telegram-engedely-bot-token'
+  const vaultFile = () => join(STORE, 'vault.json')
+  let original = ''
+
+  beforeAll(() => {
+    original = readFileSync(vaultFile(), 'utf-8')
+    const store = JSON.parse(original) as { entries: Array<Record<string, unknown>> }
+    const known = store.entries.find(e => e.id === 'KNOWN')!
+    store.entries.push({ ...known, id: LOCKED, label: 'locked' })
+    writeFileSync(vaultFile(), JSON.stringify(store, null, 2) + '\n')
+  })
+  afterAll(() => { writeFileSync(vaultFile(), original) })
+
+  it('positive control: the locked row exists in the file and decrypts with the same key (an unlocked clone resolves)', async () => {
+    const store = JSON.parse(readFileSync(vaultFile(), 'utf-8')) as { entries: Array<{ id: string }> }
+    expect(store.entries.map(e => e.id)).toContain(LOCKED)
+    const r = await run([resolveScript()], {}, 'MY_TOKEN=KNOWN\n')
+    expect(r.stdout).toBe(`MY_TOKEN=${VALUE}\n`)
+  })
+
+  it('compiled getSecret(locked) throws VaultEntryReadLockedError; another id is unchanged', async () => {
+    const p = join(ROOT, 'locked-driver.mjs')
+    writeFileSync(p, `const m = await import(${JSON.stringify(join(ROOT, 'dist', 'web', 'vault.js'))})
+let name = 'no-throw'
+try { m.getSecret(${JSON.stringify(LOCKED)}) } catch (e) { name = e.name + ':' + (e.message.includes(${JSON.stringify(VALUE)}) ? 'LEAK' : 'ok') }
+process.stdout.write(name + '|' + m.getSecret('KNOWN') + '|' + (m.readPermissionBotToken() === ${JSON.stringify(VALUE)}) + '\\n')
+`)
+    const r = await run([p], { LOG_LEVEL: 'silent', MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION: '1' })
+    expect(r.code, r.stderr).toBe(0)
+    expect(r.stdout).toBe(`VaultEntryReadLockedError:ok|${VALUE}|true\n`)
+  })
+
+  it('resolver: the locked id gives no output line and exit 4; a normal line next to it still resolves', async () => {
+    const only = await run([resolveScript()], {}, `MY_TOKEN=${LOCKED}\n`)
+    expect(only.code).toBe(4)
+    expect(only.stdout).toBe('')
+    expect(only.stdout + only.stderr).not.toContain(VALUE)
+
+    for (const id of [LOCKED.toUpperCase(), `  ${LOCKED}  `]) {
+      const odd = await run([resolveScript()], {}, `MY_TOKEN=${id}\n`)
+      expect(odd.stdout).toBe('')
+      expect(odd.stdout + odd.stderr).not.toContain(VALUE)
+      expect(odd.code).not.toBe(0)
+    }
+
+    const mixed = await run([resolveScript()], {}, `OTHER=KNOWN\nMY_TOKEN=${LOCKED}\n`)
+    expect(mixed.code).toBe(4)
+    expect(mixed.stdout).toBe(`OTHER=${VALUE}\n`)
+    expect(mixed.stderr).not.toContain(VALUE)
+  })
+
+  it('headers helper: the locked id adds no header; a normal one next to it still resolves', async () => {
+    const only = await run([headersScript(), `Authorization=Bearer:::${LOCKED}`])
+    expect(only.code, only.stderr).toBe(0)
+    expect(JSON.parse(only.stdout)).toEqual({})
+    expect(only.stdout + only.stderr).not.toContain(VALUE)
+    expect(only.stderr).toContain('refused')
+
+    const mixed = await run([headersScript(), `X-A=Bearer:::KNOWN`, `Authorization=Bearer:::${LOCKED}`])
+    expect(mixed.code, mixed.stderr).toBe(0)
+    expect(JSON.parse(mixed.stdout)).toEqual({ 'X-A': `Bearer ${VALUE}` })
+    expect(mixed.stderr).not.toContain(VALUE)
+  })
+})
