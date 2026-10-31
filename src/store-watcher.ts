@@ -22,6 +22,10 @@ const SYSTEM_FILES = new Set([
   '.dashboard-token', '.vault-key', 'vault.json', '.claude-oauth-token',
   // Federation config + inbound peer token (written by /api/federation/peers)
   'federation.json', '.federation-token',
+  // Fleet-token launch registry (card acdb8045): per-session 16-hex fingerprints
+  // written by the launchers, 0600. Not a secret itself -- deliberately NOT in
+  // SENSITIVE_NAMES -- but Marveen-managed state, so no agent-created audit row.
+  'fleet-token-launch.json',
   // Capability-summary cache (written by the capability-summary runner);
   // capability text, not a secret -- deliberately NOT in SENSITIVE_NAMES.
   'capability-summaries.json',
