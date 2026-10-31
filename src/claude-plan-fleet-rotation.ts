@@ -51,14 +51,58 @@ export function agentUsesFleetToken(input: {
    * refuses to start, and never falls back to the fleet token (#2227).
    */
   ownTokenFile: boolean
+  /**
+   * The agent names a customProvider in agent-config.json. The launcher's isClaude
+   * is `!isCustom && model.startsWith('claude-')`, so such an agent never gets the
+   * fleet token whatever its model id looks like (card acdb8045 K1). Optional for
+   * older callers: absent means no custom provider.
+   */
+  customProvider?: boolean
 }): boolean {
   if (input.name === input.mainAgentId) return false
   if (input.remote) return false
-  if (!input.model.startsWith('claude-')) return false
+  // Detector side of the launcher rule: everything but the "token file present"
+  // fact (that one is a runtime property of the store, not of the agent).
+  return launchExportsFleetToken({
+    isClaudeModel: input.model.startsWith('claude-'),
+    customProvider: input.customProvider === true,
+    authMode: input.authMode,
+    configuredConfigDir: input.configuredConfigDir !== null && input.configuredConfigDir !== '',
+    ownTokenFile: input.ownTokenFile,
+    fleetTokenPresent: true,
+  })
+}
+
+/**
+ * Pure: does the LAUNCHER export the shared fleet token (CLAUDE_CODE_OAUTH_TOKEN
+ * read from store/.claude-oauth-token) for a local sub-agent? This is the single
+ * rule behind both export sites in startAgentProcess (the shared-config branch
+ * and the isolated-config-dir branch), so the stale-token detector
+ * (agentUsesFleetToken) and the launcher cannot disagree (card acdb8045 K1).
+ *
+ * Main agent and remote agents never reach it: the main agent starts through
+ * scripts/channels.sh, remote agents return to the ssh path before any local
+ * export decision.
+ */
+export function launchExportsFleetToken(input: {
+  /** model (after openrouter-auto resolution) starts with 'claude-'. */
+  isClaudeModel: boolean
+  /** agent-config.json names a customProvider (wins over every model pattern). */
+  customProvider: boolean
+  authMode: string
+  /** An operator-configured claude plan / config dir resolves (before auto-isolation). */
+  configuredConfigDir: boolean
+  /** The agent's own setup-token file decided (set or invalid): never the fleet token. */
+  ownTokenFile: boolean
+  /** store/.claude-oauth-token exists and is non-empty. */
+  fleetTokenPresent: boolean
+}): boolean {
+  const isClaude = !input.customProvider && input.isClaudeModel
+  if (!isClaude) return false
   if (input.authMode === 'api' || input.authMode === 'own_team') return false
-  if (input.configuredConfigDir) return false
   if (input.ownTokenFile) return false
-  return true
+  if (input.configuredConfigDir) return false
+  return input.fleetTokenPresent
 }
 
 /** Compact UTC stamp for backup names: 20260924T083015Z. */

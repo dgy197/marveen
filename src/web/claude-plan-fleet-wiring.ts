@@ -12,7 +12,7 @@ import {
 import type { ClaudePlan } from './claude-plans.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { readClaudePlansState, writeClaudePlansState, recordFleetRotation, type FleetRotationRecord } from './claude-plans-state.js'
-import { listAllAgentNames, readAgentModel, readAgentAuthMode, readAgentRemoteHost } from './agent-config.js'
+import { listAllAgentNames, readAgentModel, readAgentAuthMode, readAgentRemoteHost, readAgentCustomProvider } from './agent-config.js'
 import { FLEET_OAUTH_TOKEN_PATH, isAgentRunning, restartAgentProcess } from './agent-process.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { getSecret } from './vault.js'
@@ -31,6 +31,8 @@ export function usesFleetToken(name: string): boolean {
     // as own too: such an agent refuses to start rather than use the fleet
     // token, so a fleet restart could only leave it stopped.
     ownTokenFile: agentTokenFileState(name) !== 'unset',
+    // The launcher's isClaude is `!isCustom && claude-*` (card acdb8045 K1).
+    customProvider: readAgentCustomProvider(name) !== null,
   })
 }
 
