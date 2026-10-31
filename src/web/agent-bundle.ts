@@ -10,6 +10,7 @@ import {
   statSync,
   lstatSync,
   renameSync,
+  realpathSync,
 } from 'node:fs'
 import { join, basename, dirname, relative, sep } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -233,21 +234,42 @@ export function sanitizeImportedConfig(stagedAgentDir: string): void {
   if (changed) atomicWriteFileSync(cfgPath, JSON.stringify(cfg, null, 2))
 }
 
-// Card 51538ebc B1: the staged tree comes out of an untrusted tar, and the keep
-// step (applyKeptSecurityProfile) rmSync/cpSync/atomic-writes inside it. A staged
-// agent dir, .claude, .claude/hooks, .claude/settings.json or agent-config.json
-// that is a symlink would make those writes act OUTSIDE staging (e.g. on
-// PROJECT_ROOT/scripts), so a bundle carrying one is refused. Absent is fine.
-// Checked top-down, so a linked parent is reported before its children. <label> is
-// the entry's name relative to the bundle root ('agent', 'agents/<name>'); the
-// message names relative entries only.
-const STAGED_SYMLINK_CHECKS = ['', '.claude', join('.claude', 'hooks'), join('.claude', 'settings.json'), 'agent-config.json'] as const
+// Card 51538ebc r3 B1: ONE invariant for every import path - the extracted tree
+// contains no symbolic link at any depth. A per-level list always missed one level
+// (a linked fleet `agents` root passed and sanitizeImportedConfig then rewrote live
+// agent-config.json files). Iterative lstat walk (explicit stack, links are never
+// followed). <label> prefixes the reported path ('' reads bundle-root relative names
+// like `agent/.claude`; 'agent' for a staged agent dir). The message names relative
+// entries only, with non-printable characters replaced.
+export function assertNoSymlinksInTree(root: string, label: string): void {
+  const report = (p: string): string => {
+    const rel = p === root ? '' : relative(root, p)
+    const shown = (label ? join(label, rel) : rel) || '.'
+    return shown.replace(/[^\x20-\x7e]/g, '?')
+  }
+  let rootStat
+  try { rootStat = lstatSync(root) } catch { return } // absent: nothing to walk
+  if (rootStat.isSymbolicLink()) throw new Error(`Invalid bundle: symlink at ${report(root)}`)
+  if (!rootStat.isDirectory()) return
+  const stack: string[] = [root]
+  while (stack.length > 0) {
+    const dir = stack.pop() as string
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name)
+      const st = lstatSync(p)
+      if (st.isSymbolicLink()) throw new Error(`Invalid bundle: symlink at ${report(p)}`)
+      if (st.isDirectory()) stack.push(p)
+    }
+  }
+}
 
-export function assertNoStagedSymlinks(stagedAgentDir: string, label = 'agent'): void {
-  for (const rel of STAGED_SYMLINK_CHECKS) {
-    let isLink = false
-    try { isLink = lstatSync(rel ? join(stagedAgentDir, rel) : stagedAgentDir).isSymbolicLink() } catch { continue }
-    if (isLink) throw new Error(`Invalid bundle: symlink at ${rel ? join(label, rel) : label}`)
+// Card 51538ebc r3 B1: even with no links in the tree, the staged agent dir must
+// resolve inside the extract root before anything is rewritten there.
+export function assertInsideExtractRoot(extractRoot: string, stagedAgentDir: string): void {
+  const realRoot = realpathSync(extractRoot)
+  const realStaged = realpathSync(stagedAgentDir)
+  if (realStaged !== realRoot && !realStaged.startsWith(realRoot + sep)) {
+    throw new Error('Invalid bundle: entry escapes the bundle')
   }
 }
 
@@ -267,7 +289,7 @@ function isSymlinkPath(p: string): boolean {
 export function applyKeptSecurityProfile(stagedAgentDir: string, existingDest: string | null): void {
   // Defence in depth (51538ebc B1): both import paths already checked, but this
   // function does the rm/cp/write, so it refuses a linked staged tree itself.
-  assertNoStagedSymlinks(stagedAgentDir)
+  assertNoSymlinksInTree(stagedAgentDir, 'agent')
   const cfgPath = join(stagedAgentDir, 'agent-config.json')
   const existing = existingDest ? readExistingConfigForKeep(join(existingDest, 'agent-config.json')) : null
   if (existsSync(cfgPath)) {
@@ -511,10 +533,11 @@ export function importAgentBundle(
     } catch {
       throw new Error('Invalid bundle: could not extract (not a gzip tar archive?)')
     }
+    // Before anything reads or writes the tree (card 51538ebc r3 B1).
+    assertNoSymlinksInTree(extractRoot, '')
 
     const manifest = readBundleManifest(extractRoot)
     const stagedAgentDir = join(extractRoot, 'agent')
-    assertNoStagedSymlinks(stagedAgentDir)
     if (!existsSync(stagedAgentDir) || !statSync(stagedAgentDir).isDirectory()) {
       throw new Error('Invalid bundle: agent/ directory missing')
     }
@@ -528,6 +551,7 @@ export function importAgentBundle(
 
     if (opts.admit && !opts.admit({ channelState: hasChannelState(stagedAgentDir), names: [name] })) throw new BundleImportRefused()
 
+    assertInsideExtractRoot(extractRoot, stagedAgentDir)
     sanitizeImportedConfig(stagedAgentDir)
 
     const dest = resolveDest(name) // agentDir: safeJoin rejects traversal
@@ -662,6 +686,7 @@ export function peekBundleKind(bundle: Buffer): 'agent' | 'fleet' {
       throw new Error('Invalid bundle: could not extract (not a gzip tar archive?)')
     }
     const manifestPath = join(work, 'manifest.json')
+    if (isSymlinkPath(manifestPath)) throw new Error('Invalid bundle: symlink at manifest.json')
     if (!existsSync(manifestPath)) {
       throw new Error('Invalid bundle: manifest.json missing (not a Marveen bundle?)')
     }
@@ -704,6 +729,8 @@ export function importAllAgentsBundle(
     } catch {
       throw new Error('Invalid bundle: could not extract (not a gzip tar archive?)')
     }
+    // Before anything reads or writes the tree (card 51538ebc r3 B1).
+    assertNoSymlinksInTree(extractRoot, '')
 
     const manifest = readFleetManifest(extractRoot)
     const agentsRoot = join(extractRoot, 'agents')
@@ -711,10 +738,10 @@ export function importAllAgentsBundle(
       throw new Error('Invalid bundle: agents/ directory missing')
     }
 
-    // Card 51538ebc B1: refuse a linked staged tree up front, for every agent, so a
+    // Card 51538ebc B1: refuse an escaping entry up front, for every agent, so a
     // bad entry late in the bundle cannot leave earlier agents half-installed.
     for (const entry of readdirSync(agentsRoot)) {
-      assertNoStagedSymlinks(join(agentsRoot, entry), `agents/${entry.replace(/[^\x20-\x7e]/g, '?')}`)
+      assertInsideExtractRoot(extractRoot, join(agentsRoot, entry))
     }
 
     // One admission for the whole bundle, before the first agent dir is touched.
@@ -739,6 +766,7 @@ export function importAllAgentsBundle(
       if (name === MAIN_AGENT_ID) { skipped.push({ name, reason: 'reserved for the main agent' }); continue }
       if (RESERVED_AGENT_IDS.includes(name)) { skipped.push({ name, reason: 'reserved by the system' }); continue }
 
+      assertInsideExtractRoot(extractRoot, stagedAgentDir)
       sanitizeImportedConfig(stagedAgentDir)
       const dest = resolveDest(name) // agentDir: safeJoin rejects traversal
       const exists = existsSync(dest)
