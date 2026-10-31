@@ -102,6 +102,7 @@ import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
+import { launchExportsFleetToken } from '../claude-plan-fleet-rotation.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { notifyChannel, alertIsRedirected } from '../notify.js'
@@ -2693,7 +2694,8 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     if (ownTokenFile) {
       // 2fb86ef2: the agent's own setup-token file, INSTEAD of the fleet file.
       oauthTokenEnv = ownOauthTokenExport(ownTokenFile)
-    } else if (!claudeConfigDir && hasFleetOauthToken() && needsFleetOauth) {
+    } else if (launchExportsFleetToken({ isClaudeModel: model.startsWith('claude-'), customProvider: isCustom, authMode, configuredConfigDir, ownTokenFile: false, fleetTokenPresent: hasFleetOauthToken() })) {
+      // Single rule shared with the stale-token detector (card acdb8045 K1).
       oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
     }
     // Isolation must also cover CHANNEL-LESS Claude-OAuth agents, not just
@@ -2755,7 +2757,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
           // appears in the JS-built command string or in `ps`. The file is 0600
           // and the value lands only in this process's own environment.
           // BYO/custom-endpoint agents: no OAuth export, only config-dir isolation.
-          if (needsFleetOauth) {
+          if (launchExportsFleetToken({ isClaudeModel: model.startsWith('claude-'), customProvider: isCustom, authMode, configuredConfigDir, ownTokenFile: false, fleetTokenPresent: true })) {
             oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
           }
         }
