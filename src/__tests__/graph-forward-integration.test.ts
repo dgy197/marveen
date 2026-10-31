@@ -393,6 +393,8 @@ function cliSpec(w: World, scenario: Scenario): { env: Record<string, string>; l
   writeFileSync(scenarioPath, JSON.stringify(scenario))
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? '/usr/bin:/bin',
+    // tsx puts its IPC pipe under TMPDIR; without it the pipe lands in /tmp, which safe-vitest.sb denies
+    ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}),
     HOME: w.home,
     NODE_ENV: 'production', // JSON logger lines on stdout: the secret grep reads them too
     MARVEEN_MAIL_CREDS: CREDS,
