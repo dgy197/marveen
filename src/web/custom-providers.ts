@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { isPermissionBotVaultId, PERMISSION_BOT_VAULT_READ_LOCKED_ERROR } from './permission-bot-vault.js'
 
 const PROVIDERS_PATH = join(PROJECT_ROOT, 'store', 'custom-providers.json')
 
@@ -43,6 +44,8 @@ export function loadCustomProvider(id: string): CustomProviderDef | null {
 }
 
 export function saveCustomProvider(def: CustomProviderDef): void {
+  // Storage-layer fence under validateCustomProvider (card 8e9f4670, N2).
+  if (isPermissionBotVaultId(def.vaultKey)) throw new Error(PERMISSION_BOT_VAULT_READ_LOCKED_ERROR)
   const store = loadStore()
   const idx = store.providers.findIndex(p => p.id === def.id)
   if (idx >= 0) {
@@ -119,6 +122,9 @@ export function validateCustomProvider(data: unknown): string | null {
   if (authHeader !== 'none' && !vaultKey) {
     return 'vaultKey is required unless authHeader is none'
   }
+  // Card 8e9f4670 (N2): the permission bot's token would be sent to the provider's baseUrl
+  // as the agent's auth header, a read path around the value-route lock.
+  if (isPermissionBotVaultId(vaultKey)) return PERMISSION_BOT_VAULT_READ_LOCKED_ERROR
 
   return null
 }

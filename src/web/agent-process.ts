@@ -98,6 +98,7 @@ import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleet
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
+import { readProviderSecret } from './provider-secret.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
@@ -1511,7 +1512,7 @@ export function buildCustomProviderLaunchEnv(agentName: string): CustomProviderL
   if (customProviderDef.authHeader === 'none') {
     headerExport = `export ANTHROPIC_AUTH_TOKEN=ollama && `
   } else {
-    const key = getSecret(customProviderDef.vaultKey ?? '') ?? ''
+    const key = readProviderSecret(customProviderDef.vaultKey ?? '') ?? ''
     if (!key) {
       throw new Error(`Custom provider vault key "${customProviderDef.vaultKey}" not found. Add it in the Vault tab.`)
     }
@@ -2201,7 +2202,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // providers leave this null (they have no such gate).
     const customApiKeyForApproval: string | null =
       isCustom && customProviderDef?.authHeader === 'x-api-key'
-        ? getSecret(customProviderDef.vaultKey ?? '') ?? null
+        ? readProviderSecret(customProviderDef.vaultKey ?? '') ?? null
         : null
     // ANTHROPIC_MODEL is REQUIRED for non-Claude models: the interactive TUI
     // validates the `--model` flag against known Anthropic models and silently
@@ -2218,7 +2219,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     let providerEnv: string
     try {
       providerEnv = resolveProviderEnv(model, (id) => {
-        const ertek = (getSecret(id) ?? '').trim()
+        const ertek = (readProviderSecret(id) ?? '').trim()
         return ertek ? launchSecretRef(`${name}.${id}`, ertek) : null
       }, customProviderDef).exportsStr
     } catch (err) {

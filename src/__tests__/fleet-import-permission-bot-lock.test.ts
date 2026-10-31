@@ -279,3 +279,63 @@ describe('B5: no locked row anywhere -> the import behaves as before (A4)', () =
     expect(result.ok).toBe(true)
   })
 })
+
+// Card 8e9f4670 (N2, B1): a binding naming the locked id would let a later
+// POST /api/vault/sync resolve the token into another process's env or header.
+// validateVaultLock refuses such a bundle like a locked row, before any write.
+describe('N2 B1: a bundle binding on the locked id refuses the whole import', () => {
+  const binding = (vaultSecretId: unknown) => ({ vaultSecretId, envVar: 'TOKEN', targets: [] })
+  const withBindings = (bindings: unknown) => ({ vaultKey: 'a2V5', entries: [row('other')], bindings })
+
+  for (const [label, id] of [
+    ['exact id', PERMISSION_BOT_VAULT_ID],
+    ['upper case', PERMISSION_BOT_VAULT_ID.toUpperCase()],
+    ['padded with spaces', `  ${PERMISSION_BOT_VAULT_ID}  `],
+  ] as const) {
+    it(`apply: ${label} -> refused with the operator hint, whole tree unchanged`, () => {
+      writeFileSync(LIVE_VAULT, JSON.stringify({ entries: [row('other')] }))
+      const before = snapshot()
+
+      const result = importFleet(bundle(withBindings([binding('other'), binding(id)])), { apply: true })
+
+      expectRefused(result)
+      expect(asDiff(result).errors[0]).toContain('provision the token out-of-band')
+      expect(snapshot()).toEqual(before)
+    })
+  }
+
+  it('dry-run reports the same refusal and writes nothing', () => {
+    const before = snapshot()
+    expectRefused(importFleet(bundle(withBindings([binding(PERMISSION_BOT_VAULT_ID)])), { apply: false }))
+    expect(snapshot()).toEqual(before)
+  })
+
+  for (const [label, bad] of [
+    ['number vaultSecretId', binding(42)],
+    ['missing vaultSecretId', { envVar: 'X', targets: [] }],
+    ['null binding', null],
+    ['string binding', PERMISSION_BOT_VAULT_ID],
+  ] as const) {
+    it(`a malformed binding (${label}) is refused and nothing is written`, () => {
+      const before = snapshot()
+      let result: unknown
+      expect(() => { result = importFleet(bundle(withBindings([binding('fine'), bad])), { apply: true }) }).not.toThrow()
+      expect(asDiff(result).dryRun).toBe(true)
+      expect(asDiff(result).errors.length).toBeGreaterThan(0)
+      expect(snapshot()).toEqual(before)
+    })
+  }
+
+  it('a bindings field that is not an array is refused', () => {
+    const before = snapshot()
+    const result = importFleet(bundle(withBindings({ vaultSecretId: PERMISSION_BOT_VAULT_ID })), { apply: true })
+    expect(asDiff(result).dryRun).toBe(true)
+    expect(asDiff(result).errors.length).toBeGreaterThan(0)
+    expect(snapshot()).toEqual(before)
+  })
+
+  it('bindings on other ids import normally', () => {
+    const result = importFleet(bundle(withBindings([binding('other')])), { apply: true }) as { ok?: true }
+    expect(result.ok).toBe(true)
+  })
+})

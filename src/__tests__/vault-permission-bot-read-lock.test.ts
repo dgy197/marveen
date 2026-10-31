@@ -49,6 +49,10 @@ const { tryHandleConnectors } = await import('../web/routes/connectors.js')
 const { _exportVaultForTest } = await import('../web/fleet-transfer.js')
 const { PERMISSION_BOT_VAULT_ID } = await import('../web/permission-bot-vault.js')
 const { logger } = await import('../logger.js')
+const { syncAllBindings, addBinding } = await import('../web/vault-bindings.js')
+const { tryHandleCustomProviders } = await import('../web/routes/custom-providers.js')
+const { saveCustomProvider, listCustomProviders } = await import('../web/custom-providers.js')
+const { readProviderSecret } = await import('../web/provider-secret.js')
 
 const TOKEN = '7000000003:AAreadLockPermissionBotToken'
 const OTHER_VALUE = 'other-secret-value-1'
@@ -216,5 +220,98 @@ describe('fleet export', () => {
     } finally {
       writeFileSync(VAULT_FILE(), original)
     }
+  })
+})
+
+// Card 8e9f4670 (N2, B1): bindings that predate the lock (or came in via a fleet import).
+describe('sync and addBinding with the locked id', () => {
+  const MCP_LOCKED = () => join(h.root, '.mcp-locked.json')
+  const MCP_OTHER = () => join(h.root, '.mcp-other.json')
+
+  it('syncAllBindings skips the locked binding (no decrypt, file byte-identical), still syncs the others', () => {
+    writeFileSync(MCP_LOCKED(), JSON.stringify({ mcpServers: { srv1: { command: 'node', args: ['a.js'] } } }, null, 2))
+    writeFileSync(MCP_OTHER(), JSON.stringify({ mcpServers: { srv2: { command: 'node', args: ['b.js'] } } }, null, 2))
+    writeFileSync(BINDINGS_FILE(), JSON.stringify({
+      bindings: [
+        { vaultSecretId: PERMISSION_BOT_VAULT_ID, envVar: 'TOKEN', targets: [{ mcpFilePath: MCP_LOCKED(), serverName: 'srv1' }] },
+        { vaultSecretId: 'other-secret', envVar: 'OTHER', targets: [{ mcpFilePath: MCP_OTHER(), serverName: 'srv2' }] },
+      ],
+    }))
+    const before = { locked: sha(MCP_LOCKED()), vault: sha(VAULT_FILE()) }
+
+    const result = syncAllBindings()
+
+    expect(sha(MCP_LOCKED())).toBe(before.locked)
+    expect(sha(VAULT_FILE())).toBe(before.vault)
+    expect(h.reads).not.toContain(PERMISSION_BOT_VAULT_ID)
+    expect(h.reads).toContain('other-secret')
+    expect(result.updated).toBe(1)
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0]).toContain('locked')
+    expect(JSON.stringify(result)).not.toContain(TOKEN)
+    const other = JSON.parse(readFileSync(MCP_OTHER(), 'utf-8'))
+    expect(other.mcpServers.srv2.env.OTHER).toBe('vault:other-secret')
+    expect(warnSpy.mock.calls.filter(c => (c[0] as { event?: string })?.event === 'vault-sync-refused')).toHaveLength(1)
+    expect(allLogPayloads()).not.toContain(TOKEN)
+  })
+
+  it('addBinding refuses the locked id at the storage layer, bindings file untouched', () => {
+    writeFileSync(BINDINGS_FILE(), JSON.stringify({ bindings: [] }))
+    const before = sha(BINDINGS_FILE())
+    for (const vaultSecretId of [PERMISSION_BOT_VAULT_ID, PERMISSION_BOT_VAULT_ID.toUpperCase(), ` ${PERMISSION_BOT_VAULT_ID} `]) {
+      expect(() => addBinding({ vaultSecretId, envVar: 'T', targets: [] })).toThrow(/locked/)
+    }
+    expect(sha(BINDINGS_FILE())).toBe(before)
+    expect(() => addBinding({ vaultSecretId: 'other-secret', envVar: 'T', targets: [] })).not.toThrow()
+  })
+})
+
+describe('custom provider vaultKey with the locked id', () => {
+  const PROVIDERS_FILE = () => join(h.root, 'store', 'custom-providers.json')
+
+  async function postProvider(vaultKey: unknown, authHeader = 'x-api-key') {
+    const { out, res } = mkRes()
+    const ctx = {
+      req: fakeReq({ id: 'p1', label: 'P1', baseUrl: 'https://provider.example/api', authHeader, vaultKey }) as unknown as http.IncomingMessage,
+      res: res as http.ServerResponse, path: '/api/custom-providers', method: 'POST',
+      url: new URL('http://localhost/api/custom-providers'), auth: { kind: 'token' },
+    } as unknown as RouteContext
+    expect(await tryHandleCustomProviders(ctx)).toBe(true)
+    return out
+  }
+
+  it('the route refuses every id variant (400, nothing saved)', async () => {
+    for (const vk of [PERMISSION_BOT_VAULT_ID, PERMISSION_BOT_VAULT_ID.toUpperCase(), `  ${PERMISSION_BOT_VAULT_ID} `]) {
+      const out = await postProvider(vk)
+      expect(out.status).toBe(400)
+      expect(out.body.error).toContain('locked')
+    }
+    expect(existsSync(PROVIDERS_FILE())).toBe(false)
+  })
+
+  it('the storage function refuses it too', () => {
+    expect(() => saveCustomProvider({ id: 'p2', label: 'P2', baseUrl: 'https://provider.example', authHeader: 'Bearer', vaultKey: PERMISSION_BOT_VAULT_ID })).toThrow(/locked/)
+    expect(existsSync(PROVIDERS_FILE())).toBe(false)
+  })
+
+  it('another vaultKey is accepted (the lock is not a blanket)', async () => {
+    const out = await postProvider('other-secret')
+    expect(out.status).toBe(200)
+    expect(listCustomProviders().map(p => p.vaultKey)).toEqual(['other-secret'])
+  })
+})
+
+describe('readProviderSecret (what an agent launch reads for a provider)', () => {
+  it('returns null for the locked id without decrypting, and warns without a value', () => {
+    for (const id of [PERMISSION_BOT_VAULT_ID, PERMISSION_BOT_VAULT_ID.toUpperCase(), ` ${PERMISSION_BOT_VAULT_ID}`]) {
+      expect(readProviderSecret(id)).toBeNull()
+    }
+    expect(h.reads).toEqual([])
+    expect(warnSpy.mock.calls.filter(c => (c[0] as { event?: string })?.event === 'provider-secret-refused')).toHaveLength(3)
+    expect(allLogPayloads()).not.toContain(TOKEN)
+  })
+
+  it('returns another secret as before', () => {
+    expect(readProviderSecret('other-secret')).toBe(OTHER_VALUE)
   })
 })

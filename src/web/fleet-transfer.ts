@@ -915,6 +915,22 @@ function validateVaultLock(fleet: FleetJson): string[] {
       return [`${PERMISSION_BOT_VAULT_LOCKED_ERROR} -- the import bundle carries it, nothing was imported.`]
     }
   }
+  // Card 8e9f4670 (N2, B1): a binding naming the locked id would let a later sync resolve
+  // the token into another process's env or header, so it is refused like a locked row.
+  if (vault.bindings !== undefined && vault.bindings !== null) {
+    if (!Array.isArray(vault.bindings)) {
+      return ['Érvénytelen vault szekció: a bindings mező nem tömb.']
+    }
+    for (const binding of vault.bindings) {
+      const bid = binding && typeof binding === 'object' ? (binding as Record<string, unknown>).vaultSecretId : undefined
+      if (typeof bid !== 'string') {
+        return ['Érvénytelen vault szekció: egy binding-nak nincs szöveges vaultSecretId-je.']
+      }
+      if (isPermissionBotVaultId(bid)) {
+        return [`${PERMISSION_BOT_VAULT_LOCKED_ERROR} -- the import bundle carries a binding on it, nothing was imported. Export the bundle without that binding, or provision the token out-of-band after the import.`]
+      }
+    }
+  }
   const livePath = join(STORE_DIR, 'vault.json')
   if (existsSync(livePath)) {
     let live: unknown
