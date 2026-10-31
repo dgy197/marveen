@@ -229,6 +229,44 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
     }
   })
 
+  it('ms365 mail tools fire on every ms365 server name, its chat/channel/activity tools and slack/github chat stay out (card 7f8b46a1 r3)', () => {
+    const fixture = JSON.parse(readFileSync(join(ROOT, 'scripts', 'hooks', 'mail-tool-name-cases.json'), 'utf-8')) as
+      { cases?: { name?: string; expected?: string | null }[] }
+    const hyphenated = (fixture.cases ?? [])
+      .filter((c) => (c.name ?? '').startsWith('mcp__ms365__') && c.expected)
+      .map((c) => c.name as string)
+    expect(hyphenated.length).toBeGreaterThan(10)
+    const fires = [
+      ...hyphenated,
+      'mcp__ms365__sendMail', 'mcp__ms365__replyMail', 'mcp__ms365__replyAllMail', 'mcp__ms365__forwardMail',
+      'mcp__ms365__createDraft', 'mcp__ms365__sendDraftMessage', 'mcp__ms365-v2__sendMail',
+      'mcp__ms365_mail__sendMail', 'mcp__MS365__sendMail',
+      'mcp__slack-mail__sendMail', 'mcp__slack__forward_email', 'mcp__slack__send_email',
+    ]
+    const stays = [
+      'mcp__ms365__send-chat-message', 'mcp__ms365__send-channel-message',
+      'mcp__ms365__reply-to-chat-message', 'mcp__ms365__reply-to-channel-message',
+      'mcp__ms365__send-my-activity-notification',
+      'mcp__slack__send_message', 'mcp__slack__reply', 'mcp__Slack__send_message',
+      'mcp__GitHub__reply_to_review_comment',
+      'mcp__plugin_telegram_telegram__send_message', 'mcp__plugin_Slack_slack__reply',
+    ]
+    const canonical = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
+    for (const tool of fires) expect(canonical.test(tool), `EMAIL_GATE_MATCHER misses ${tool}`).toBe(true)
+    for (const tool of stays) expect(canonical.test(tool), `EMAIL_GATE_MATCHER fires on ${tool}`).toBe(false)
+    for (const script of EMAIL_HOOKS) {
+      const own = (SETTINGS.hooks?.PreToolUse ?? []).filter((e) => (e.hooks ?? []).some((h) => (h.command ?? '').includes(script)))
+      for (const tool of fires) {
+        expect(own.some((e) => new RegExp(`^(${e.matcher ?? ''})$`).test(tool)), `${script} misses ${tool}`).toBe(true)
+      }
+      for (const tool of stays) {
+        const fired = own.filter((e) => new RegExp(`^(${e.matcher ?? ''})$`).test(tool)).map((e) => e.matcher)
+        const extra = script === 'outgoing-copy-gate.py' && /plugin_(telegram|discord)_.*__reply$/.test(tool)
+        if (!extra) expect(fired, `${script} fires on ${tool}`).toEqual([])
+      }
+    }
+  })
+
   it('a harder-mail create_draft does NOT ask for approval on the main agent; send_mail does', () => {
     // Owner decision (tg 6349): approval is for the actual send only.
     const td = mkdtempSync(join(tmpdir(), 'hm-gate-'))
