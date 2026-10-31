@@ -1200,6 +1200,9 @@ _FREE_TEXT_KEYS = frozenset({
     "body", "htmlbody", "textbody", "plaintext", "plainbody", "bodypreview",
     "subject", "text", "content", "html", "snippet", "query", "q", "search", "keyword", "keywords",
     "label", "labels", "title", "description", "comment", "note", "summary", "preview", "message", "name",
+    # label / folder identifiers ("Forwarded", "Forwarded Items") name a place, not an instruction
+    "labelids", "addlabelids", "removelabelids", "labelid", "labelname", "folder", "folderid", "foldername",
+    "destinationfolder", "destinationfolderid", "parentfolderid", "mailbox",
 })
 _FREE_TEXT_SUFFIX = re.compile(r"(?:body|text|content|html)$")
 _FORWARD_WORD = re.compile(r"(?<![A-Za-z])(?:forward|redirect)", re.IGNORECASE | re.ASCII)

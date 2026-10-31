@@ -1825,7 +1825,10 @@ export function isReadAction(segments) {
 // Twin: _has_forward_key_name in scripts/hooks/email_extract.py.
 const FREE_TEXT_KEYS = new Set(['body', 'htmlbody', 'textbody', 'plaintext', 'plainbody', 'bodypreview',
   'subject', 'text', 'content', 'html', 'snippet', 'query', 'q', 'search', 'keyword', 'keywords',
-  'label', 'labels', 'title', 'description', 'comment', 'note', 'summary', 'preview', 'message', 'name'])
+  'label', 'labels', 'title', 'description', 'comment', 'note', 'summary', 'preview', 'message', 'name',
+  // label / folder identifiers ("Forwarded", "Forwarded Items") name a place, not an instruction
+  'labelids', 'addlabelids', 'removelabelids', 'labelid', 'labelname', 'folder', 'folderid', 'foldername',
+  'destinationfolder', 'destinationfolderid', 'parentfolderid', 'mailbox'])
 const FREE_TEXT_SUFFIX = /(?:body|text|content|html)$/
 const FORWARD_WORD = /(?<![A-Za-z])(?:forward|redirect)/i
 const FORWARD_WORD_CAMEL = /[a-z](?:Forward|Redirect)/
