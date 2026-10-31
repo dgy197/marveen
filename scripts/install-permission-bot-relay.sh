@@ -77,10 +77,21 @@ if [ -n "${TELEGRAM_STATE_DIR:-}" ]; then
 elif [ -f "$PROJECT_DIR/.claude/channels/telegram/.env" ]; then
   STATE_DIR_ENTRY="$PROJECT_DIR/.claude/channels/telegram"
 fi
+# Every value written into the plist goes through xml_escape (& < > " '), so a
+# path with markup in it cannot close the <string> and add keys.
+xml_escape() {
+  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\\&apos;/g"
+}
+X_LABEL="$(xml_escape "$LABEL")"
+X_NODE_BIN="$(xml_escape "$NODE_BIN")"
+X_DIST_ENTRY="$(xml_escape "$DIST_ENTRY")"
+X_PROJECT_DIR="$(xml_escape "$PROJECT_DIR")"
+X_HOME="$(xml_escape "$HOME")"
+X_USER="$(xml_escape "$(id -un)")"
 STATE_DIR_BLOCK=""
 if [ -n "$STATE_DIR_ENTRY" ]; then
   STATE_DIR_BLOCK="    <key>TELEGRAM_STATE_DIR</key>
-    <string>$STATE_DIR_ENTRY</string>"
+    <string>$(xml_escape "$STATE_DIR_ENTRY")</string>"
 fi
 
 # 2. launchd plist. KeepAlive restarts a crash; ThrottleInterval keeps a refused
@@ -93,14 +104,14 @@ cat > "$PLIST" <<PLIST_EOF
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>$LABEL</string>
+  <string>$X_LABEL</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$NODE_BIN</string>
-    <string>$DIST_ENTRY</string>
+    <string>$X_NODE_BIN</string>
+    <string>$X_DIST_ENTRY</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>$PROJECT_DIR</string>
+  <string>$X_PROJECT_DIR</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -108,17 +119,17 @@ cat > "$PLIST" <<PLIST_EOF
   <key>ThrottleInterval</key>
   <integer>60</integer>
   <key>StandardOutPath</key>
-  <string>$PROJECT_DIR/store/permission-bot-relay.log</string>
+  <string>$X_PROJECT_DIR/store/permission-bot-relay.log</string>
   <key>StandardErrorPath</key>
-  <string>$PROJECT_DIR/store/permission-bot-relay.error.log</string>
+  <string>$X_PROJECT_DIR/store/permission-bot-relay.error.log</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key>
-    <string>$HOME</string>
+    <string>$X_HOME</string>
     <key>USER</key>
-    <string>$(id -un)</string>
+    <string>$X_USER</string>
     <key>LANG</key>
     <string>hu_HU.UTF-8</string>
 $STATE_DIR_BLOCK

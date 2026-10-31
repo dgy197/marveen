@@ -223,6 +223,21 @@ describe('install-permission-bot-relay.sh', () => {
     expect(plist).not.toContain('FAKEenvTokenSECRET')
   })
 
+  it.skipIf(process.platform !== 'darwin')('XML-escapes every plist value: markup in TELEGRAM_STATE_DIR neither breaks the plist nor adds a key', () => {
+    const evil = `/tmp/x</string><key>EVIL</key><string>1&amp;<'">`
+    const r = run([], { TELEGRAM_STATE_DIR: evil })
+    expect(r.rc, r.out).toBe(0)
+    const lint = spawnSync('plutil', ['-lint', plistPath()], { encoding: 'utf8' })
+    expect(lint.status, `${lint.stdout}${lint.stderr}`).toBe(0)
+    const json = spawnSync('plutil', ['-convert', 'json', '-o', '-', plistPath()], { encoding: 'utf8' })
+    expect(json.status).toBe(0)
+    const parsed = JSON.parse(json.stdout) as { EnvironmentVariables: Record<string, string>; ProgramArguments: string[] }
+    expect(Object.keys(parsed.EnvironmentVariables).sort()).toEqual(['HOME', 'LANG', 'PATH', 'TELEGRAM_STATE_DIR', 'USER'])
+    expect(parsed.EnvironmentVariables['TELEGRAM_STATE_DIR']).toBe(evil)
+    expect(readFileSync(plistPath(), 'utf8')).not.toContain('<key>EVIL</key>')
+    expect(parsed.ProgramArguments[1]).toBe(join(project, 'dist', 'permission-bot-relay.js'))
+  })
+
   it('--load calls launchctl load on the plist', () => {
     const r = run(['--load'])
     expect(r.rc, r.out).toBe(0)
