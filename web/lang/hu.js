@@ -1102,6 +1102,7 @@ window._i18n.hu = {
   'approvals.btn.approve':       'Jóváhagyás',
   'approvals.btn.reject':        'Elutasítás',
   'approvals.telegram_only':     'Csak a tulajdonos Telegram-gombjával dönthető el.',
+  'approvals.sms_unverified_description': 'A kérő leírása (nem hitelesített):',
   'approvals.status.pending':    'Várakozó',
   'approvals.status.approved':   'Jóváhagyott',
   'approvals.status.rejected':   'Elutasított',

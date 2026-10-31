@@ -1,0 +1,292 @@
+// Card e487f46c, security review B1: an external_message (SMS) approval that names a
+// content_hash must carry the canonical {kind, number, text} envelope as action_payload,
+// and the server checks on create that the hash is the sha256 of it. The owner's
+// notification shows the payload's number and text. Other categories are unchanged.
+//
+// The canonical form is the one scripts/sms/seeme-send.py hashes (Python's json.dumps with
+// ensure_ascii=False, sort_keys=True, separators=(",", ":")): the parity test below runs
+// python3 itself on the same vectors.
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+
+const sendSpy = vi.hoisted(() => vi.fn(async (_token: string, _chatId: string, _text: string): Promise<number | null> => 4242))
+
+vi.mock('../config.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../config.js')>()
+  return { ...real, MAIN_AGENT_ID: 'agent-a', TELEGRAM_BOT_TOKEN: 'test-token', CHANNEL_PROVIDER: 'telegram' }
+})
+vi.mock('../owner-chat.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../owner-chat.js')>()
+  return { ...real, resolveOwnerChatId: () => '777' }
+})
+vi.mock('../web/telegram.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../web/telegram.js')>()
+  return { ...real, sendTelegramMessage: sendSpy }
+})
+
+import { initDatabase, getApproval, listApprovals } from '../db.js'
+import { tryHandleApprovals, buildOwnerApprovalText } from '../web/routes/approvals.js'
+import { boundSmsEnvelope, parseSmsPayload } from '../web/external-message-payload.js'
+import { canonicalJson } from '../approval-envelope.js'
+import type { RouteContext } from '../web/routes/types.js'
+
+const NUM = '36301234567'
+const TEXT = 'Kedves Ügyfelünk! A szerződés "aláírva", köszönjük.\nÜdv: Fireeng'
+
+function canon(number: string, text: string): string {
+  return canonicalJson({ kind: 'sms', number, text }) as string
+}
+function sha(s: string): string {
+  return createHash('sha256').update(s, 'utf8').digest('hex')
+}
+
+function fakeReq(method: 'POST', path: string, body: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
+  const out: { status: number; body: any } = { status: 0, body: null }
+  const res: any = {
+    writeHead(status: number) { out.status = status; return res },
+    end(chunk?: string) { if (chunk) out.body = JSON.parse(chunk) },
+  }
+  const url = new URL(`http://localhost:3420${path}`)
+  const bodyStr = JSON.stringify(body)
+  const req: any = {
+    on(event: string, cb: (chunk?: Buffer) => void) {
+      if (event === 'data') cb(Buffer.from(bodyStr))
+      if (event === 'end') cb()
+    },
+  }
+  return { ctx: { req, res, path: url.pathname, method, url, auth: { kind: 'session', user: 'owner' } } as RouteContext, out }
+}
+
+async function post(body: unknown) {
+  const { ctx, out } = fakeReq('POST', '/api/approvals', body)
+  expect(await tryHandleApprovals(ctx)).toBe(true)
+  await new Promise(r => setImmediate(r))
+  return out
+}
+
+function smsRequest(over: Record<string, unknown> = {}) {
+  const payload = canon(NUM, TEXT)
+  return {
+    agent_id: 'agent-b',
+    category: 'external_message',
+    action_description: `SMS-t küldenék a ${NUM} számra (SeeMe).`,
+    action_payload: payload,
+    content_hash: sha(payload),
+    timeout_seconds: 3600,
+    ...over,
+  }
+}
+
+describe('canonical SMS envelope (parity with seeme-send.py)', () => {
+  it('canonicalJson + sha256 equal Python json.dumps(sort_keys, compact, ensure_ascii=False) on the same vectors', () => {
+    const vectors: Array<[string, string]> = [
+      [NUM, TEXT],
+      [NUM, 'tab\there \\ backslash \u007f del \u0001 ctl'],
+      [NUM, 'emoji \u{1F600} astral,   line sep, árvíztűrő tükörfúrógép'],
+      ['36701234567', 'x'],
+    ]
+    const prog = [
+      'import hashlib, json, sys',
+      'out = []',
+      'for number, text in json.load(sys.stdin):',
+      '    c = json.dumps({"kind": "sms", "number": number, "text": text}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))',
+      '    out.append([c, hashlib.sha256(c.encode("utf-8")).hexdigest()])',
+      'sys.stdout.write(json.dumps(out))',
+    ].join('\n')
+    const res = spawnSync('python3', ['-I', '-c', prog], { input: JSON.stringify(vectors), encoding: 'utf-8', timeout: 60_000 })
+    expect(res.status).toBe(0)
+    const py = JSON.parse(res.stdout) as Array<[string, string]>
+    vectors.forEach(([number, text], i) => {
+      expect(canon(number, text)).toBe(py[i][0])
+      const parsed = parseSmsPayload(py[i][0])
+      expect(parsed.ok).toBe(true)
+      if (parsed.ok) expect(parsed.contentHash).toBe(py[i][1])
+    })
+  })
+})
+
+describe('parseSmsPayload', () => {
+  it('accepts the canonical envelope and returns the sha256 of it', () => {
+    const p = canon(NUM, TEXT)
+    const r = parseSmsPayload(p)
+    expect(r).toMatchObject({ ok: true, contentHash: sha(p), envelope: { kind: 'sms', number: NUM, text: TEXT } })
+  })
+
+  it('refuses everything that is not exactly the canonical {kind, number, text}', () => {
+    const good = canon(NUM, TEXT)
+    const cases: unknown[] = [
+      undefined, null, '', 42, {}, '[]', 'not json', '{}',
+      good.replace(',', ', '),                                                  // whitespace
+      canon(NUM, TEXT).replace('"kind":"sms"', '"kind":"mail"'),                // other kind
+      canon('06301234567', TEXT),                                               // number not normalised
+      canon('36101234567', TEXT),                                               // not a Hungarian mobile prefix
+      canon('+36301234567', TEXT),
+      canon(NUM, '   '),                                                        // blank text
+      canon(NUM, 'x'.repeat(1601)),                                             // over the sender's own limit
+      JSON.stringify({ kind: 'sms', number: NUM, text: TEXT, extra: 1 }),      // extra key
+      JSON.stringify({ kind: 'sms', number: NUM }),                             // missing key
+      JSON.stringify({ kind: 'sms', number: 36301234567, text: TEXT }),        // number not a string
+      JSON.stringify([ 'sms', NUM, TEXT ]),
+    ]
+    for (const c of cases) {
+      expect(parseSmsPayload(c).ok, String(c)).toBe(false)
+    }
+    // control: the canonical text itself is accepted (so the refusals above are not blanket)
+    expect(parseSmsPayload(good).ok).toBe(true)
+  })
+
+  it('refuses a non-canonical spelling of the same data (escaped characters, reordered keys)', () => {
+    const escaped = JSON.stringify({ kind: 'sms', number: NUM, text: 'Üdv' }).replace('Ü', '\\u00dc')
+    expect(parseSmsPayload(escaped).ok).toBe(false)
+    const reordered = '{"number":"' + NUM + '","kind":"sms","text":"x"}'
+    expect(parseSmsPayload(reordered).ok).toBe(false)
+  })
+})
+
+describe('POST /api/approvals, category external_message', () => {
+  beforeEach(() => {
+    initDatabase(':memory:')
+    sendSpy.mockClear()
+  })
+
+  it('accepts a content_hash that is the sha256 of the canonical action_payload: 201, row stores both', async () => {
+    const body = smsRequest()
+    const out = await post(body)
+    expect(out.status).toBe(201)
+    const row = getApproval(out.body.id)!
+    expect(row.action_payload).toBe(body.action_payload)
+    expect(row.content_hash).toBe(body.content_hash)
+  })
+
+  it('400 when content_hash is not the hash of the payload (the payload shows another text)', async () => {
+    const out = await post(smsRequest({ action_payload: canon(NUM, TEXT + ' Plusz: https://pelda.example/x') }))
+    expect(out.status).toBe(400)
+    expect(out.body.error).toMatch(/content_hash is not the sha256 of the canonical action_payload/)
+    expect(listApprovals({}).length).toBe(0)
+    expect(sendSpy).not.toHaveBeenCalled()
+  })
+
+  it('400 when the payload shows another number than the hashed envelope', async () => {
+    const out = await post(smsRequest({ action_payload: canon('36709998877', TEXT) }))
+    expect(out.status).toBe(400)
+    expect(listApprovals({}).length).toBe(0)
+  })
+
+  it('400 when a content_hash is given but there is no action_payload', async () => {
+    const body = smsRequest()
+    delete (body as Record<string, unknown>).action_payload
+    const out = await post(body)
+    expect(out.status).toBe(400)
+    expect(out.body.field).toBe('action_payload')
+    expect(listApprovals({}).length).toBe(0)
+    expect((await post(smsRequest({ action_payload: '' }))).status).toBe(400)
+  })
+
+  it('400 for a payload that is not the canonical envelope, even if its own sha256 matches the hash', async () => {
+    const spaced = canon(NUM, TEXT).replace(',', ', ')
+    const out = await post(smsRequest({ action_payload: spaced, content_hash: sha(spaced) }))
+    expect(out.status).toBe(400)
+    expect(out.body.field).toBe('action_payload')
+    const extra = JSON.stringify({ extra: 1, kind: 'sms', number: NUM, text: TEXT })
+    expect((await post(smsRequest({ action_payload: extra, content_hash: sha(extra) }))).status).toBe(400)
+    expect(listApprovals({}).length).toBe(0)
+  })
+
+  it('without a content_hash the request is unchanged (nothing binds it; the sender refuses it)', async () => {
+    const body = smsRequest()
+    delete (body as Record<string, unknown>).content_hash
+    delete (body as Record<string, unknown>).action_payload
+    const out = await post(body)
+    expect(out.status).toBe(201)
+    expect(getApproval(out.body.id)!.content_hash).toBeNull()
+  })
+
+  it('other categories are unchanged: a content_hash needs no SMS payload', async () => {
+    const hash = 'a'.repeat(64)
+    const out = await post({ agent_id: 'agent-b', category: 'memory_maintenance', action_description: 'x', content_hash: hash })
+    expect(out.status).toBe(201)
+    expect(getApproval(out.body.id)!.content_hash).toBe(hash)
+    const out2 = await post({ agent_id: 'agent-b', category: 'email_send', action_description: 'x', content_hash: hash, action_payload: 'free text' })
+    expect(out2.status).toBe(201)
+    expect(getApproval(out2.body.id)!.action_payload).toBe('free text')
+  })
+})
+
+// The dashboard cell: helpers cut out of web/app.js and run with stubs (house idiom of
+// credit-gate-approval-ui.test.ts).
+const APP = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
+function fnSource(name: string): string {
+  const head = APP.search(new RegExp(`\\n(async )?function ${name}\\(`))
+  if (head < 0) throw new Error(`no function ${name} in web/app.js`)
+  const open = APP.indexOf('{', APP.indexOf(')', head))
+  let depth = 0
+  for (let i = open; i < APP.length; i++) {
+    if (APP[i] === '{') depth++
+    else if (APP[i] === '}' && --depth === 0) return APP.slice(head + 1, i + 1)
+  }
+  throw new Error(`unbalanced function ${name}`)
+}
+const descriptionCell = new Function('t', 'escapeAttr', 'escapeHtml',
+  `${fnSource('_approvalSmsEnvelope')}\n${fnSource('_approvalDescriptionCell')}; return _approvalDescriptionCell`,
+)((k: string) => `T(${k})`, (s: string) => s, (s: string) => s) as (a: Record<string, unknown>) => string
+
+describe('the dashboard description cell for an external_message', () => {
+  it('shows the payload number and the FULL text, the free description after it as unverified', () => {
+    const long = 'x'.repeat(300)
+    const html = descriptionCell({ category: 'external_message', action_description: 'Ártalmatlan', action_payload: canon(NUM, long) })
+    expect(html).toContain(NUM)
+    expect(html).toContain(long)
+    expect(html).toContain('T(approvals.sms_unverified_description)')
+    expect(html.indexOf(long)).toBeLessThan(html.indexOf('Ártalmatlan'))
+  })
+
+  it('any other row, or an external_message without a readable envelope, keeps the 80-character description cell', () => {
+    const d = 'y'.repeat(120)
+    for (const a of [
+      { category: 'email_send', action_description: d, action_payload: canon(NUM, TEXT) },
+      { category: 'external_message', action_description: d, action_payload: null },
+      { category: 'external_message', action_description: d, action_payload: 'not json' },
+    ]) {
+      const html = descriptionCell(a)
+      expect(html).toContain('y'.repeat(80) + '...')
+      expect(html).not.toContain('T(approvals.sms_unverified_description)')
+    }
+  })
+})
+
+describe('what the owner is shown for an external_message', () => {
+  beforeEach(() => {
+    initDatabase(':memory:')
+    sendSpy.mockClear()
+  })
+
+  it('the notification text carries the bound payload number and text, the description marked unverified', async () => {
+    const out = await post(smsRequest({ action_description: `Ártalmatlan szöveg a ${NUM} számra` }))
+    expect(out.status).toBe(201)
+    const text = buildOwnerApprovalText(getApproval(out.body.id)!)
+    expect(text).toContain(`SMS-szám: ${NUM}`)
+    expect(text).toContain(TEXT)
+    expect(text).toContain('A kérő leírása (nem hitelesített): Ártalmatlan szöveg')
+    expect(text).toContain('external_message')
+  })
+
+  it('an unbound or hash-less external_message shows the plain description, as before', () => {
+    const base = {
+      id: 'i', agent_id: 'agent-b', category: 'external_message', action_description: 'Szabad szöveg',
+      status: 'pending', timeout_at: null, telegram_message_id: null, requested_at: 1, resolved_at: null,
+      resolved_by: null, consumed_at: null, consumed_by: null, consumed_ref: null,
+    }
+    const noHash = buildOwnerApprovalText({ ...base, action_payload: canon(NUM, TEXT), content_hash: null } as any)
+    expect(noHash).toContain('Szabad szöveg')
+    expect(noHash).not.toContain('SMS-szám')
+    const wrongHash = buildOwnerApprovalText({ ...base, action_payload: canon(NUM, TEXT), content_hash: 'b'.repeat(64) } as any)
+    expect(wrongHash).not.toContain('SMS-szám')
+    expect(boundSmsEnvelope({ category: 'email_send', content_hash: sha(canon(NUM, TEXT)), action_payload: canon(NUM, TEXT) })).toBeNull()
+  })
+})

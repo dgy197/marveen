@@ -18,6 +18,7 @@ import { channelStateDir, readChannelToken } from '../../channel-provider.js'
 import { TEST_RUN_PREFIX } from '../../test-run-marker.js'
 import { sendTelegramMessage, type TelegramInlineKeyboard } from '../telegram.js'
 import { envelopeBinding, type EnvelopeUnboundReason, type EnvelopeV1 } from '../../approval-envelope.js'
+import { boundSmsEnvelope, parseSmsPayload, EXTERNAL_MESSAGE_CATEGORY } from '../external-message-payload.js'
 import { buildCallbackData, isCallbackNonce, newCallbackNonce, nonceHash } from '../approval-callback-data.js'
 import {
   buildBoundApprovalMessages, formatOutcomeText,
@@ -159,9 +160,22 @@ export function buildOwnerApprovalText(approval: Approval): string {
   const expires = approval.timeout_at
     ? new Date(approval.timeout_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ })
     : 'nincs'
+  // e487f46c B1: an external_message whose payload is the very SMS its content_hash
+  // approves shows THAT number and text; the requester's free description follows,
+  // marked as unverified, so it cannot pass for what will be sent.
+  const sms = boundSmsEnvelope(approval)
+  const body = sms
+    ? [
+        `SMS-szám: ${sms.number}`,
+        '--- Az SMS szövege ---',
+        sms.text,
+        '--- Az SMS szövegének vége ---',
+        `A kérő leírása (nem hitelesített): ${approval.action_description}`,
+      ]
+    : [approval.action_description]
   return [
     `[JÓVÁHAGYÁS KELL] ${approval.agent_id} | ${approval.category}`,
-    approval.action_description,
+    ...body,
     `Lejárat: ${expires}`,
     `Döntés: Dashboard -> Jóváhagyások (id: ${approval.id})`,
   ].join('\n')
@@ -1083,6 +1097,25 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     if (claimsCreditGatePrefix(cat) && !isCreditGateCategory(cat)) {
       json(res, { error: 'category: the credit_gate_ prefix is reserved for credit_gate_calibration, credit_gate_canary and credit_gate_incident_clear' }, 400)
       return true
+    }
+    // e487f46c B1: an external_message (SMS) request that names a content_hash must carry
+    // the canonical {kind, number, text} envelope that hash is the sha256 of, so the owner
+    // is shown the text the sender will be allowed to send. Without a content_hash the
+    // request is unchanged (nothing binds it to a text, and the sender refuses it).
+    if (cat === EXTERNAL_MESSAGE_CATEGORY && typeof content_hash === 'string') {
+      if (typeof action_payload !== 'string' || action_payload === '') {
+        json(res, { error: `action_payload is required for ${cat} with a content_hash: the canonical {kind,number,text} envelope`, field: 'action_payload' }, 400)
+        return true
+      }
+      const sms = parseSmsPayload(action_payload)
+      if (!sms.ok) {
+        json(res, { error: `action_payload is not a valid canonical ${cat} envelope`, field: sms.field }, 400)
+        return true
+      }
+      if (sms.contentHash !== content_hash) {
+        json(res, { error: 'content_hash is not the sha256 of the canonical action_payload' }, 400)
+        return true
+      }
     }
     if (isCreditGateCategory(cat)) {
       if (!CREDIT_GATE_REQUESTER_RE.test(agent_id.trim())) {
