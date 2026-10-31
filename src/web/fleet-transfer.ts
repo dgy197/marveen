@@ -26,7 +26,7 @@ import { SCHEDULED_TASKS_DIR, type ScheduledTaskWritten } from './scheduled-task
 import { registerScheduledTask } from './schedule-registry.js'
 import { getBindings } from './vault-bindings.js'
 import { resolveMasterKeyForExport } from './vault.js'
-import { isPermissionBotVaultId, PERMISSION_BOT_VAULT_LOCKED_ERROR } from './permission-bot-vault.js'
+import { isPermissionBotVaultId, PERMISSION_BOT_VAULT_ID, PERMISSION_BOT_VAULT_LOCKED_ERROR } from './permission-bot-vault.js'
 import { getDb, backfillEmbeddings } from '../db.js'
 import { logger } from '../logger.js'
 import { isValidModelId } from '../model-id.js'
@@ -743,9 +743,19 @@ function exportVault(): VaultExport | null {
 
   // Raw export: the entire FleetJson will be encrypted, so vault data is safe as plaintext here.
   const vaultStore = safeReadJson(vaultPath)
-  const entries = (vaultStore.entries as Record<string, unknown>[]) ?? []
+  const allEntries = (vaultStore.entries as Record<string, unknown>[]) ?? []
   const bindingsStore = safeReadJson(bindingsPath)
-  const bindings = (bindingsStore.bindings as Record<string, unknown>[]) ?? []
+  const allBindings = (bindingsStore.bindings as Record<string, unknown>[]) ?? []
+
+  // Card 8e9f4670 (N2): the permission bot's token never leaves through an export (the
+  // bundle is a read path around the value-route lock). Its row and any binding that names
+  // it are skipped; the operator re-provisions the token out-of-band on the target.
+  const entries = allEntries.filter(e => !isPermissionBotVaultId((e as { id?: unknown } | null)?.id))
+  const bindings = allBindings.filter(b => !isPermissionBotVaultId((b as { vaultSecretId?: unknown } | null)?.vaultSecretId))
+  if (entries.length !== allEntries.length || bindings.length !== allBindings.length) {
+    logger.warn({ event: 'fleet-export-vault-row-skipped', vaultId: PERMISSION_BOT_VAULT_ID },
+      'fleet export: the permission bot token is locked and was left out of the vault section; provision it out-of-band on the target')
+  }
 
   // Channel .env (bot tokens) are intentionally NOT exported -- see re-pair model comment in VaultExport.
   return { vaultKey, entries, bindings }
@@ -918,7 +928,7 @@ function validateVaultLock(fleet: FleetJson): string[] {
       return ['A meglévő store/vault.json entries mezője nem tömb, ezért a vault szekció nem cserélhető (a zárolt sor nem ellenőrizhető).']
     }
     if (liveEntries.some(e => isPermissionBotVaultId((e as { id?: unknown } | null)?.id))) {
-      return [`${PERMISSION_BOT_VAULT_LOCKED_ERROR} -- the live vault holds it and the bundle's vault section would replace the vault files, nothing was imported.`]
+      return [`${PERMISSION_BOT_VAULT_LOCKED_ERROR} -- the live vault holds it and the bundle's vault section would replace the vault files, nothing was imported. Export the bundle without the vault section, or provision the token out-of-band after the import.`]
     }
   }
   return []
