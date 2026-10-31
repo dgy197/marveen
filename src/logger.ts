@@ -59,14 +59,12 @@ export const REDACT_PATHS = [
   'req.headers.Authorization',
   'headers.authorization',
   'headers.Authorization',
-  // Card 0d7e2c04: the per-agent send key header. Node lowercases incoming header names, but a hand-built object may
-  // carry any spelling, so the common case variants are listed (pino paths are case-sensitive).
-  'req.headers["x-agent-key"]',
-  'req.headers["X-Agent-Key"]',
-  'req.headers["X-AGENT-KEY"]',
-  'headers["x-agent-key"]',
-  'headers["X-Agent-Key"]',
-  'headers["X-AGENT-KEY"]',
+  // Card 0d7e2c04: the per-agent send key header (x-agent-key). A hyphenated name is not a valid dotted pino path, and
+  // the bracket form is not reachable by the every-entry path probe test, so the header objects are masked by wildcard:
+  // every value under req.headers / headers (x-agent-key in any spelling included) comes out as REDACTED. Node lowercases
+  // incoming header names, so per-case variants add nothing and are not listed.
+  'req.headers.*',
+  'headers.*',
   'authorization',
   'token',
   'apiKey',
