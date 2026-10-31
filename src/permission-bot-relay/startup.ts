@@ -70,7 +70,7 @@ export interface StartupDeps {
 }
 
 /** The token from the Vault entry, or null (missing, locked Keychain, any error). */
-export function vaultPermissionBotToken(): string | null {
+function vaultPermissionBotToken(): string | null {
   try {
     return readPermissionBotToken()
   } catch {

@@ -60,3 +60,38 @@ describe('readPermissionBotToken has a closed set of callers', () => {
     expect(nonTest.filter(rel => rel.startsWith('scripts/'))).toEqual([])
   })
 })
+
+// Card 8e9f4670 (N2-B3): the Vault-reading wrappers must not leave their modules. The relay's
+// vaultPermissionBotToken() is module-private, and the approvals route's test seam hands the previous
+// reader back only under a test runner (outside one it returns null).
+describe('the Vault-reading wrappers stay module-private', () => {
+  const read = (rel: string): string => readFileSync(join(REPO, rel), 'utf-8')
+  const nonTestFiles = (): string[] => {
+    const files: string[] = []
+    walk(join(REPO, 'src'), files)
+    walk(join(REPO, 'scripts'), files)
+    return files.map(f => relative(REPO, f)).filter(rel => !isTest(rel))
+  }
+
+  it('no non-test file exports vaultPermissionBotToken', () => {
+    const exporting = nonTestFiles().filter(rel => {
+      const src = read(rel)
+      return /export\s+(async\s+)?(function|const|let|var)\s+vaultPermissionBotToken\b/.test(src)
+        || /export\s*\{[^}]*\bvaultPermissionBotToken\b[^}]*\}/.test(src)
+    })
+    expect(exporting).toEqual([])
+  })
+
+  it('positive control: the relay startup still defines vaultPermissionBotToken (as a private function)', () => {
+    expect(read('src/permission-bot-relay/startup.ts')).toMatch(/^function vaultPermissionBotToken\(/m)
+  })
+
+  it('setPermissionBotTokenReader returns the previous reader only under a test runner', () => {
+    const src = read('src/web/routes/approvals.ts')
+    const start = src.indexOf('export function setPermissionBotTokenReader(')
+    expect(start).toBeGreaterThan(-1)
+    const body = src.slice(start, src.indexOf('\n}\n', start))
+    const returns = body.match(/\breturn\b[^\n]*/g) ?? []
+    expect(returns).toEqual(['return isTestRun() ? prev : null'])
+  })
+})

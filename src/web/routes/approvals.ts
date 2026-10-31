@@ -18,7 +18,7 @@ import { RESPONSE_MAC_HEADER, loadOrCreateResponseKey, responseKeyPath, response
 import { resolveOwnerChatId, resolveAlertOwnerChat } from '../../owner-chat.js'
 import { sendOwnerMessage } from '../../notify.js'
 import { channelStateDir, readChannelToken } from '../../channel-provider.js'
-import { TEST_RUN_PREFIX } from '../../test-run-marker.js'
+import { TEST_RUN_PREFIX, isTestRun } from '../../test-run-marker.js'
 import { sendTelegramMessage, clearTelegramInlineKeyboard, type TelegramInlineKeyboard } from '../telegram.js'
 import { readPermissionBotToken } from '../vault.js'
 import { PERMISSION_BOT_VAULT_ID } from '../permission-bot-vault.js'
@@ -694,11 +694,15 @@ const vaultPermissionBotToken: PermissionBotTokenReader = () => {
 }
 let permissionBotTokenReader: PermissionBotTokenReader = vaultPermissionBotToken
 
-/** Test seam: replace the Vault read of the permission-bot token (null = the real one); returns the previous reader. */
-export function setPermissionBotTokenReader(reader: PermissionBotTokenReader | null): PermissionBotTokenReader {
+/**
+ * Test seam: replace the Vault read of the permission-bot token (null = the real one). Under a test
+ * runner it returns the previous reader so a test can restore it; outside one it returns null, so
+ * the Vault-reading function never leaves this module through the seam (card 8e9f4670 N2-B3).
+ */
+export function setPermissionBotTokenReader(reader: PermissionBotTokenReader | null): PermissionBotTokenReader | null {
   const prev = permissionBotTokenReader
   permissionBotTokenReader = reader ?? vaultPermissionBotToken
-  return prev
+  return isTestRun() ? prev : null
 }
 
 // The tokens of the main bot as far as this install knows it: the one the main
