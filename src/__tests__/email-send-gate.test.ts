@@ -382,9 +382,13 @@ describe('injectEmailSendGate', () => {
     const matcher = hooks[0].matcher as string
     expect(matcher).toBe(EMAIL_GATE_MATCHER)
     // Pinned independently of the constant, so dropping an alternative goes red:
-    // 36 name-keyed alternatives + the 5 verb alternatives (reply, fwd, forward, send, draft).
+    // 36 name-keyed alternatives + the 5 verb alternatives (reply, fwd, forward, send, draft)
+    // + the 14 mail-server word alternatives of card 3d6e5181 (every tool of a mail-like server).
     const alts = matcher.split('|')
-    expect(alts).toHaveLength(41)
+    expect(alts).toHaveLength(55)
+    for (const w of ['mail', 'outlook', 'exchange', 'ms365', 'm365', 'office365', 'o365', 'imap', 'smtp', 'jmap', 'sieve', 'proton', 'msgraph', 'microsoft']) {
+      expect(new RegExp(`^(?:${matcher})$`).test(`mcp__${w}__create_rule`), `mail-server alternative for ${w}`).toBe(true)
+    }
     for (const w of ['reply', 'fwd', 'forward', 'send', 'draft']) {
       const verb = `${w.split('').map((c) => `[${c.toUpperCase()}${c.toLowerCase()}]`).join('')}.*`
       expect(alts.filter((a) => a.endsWith(`__.*${verb}`)), `verb alternative for ${w}`).toHaveLength(1)
