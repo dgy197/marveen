@@ -1610,10 +1610,48 @@ const CHANNEL_PLUGIN_RE = /^mcp__plugin_(?:telegram|discord|slack)[-_]/
 // Applied to what follows "mcp__". A chat reply is the owner's channel, not a
 // letter. Twin: _NON_MAIL_SERVER_RE in scripts/hooks/email_extract.py.
 const NON_MAIL_SERVER_RE = /^(?:slack__(?![\s\S]*mail)|ms365[^_]*__(?![\s\S]*mail)[^\n\r]*(?:chat|channel|activity))/i
-// "create" only drafts a letter when a mail noun comes with it (create_draft,
-// create_message, create_mail, create_reply_draft): create_filter,
-// create_filter_from_template and createGoogleDoc are not drafts (card 6151bb4d).
+// One invariant for "create" (card 6151bb4d, direction of msg 6348): create is a
+// DRAFT (ledger-checked) by default, whatever follows it (create_draft,
+// create_reply, create_event, create_appointment, create_rsvp ...). It is not mail
+// only when the LAST word, the head noun of the name, is on a CLOSED non-mail list
+// (create_label, createGoogleDoc, create_contact ...). Anything not on the list,
+// or a list noun that is not the head (create_contact_invite), stays draft:
+// fail-closed, no synonym list of mail words to grow. rule / filter join the list
+// only when the tool INPUT is clean of forward / redirect keys (hasForwardKey).
+// Twin: _CREATE_NONMAIL_NOUNS in scripts/hooks/email_extract.py.
 const MAIL_CREATE_NOUNS = ['draft', 'drafts', 'message', 'messages', 'msg', 'mail', 'email', 'emails']
+const CREATE_NONMAIL_NOUNS = new Set(['label', 'labels', 'folder', 'folders', 'doc', 'docs',
+  'document', 'documents', 'googledoc', 'googledocs', 'contact', 'contacts', 'task', 'tasks',
+  'note', 'notes', 'tag', 'tags', 'category', 'categories'])
+const CREATE_RULE_NOUNS = new Set(['rule', 'rules', 'filter', 'filters'])
+
+// Does the tool input carry a forward / redirect-like key anywhere (forwardTo,
+// redirectTo, forwardAsAttachmentTo, forwarding_address ...)? Keys are compared
+// case-insensitively, objects and arrays are walked recursively, the values do not
+// matter. The walk is bounded; running over the bound, or an input that is not an
+// object / array at all, counts as "has one" (fail-closed).
+// Twin: _has_forward_key in scripts/hooks/email_extract.py.
+const FORWARD_WALK_MAX_DEPTH = 12
+const FORWARD_WALK_MAX_NODES = 5000
+export function hasForwardKey(input) {
+  if (typeof input !== 'object' || input === null) return true
+  let nodes = 0
+  const stack = [[input, 0]]
+  while (stack.length) {
+    const [v, depth] = stack.pop()
+    if (depth > FORWARD_WALK_MAX_DEPTH) return true
+    const items = Array.isArray(v) ? v.map((x) => [null, x]) : Object.entries(v)
+    for (const [k, x] of items) {
+      if (++nodes > FORWARD_WALK_MAX_NODES) return true
+      if (k !== null) {
+        const key = k.toLowerCase()
+        if (key.startsWith('forward') || key.startsWith('redirect')) return true
+      }
+      if (typeof x === 'object' && x !== null) stack.push([x, depth + 1])
+    }
+  }
+  return false
+}
 
 // {verb, noun}: the verb a word stands for ("sendmessage" -> send + message), or null.
 function mailVerb(word) {
@@ -1629,29 +1667,26 @@ function mailVerb(word) {
   return null
 }
 
-// ... or a sending verb (create_reply, createForward, create_compose) or a
-// calendar invite (create_event mails the attendees): those stay draft, as before
-// the narrowing. Twin: _MAIL_CREATE_WORDS in scripts/hooks/email_extract.py.
-const MAIL_CREATE_WORDS = new Set(['reply', 'replyall', 'forward', 'fwd', 'send', 'compose',
-  'event', 'events', 'invite', 'invites', 'invitation', 'invitations', 'meeting', 'meetings'])
-
-function createsMail(entry, words) {
-  if (MAIL_CREATE_NOUNS.includes(entry.noun) || entry.noun === 'reply') return true
-  return words.slice(entry.index + 1).some((w) =>
-    MAIL_CREATE_WORDS.has(w) || MAIL_CREATE_NOUNS.some((n) => w.endsWith(n)))
+// The create verb, with a head noun on the closed list (see above), is no letter.
+function createNotMail(entry, words, ruleOk) {
+  if (entry.noun || entry.index >= words.length - 1) return false
+  const head = words[words.length - 1]
+  return CREATE_NONMAIL_NOUNS.has(head) || (ruleOk && CREATE_RULE_NOUNS.has(head))
 }
 
 // "new" + a mail noun (new_email, newEmail, new-mail, new_message, new_draft,
 // newmail) starts a letter: a draft, ledger-checked, like create + mail noun.
 // "new" alone, new_folder and new_label are not mail. Only ADDS: it runs after the
-// verb rules found nothing (card 6151bb4d). Twin: _new_mail in email_extract.py.
+// verb rules found nothing, and only when the name has no recognised verb at all
+// (list_new_emails, get_new_messages stay readers; card 6151bb4d).
+// Twin: _new_mail in email_extract.py.
 function newMail(words) {
   return words.some((w, i) =>
     (w === 'new' && MAIL_CREATE_NOUNS.includes(words[i + 1])) ||
     (w.startsWith('new') && MAIL_CREATE_NOUNS.includes(w.slice(3))))
 }
 
-function segmentAction(segment) {
+function segmentAction(segment, ruleOk = false) {
   const s = segment
     .replace(/[^\x00-\x7f]/g, '_')
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
@@ -1666,19 +1701,23 @@ function segmentAction(segment) {
   if (entries.some((e) => MAIL_SEND_ANYWHERE.has(e.verb))) return 'send'
   if (entries.length && MAIL_SEND_VERBS.has(entries[0].verb)) return 'send'
   if (entries.length && MAIL_DRAFT_VERBS.has(entries[0].verb)) {
-    if (entries[0].verb === 'create' && !createsMail(entries[0], words)) return newMail(words) ? 'draft' : null
+    if (entries[0].verb === 'create' && createNotMail(entries[0], words, ruleOk)) return null
     return 'draft'
   }
-  return newMail(words) ? 'draft' : null
+  return entries.length === 0 && newMail(words) ? 'draft' : null
 }
 
-// 'send', 'draft' or null. Pure, never throws.
-export function mailToolAction(toolName) {
+// 'send', 'draft' or null. Pure, never throws. Name only: create + rule / filter is
+// a draft (fail-closed). With the tool INPUT as the second argument the input-aware
+// layer lowers create_rule / create_filter to null when the input has no
+// forward / redirect key anywhere (hasForwardKey).
+export function mailToolAction(toolName, toolInput = undefined) {
   const name = typeof toolName === 'string' ? toolName : ''
   const parts = name.split('__')
   if (parts.length < 3 || parts[0].toLowerCase() !== 'mcp' || CHANNEL_PLUGIN_RE.test(name)) return null
   if (NON_MAIL_SERVER_RE.test(name.slice(5))) return null
-  const found = new Set(parts.slice(2).map(segmentAction))
+  const ruleOk = toolInput !== undefined && !hasForwardKey(toolInput)
+  const found = new Set(parts.slice(2).map((p) => segmentAction(p, ruleOk)))
   if (found.has('send')) return 'send'
   if (found.has('draft')) return 'draft'
   return null
@@ -1844,7 +1883,7 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
   // action. A send is the governance block, unconditionally (never the
   // thread-reply narrowing, which reads send_email-shaped fields); a draft is
   // allowed to a sourced address only, exactly like DRAFT_TOOL_RE above.
-  const action = mailToolAction(name)
+  const action = mailToolAction(name, toolInput)
   if (action === 'send') return { deny: true, kind: 'mail-tool-send' }
   if (action === 'draft') {
     const bad = unverifiedRecipients(toolInput, verify)

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
+import { gateDecision, hasForwardKey, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
 
 // graph-forward N1b (spec G1-G7): the mail tools are recognised by their
 // ACTION, whatever the server name or version prefix. The gap it closes: the
@@ -25,20 +25,25 @@ const EXTRACT_DIR = join(ROOT, 'scripts', 'hooks')
 type Expected = 'send' | 'draft' | 'nonsend'
 const VECTORS = JSON.parse(readFileSync(join(EXTRACT_DIR, 'mail-tool-action-cases.json'), 'utf-8')) as {
   cases: Array<{ name: string; tool: string; input: Record<string, unknown>; expected: Expected }>
-  classifier_edges: Array<{ tool: unknown; expected: 'send' | 'draft' | null; note: string }>
+  // `input` is optional: present = the input-aware call (create_rule / create_filter), absent = name only
+  classifier_edges: Array<{ tool: unknown; input?: unknown; expected: 'send' | 'draft' | null; note: string }>
 }
 const AS_CLASS: Record<Expected, 'send' | 'draft' | null> = { send: 'send', draft: 'draft', nonsend: null }
 
-// One python process for every name: stdin carries the names, stdout the classes.
-function pythonActions(names: unknown[]): Array<string | null> {
+// One python process for every call: stdin carries [name, hasInput, input] triples, stdout the classes.
+function pythonActions(calls: Array<[unknown, boolean, unknown]>): Array<string | null> {
   const out = execFileSync('python3', ['-I', '-c', `
 import json, sys
 sys.path.insert(0, ${JSON.stringify(EXTRACT_DIR)})
 from email_extract import mail_tool_action
-print(json.dumps([mail_tool_action(n) for n in json.load(sys.stdin)]))
-`], { encoding: 'utf-8', input: JSON.stringify(names) })
+print(json.dumps([mail_tool_action(n, i) if h else mail_tool_action(n) for n, h, i in json.load(sys.stdin)]))
+`], { encoding: 'utf-8', input: JSON.stringify(calls) })
   return JSON.parse(out.trim())
 }
+
+// the JS side of one edge: input-aware when the edge carries an input
+const jsEdgeAction = (e: { tool: unknown; input?: unknown }) =>
+  'input' in e ? mailToolAction(e.tool as string, e.input) : mailToolAction(e.tool as string)
 
 const RECIPIENT_FIELDS = ['to', 'cc', 'bcc', 'recipients', 'recipient', 'recipient_email']
 const hasRecipient = (input: Record<string, unknown>) =>
@@ -46,8 +51,10 @@ const hasRecipient = (input: Record<string, unknown>) =>
 
 describe('mail-tool action: python and JS agree with the shared contract', () => {
   const caseNames = VECTORS.cases.map((c) => c.tool)
-  const edgeNames = VECTORS.classifier_edges.map((e) => e.tool)
-  const py = pythonActions([...caseNames, ...edgeNames])
+  const py = pythonActions([
+    ...VECTORS.cases.map((c): [unknown, boolean, unknown] => [c.tool, false, null]),
+    ...VECTORS.classifier_edges.map((e): [unknown, boolean, unknown] => [e.tool, 'input' in e, e.input ?? null]),
+  ])
 
   VECTORS.cases.forEach((c, i) => {
     it(`${c.tool} -> ${c.expected}`, () => {
@@ -58,7 +65,7 @@ describe('mail-tool action: python and JS agree with the shared contract', () =>
 
   VECTORS.classifier_edges.forEach((e, i) => {
     it(`edge ${JSON.stringify(e.tool)} -> ${e.expected} (${e.note})`, () => {
-      expect(mailToolAction(e.tool), 'JS').toBe(e.expected)
+      expect(jsEdgeAction(e), 'JS').toBe(e.expected)
       expect(py[caseNames.length + i], 'python').toBe(e.expected)
     })
   })
@@ -246,7 +253,22 @@ describe('sub-agent hard gate (gateDecision) on every case', () => {
     expect(gateDecision('mcp__gmail__create_label', { name: 'Ugyfel' }, () => false)).toEqual({ deny: false })
     expect(gateDecision('mcp__gmail__create_filter', { criteria: { from: 'x@y.hu' } }, () => false)).toEqual({ deny: false })
     expect(mailToolAction('mcp__gmail__create_label')).toBe(null)
-    expect(mailToolAction('mcp__gmail__create_filter')).toBe(null)
+    // rule / filter: name only is a draft (fail-closed), the clean input lowers it to null
+    expect(mailToolAction('mcp__gmail__create_filter')).toBe('draft')
+    expect(mailToolAction('mcp__gmail__create_filter', { criteria: { from: 'x@y.hu' } })).toBe(null)
+    // a forward / redirect key anywhere (case-insensitive, nested, any value) keeps it a draft
+    expect(mailToolAction('mcp__gmail__create_filter', { action: { Forward: '' } })).toBe('draft')
+    expect(mailToolAction('mcp__ms365__create-rule', { actions: { redirectTo: [] } })).toBe('draft')
+    expect(gateDecision('mcp__ms365__create-rule', { to: ['nincs@x.hu'], actions: { forwardTo: ['nincs@x.hu'] } },
+      () => false).deny).toBe(true)
+    // the walk is bounded: too deep or too wide is "has a forward key" (fail-closed)
+    let deep: Record<string, unknown> = { a: 1 }
+    for (let i = 0; i < 40; i++) deep = { n: deep }
+    expect(hasForwardKey(deep)).toBe(true)
+    expect(hasForwardKey({ list: Array.from({ length: 6000 }, (_, i) => i) })).toBe(true)
+    expect(hasForwardKey({ list: [1, 2, { x: 'y' }] })).toBe(false)
+    expect(hasForwardKey('forward')).toBe(true)
+    expect(hasForwardKey(null)).toBe(true)
     // the draft path itself stays gated
     expect(gateDecision('mcp__gmail__create_draft', { to: ['nincs@x.hu'] }, () => false).deny).toBe(true)
   })
@@ -298,8 +320,9 @@ describe('mail-tool fallback narrowing (card 6151bb4d)', () => {
     'mcp__plugin_telegram_telegram__send_message', 'mcp__plugin_telegram_telegram__reply',
   ]
   const nonDraftCreate = [
-    'mcp__gmail__create_filter', 'mcp__gmail__create_filter_from_template',
-    'mcp__google-drive__createGoogleDoc', 'mcp__gmail__v2get_draft', 'mcp__gmail__xdelete_draft',
+    'mcp__gmail__create_filter', 'mcp__gmail__create_label', 'mcp__gmail__create_folder',
+    'mcp__gmail__create_contact', 'mcp__gmail__create_task', 'mcp__gmail__list_new_emails',
+    'mcp__gmail__get_new_messages', 'mcp__google-drive__createGoogleDoc', 'mcp__gmail__v2get_draft', 'mcp__gmail__xdelete_draft',
   ]
   const stillGated: Array<[string, string]> = [
     ['mcp__gmail__create_draft', 'unverified-recipient'], ['mcp__gmail__createDraft', 'unverified-recipient'],
@@ -320,9 +343,29 @@ describe('mail-tool fallback narrowing (card 6151bb4d)', () => {
 
   it('create / get / delete without a mail noun is no draft', () => {
     for (const t of nonDraftCreate) {
-      expect(mailToolAction(t), t).toBe(null)
+      expect(mailToolAction(t, input), t).toBe(null)
       expect(gateDecision(t, input, verified).deny, t).toBe(false)
     }
+  })
+
+  it('create is a draft by default: appointment, entry, rsvp, response, answer are ledger-checked', () => {
+    for (const t of ['create_appointment', 'create_calendar_entry', 'create_rsvp', 'create_response',
+      'create_answer', 'create_contact_invite', 'create_filter_from_template', 'create_new_email'].map((n) => `mcp__google-calendar__${n}`)) {
+      expect(mailToolAction(t, input), t).toBe('draft')
+      expect(gateDecision(t, input, verified).deny, t).toBe(true)
+      expect(gateDecision(t, { to: ['known@example.com'] }, verified).deny, t).toBe(false)
+    }
+  })
+
+  it('create_rule / create_filter with a forward / redirect key anywhere in the input are drafts', () => {
+    for (const ti of [{ forwardTo: ['a@b.hu'] }, { actions: { redirectTo: [{ emailAddress: { address: 'a@b.hu' } }] } },
+      { action: { forward: 'a@b.hu' } }, { actions: { forwardAsAttachmentTo: [] } }]) {
+      for (const t of ['mcp__ms365__create_rule', 'mcp__gmail__create_filter']) {
+        expect(mailToolAction(t, ti), `${t} ${JSON.stringify(ti)}`).toBe('draft')
+        expect(gateDecision(t, { ...ti, to: ['invented@example.com'] }, verified).deny, t).toBe(true)
+      }
+    }
+    expect(mailToolAction('mcp__gmail__create_filter', { action: { addLabelIds: ['L1'] } })).toBe(null)
   })
 
   it('real mail sends and drafts still close', () => {

@@ -538,17 +538,24 @@ _VERSION_WORD = re.compile(r"v[0-9]+")
 _NON_MAIL_SERVER_RE = re.compile(
     r"(?:slack__(?![\s\S]*mail)|ms365[^_]*__(?![\s\S]*mail)[^\n\r]*(?:chat|channel|activity))",
     re.IGNORECASE | re.ASCII)
-# "create" only drafts a letter when a mail noun comes with it (create_draft,
-# create_message, create_mail, create_reply_draft): create_filter,
-# create_filter_from_template and createGoogleDoc are not drafts (card 6151bb4d).
+# One invariant for "create" (card 6151bb4d, direction of msg 6348): create is a
+# DRAFT (ledger-checked) by default, whatever follows it (create_draft,
+# create_reply, create_event, create_appointment, create_rsvp ...). It is not mail
+# only when the LAST word, the head noun of the name, is on a CLOSED non-mail list
+# (create_label, createGoogleDoc, create_contact ...). Anything not on the list,
+# or a list noun that is not the head (create_contact_invite), stays draft:
+# fail-closed, no synonym list of mail words to grow. rule / filter join the list
+# only when the tool INPUT is clean of forward / redirect keys (_has_forward_key).
+# Twin: CREATE_NONMAIL_NOUNS in scripts/email-send-gate.mjs.
 _MAIL_CREATE_NOUNS = ("draft", "drafts", "message", "messages", "msg", "mail", "email", "emails")
-# ... or a sending verb (create_reply, createForward, create_compose) or a calendar
-# invite (create_event mails the attendees): those stay draft, as before the
-# narrowing. Twin: MAIL_CREATE_WORDS in scripts/email-send-gate.mjs.
-_MAIL_CREATE_WORDS = frozenset({
-    "reply", "replyall", "forward", "fwd", "send", "compose",
-    "event", "events", "invite", "invites", "invitation", "invitations", "meeting", "meetings",
+_CREATE_NONMAIL_NOUNS = frozenset({
+    "label", "labels", "folder", "folders", "doc", "docs", "document", "documents",
+    "googledoc", "googledocs", "contact", "contacts", "task", "tasks", "note", "notes",
+    "tag", "tags", "category", "categories",
 })
+_CREATE_RULE_NOUNS = frozenset({"rule", "rules", "filter", "filters"})
+_FORWARD_WALK_MAX_DEPTH = 12
+_FORWARD_WALK_MAX_NODES = 5000
 _GLUED_READ_VERB = re.compile(r"[a-z0-9]{1,2}(get|delete)")
 
 
@@ -568,11 +575,41 @@ def _mail_verb(word: str):
     return None
 
 
-def _creates_mail(noun: str, words, index: int) -> bool:
-    if noun in _MAIL_CREATE_NOUNS or noun == "reply":
+def _create_not_mail(noun: str, words, index: int, rule_ok: bool) -> bool:
+    """The create verb, with a head noun on the closed list (see above), is no letter."""
+    if noun or index >= len(words) - 1:
+        return False
+    head = words[-1]
+    return head in _CREATE_NONMAIL_NOUNS or (rule_ok and head in _CREATE_RULE_NOUNS)
+
+
+def _has_forward_key(value) -> bool:
+    """Does the tool input carry a forward / redirect-like key anywhere (forwardTo,
+    redirectTo, forwardAsAttachmentTo, forwarding_address ...)? Keys are compared
+    case-insensitively, dicts and lists are walked recursively, the values do not
+    matter. The walk is bounded; running over the bound, or an input that is not a
+    dict / list at all, counts as "has one" (fail-closed). Twin: hasForwardKey in
+    scripts/email-send-gate.mjs."""
+    if not isinstance(value, (dict, list)):
         return True
-    return any(w in _MAIL_CREATE_WORDS or any(w.endswith(n) for n in _MAIL_CREATE_NOUNS)
-               for w in words[index + 1:])
+    nodes = 0
+    stack = [(value, 0)]
+    while stack:
+        v, depth = stack.pop()
+        if depth > _FORWARD_WALK_MAX_DEPTH:
+            return True
+        items = list(v.items()) if isinstance(v, dict) else [(None, x) for x in v]
+        for k, x in items:
+            nodes += 1
+            if nodes > _FORWARD_WALK_MAX_NODES:
+                return True
+            if isinstance(k, str):
+                key = k.lower()
+                if key.startswith("forward") or key.startswith("redirect"):
+                    return True
+            if isinstance(x, (dict, list)):
+                stack.append((x, depth + 1))
+    return False
 
 
 def _action_words(segment: str):
@@ -589,14 +626,15 @@ def _action_words(segment: str):
 def _new_mail(words) -> bool:
     """"new" + a mail noun (new_email, newEmail, new-mail, new_draft, newmail) starts a
     letter: a draft, ledger-checked. "new" alone, new_folder and new_label are not mail.
-    Only ADDS, after the verb rules found nothing (card 6151bb4d). Twin: newMail in
-    scripts/email-send-gate.mjs."""
+    Only ADDS, after the verb rules found nothing, and only when the name has no
+    recognised verb at all (list_new_emails, get_new_messages stay readers; card
+    6151bb4d). Twin: newMail in scripts/email-send-gate.mjs."""
     return any((w == "new" and i + 1 < len(words) and words[i + 1] in _MAIL_CREATE_NOUNS)
                or (w.startswith("new") and w[3:] in _MAIL_CREATE_NOUNS)
                for i, w in enumerate(words))
 
 
-def _segment_action(segment: str):
+def _segment_action(segment: str, rule_ok: bool = False):
     words = _action_words(segment)
     entries = [(v, i) for i, v in ((i, _mail_verb(w)) for i, w in enumerate(words)) if v]
     if any(v[0] in _MAIL_SEND_ANYWHERE for v, _ in entries):
@@ -605,10 +643,10 @@ def _segment_action(segment: str):
         return "send"
     if entries and entries[0][0][0] in _MAIL_DRAFT_VERBS:
         (verb, noun), index = entries[0]
-        if verb == "create" and not _creates_mail(noun, words, index):
-            return "draft" if _new_mail(words) else None
+        if verb == "create" and _create_not_mail(noun, words, index, rule_ok):
+            return None
         return "draft"
-    return "draft" if _new_mail(words) else None
+    return "draft" if not entries and _new_mail(words) else None
 
 
 def is_ms365_tool(tool_name) -> bool:
@@ -1029,15 +1067,22 @@ def _harder_send_envelope(ti: dict, to: list, reason):
     return to, reason, extra
 
 
-def mail_tool_action(tool_name):
-    """Return "send", "draft" or None for a tool name (spec G1-G4). Pure, never raises."""
+_NO_INPUT = object()
+
+
+def mail_tool_action(tool_name, tool_input=_NO_INPUT):
+    """Return "send", "draft" or None for a tool name (spec G1-G4). Pure, never raises.
+    Name only: create + rule / filter is a draft (fail-closed). With the tool INPUT as
+    the second argument the input-aware layer lowers create_rule / create_filter to
+    None when the input has no forward / redirect key anywhere (_has_forward_key)."""
     name = tool_name if isinstance(tool_name, str) else ""
     parts = name.split("__")
     if len(parts) < 3 or parts[0].lower() != "mcp" or _CHANNEL_PLUGIN_RE.match(name):
         return None
     if _NON_MAIL_SERVER_RE.match(name[5:]):
         return None
-    found = {_segment_action(p) for p in parts[2:]}
+    rule_ok = tool_input is not _NO_INPUT and not _has_forward_key(tool_input)
+    found = {_segment_action(p, rule_ok) for p in parts[2:]}
     if "send" in found:
         return "send"
     if "draft" in found:

@@ -159,8 +159,19 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
         got = ee.mail_tool_action(c["tool"])
         check(f"{c['tool']} -> {c['expected']}", got == AS_CLASS[c["expected"]], f"got {got!r}")
     for e in EDGES:
-        got = ee.mail_tool_action(e["tool"])
-        check(f"edge {e['tool']!r} -> {e['expected']} ({e['note']})", got == e["expected"], f"got {got!r}")
+        # an edge with an "input" is the input-aware call (create_rule / create_filter)
+        got = ee.mail_tool_action(e["tool"], e["input"]) if "input" in e else ee.mail_tool_action(e["tool"])
+        check(f"edge {e['tool']!r} {e.get('input', '')!r} -> {e['expected']} ({e['note']})", got == e["expected"], f"got {got!r}")
+    # the forward-key walk is bounded and fail-closed (twin: hasForwardKey in the JS gate)
+    deep = {"a": 1}
+    for _ in range(40):
+        deep = {"n": deep}
+    check("walk: too deep counts as a forward key", ee._has_forward_key(deep) is True)
+    check("walk: too many nodes counts as a forward key", ee._has_forward_key({"l": list(range(6000))}) is True)
+    check("walk: clean nested input has none", ee._has_forward_key({"l": [1, 2, {"x": "y"}]}) is False)
+    check("walk: a non-container input cannot be read: forward key", ee._has_forward_key("forward") is True and ee._has_forward_key(None) is True)
+    check("walk: key case-insensitive, any value", ee._has_forward_key({"A": [{"ForwardTo": None}]}) is True)
+    check("create_rule: no input argument = name only = draft", ee.mail_tool_action("mcp__gmail__create_rule") == "draft")
     check("the case list holds every G7 class", {c["expected"] for c in CASES} == {"send", "draft", "nonsend"})
 
     # --- 2. the call forms the pinned helper and the golden use (G6) ----------
@@ -218,7 +229,7 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     for tool, ti, draft in (("mcp__gmail__create_label", {"name": "Ügyfél — fontos"}, False),
                             ("mcp__gmail-v2__v2_update_label", {"id": "L1", "name": "Ajánlat"}, True),
                             ("mcp__gmail__create_filter", {"criteria": {"from": "x@y.hu"}, "action": {"addLabelIds": ["L1"]}}, False)):
-        got = ee.mail_tool_action(tool)
+        got = ee.mail_tool_action(tool, ti)
         check(f"{tool} is {'on the draft path' if draft else 'not a draft (card 6151bb4d)'}",
               got == ("draft" if draft else None), f"got {got!r}")
         code, _, err = run(GATE, s1, tool, ti)
