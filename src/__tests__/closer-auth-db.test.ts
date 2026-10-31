@@ -1,7 +1,9 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { agentDir } from '../web/agent-config.js'
 import {
   initDatabase, getDb, createAgentMessage, getAgentMessage, closeOpenMessage, toServedMessage, getCloserAuthReport,
 } from '../db.js'
@@ -49,7 +51,7 @@ const raw = (id: number) =>
 
 describe('closer_auth migration', () => {
   it('is additive and idempotent: a re-init keeps the column once and the old rows untouched', () => {
-    const dir = mkdtempSync(join('/Volumes/8T/10_LOCAL/Brainy/_ezermester/f137f980/tmp', 'cad-mig-'))
+    const dir = mkdtempSync(join(tmpdir(), 'cad-mig-'))
     const file = join(dir, 'mig.db')
     initDatabase(file)
     const first = columns().map((c) => c.name)
@@ -133,9 +135,14 @@ describe('closeOpenMessage with closerAuth', () => {
 describe('closer_auth is stored, never served', () => {
   let id = 0
   beforeAll(() => {
+    // POST /api/messages only accepts a registered fleet agent as `from` (isKnownAgent: agents/<id>/ exists).
+    mkdirSync(agentDir(FROM), { recursive: true })
     initDatabase(':memory:')
     id = createAgentMessage(FROM, TO, 'closer served-rows probe', null, null, { senderAuth: 'mismatch' }).id
     expect(closeOpenMessage(id, 'done', 'res', 'unsigned')).toBe(true)
+  })
+  afterAll(() => {
+    rmSync(agentDir(FROM), { recursive: true, force: true })
   })
 
   it('positive control: both verdicts are really stored on the row', () => {

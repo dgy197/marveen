@@ -40,6 +40,9 @@ function call(method: string, path: string, body?: unknown): Promise<{ statusCod
 const rowColumns = () =>
   (getDb().prepare('PRAGMA table_info(agent_messages)').all() as { name: string }[]).map((c) => c.name)
 
+// Card f137f980: closer_auth is a stored-not-served verdict column too, so the served shape is every column but the two.
+const servedColumns = () => rowColumns().filter((c) => c !== 'sender_auth' && c !== 'closer_auth')
+
 let id = 0
 
 beforeAll(() => {
@@ -59,7 +62,7 @@ describe('served message rows carry no sender_auth', () => {
     expect(r.statusCode).toBe(200)
     expect(r.raw).not.toContain('sender_auth')
     expect(r.raw).not.toContain('mismatch')
-    expect(Object.keys(JSON.parse(r.raw)).sort()).toEqual([...rowColumns().filter((c) => c !== 'sender_auth'), 'freshness'].sort())
+    expect(Object.keys(JSON.parse(r.raw)).sort()).toEqual([...servedColumns(), 'freshness'].sort())
   })
 
   it('GET /api/messages (all, per-agent, pending) -> no row has the key', async () => {
@@ -69,7 +72,7 @@ describe('served message rows carry no sender_auth', () => {
       const rows = JSON.parse(r.raw) as Record<string, unknown>[]
       expect(rows.some((x) => x.id === id), q).toBe(true)
       expect(r.raw, q).not.toContain('sender_auth')
-      for (const row of rows) expect(Object.keys(row).sort(), q).toEqual([...rowColumns().filter((c) => c !== 'sender_auth'), 'freshness'].sort())
+      for (const row of rows) expect(Object.keys(row).sort(), q).toEqual([...servedColumns(), 'freshness'].sort())
     }
   })
 
