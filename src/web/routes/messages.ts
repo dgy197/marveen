@@ -90,6 +90,9 @@ if (MESSAGE_SENDER_AUTH_DOWNGRADED !== undefined) {
 /** What the sender-key check concluded about one POST /api/messages row (stored in agent_messages.sender_auth). */
 export type SenderAuth = 'verified' | 'verified_prev' | 'mismatch' | 'invalid' | 'unsigned' | 'session' | 'device'
 
+/** The closer-side vocabulary (agent_messages.closer_auth): the sender verdicts plus the recipient that holds no key. */
+export type CloserAuth = SenderAuth | 'no_key_recipient'
+
 const SENDER_KEY_HEADER = 'x-agent-key'
 const senderAuthCounters = new Map<SenderAuth, number>()
 /** Per-process tally of the verdicts since the dashboard started (the shadow-mode meter; `unsigned` is the one to watch). */
@@ -97,17 +100,62 @@ export function getSenderAuthCounters(): Record<string, number> {
   return Object.fromEntries(senderAuthCounters)
 }
 
+const closerAuthCounters = new Map<CloserAuth, number>()
+/** Per-process tally of the PUT /api/messages/:id closer verdicts (winning closes only), same meter as getSenderAuthCounters. */
+export function getCloserAuthCounters(): Record<string, number> {
+  return Object.fromEntries(closerAuthCounters)
+}
+
+/** The outcome of a key check: the verdict, the agent a mismatching key belongs to, and the key-store error if it threw. */
+export interface KeyVerdict<V extends string = SenderAuth> {
+  verdict: V
+  /** Only for 'mismatch': whose key it was. Never the key itself. */
+  keyAgent?: string
+  /** Only for the 'invalid' that a key-store exception caused: its message (carries no key material). */
+  lookupError?: string
+}
+
 /**
- * Shadow-mode verdict on how the sender of a POST /api/messages row authenticated. It never decides anything: the
- * route accepts the row either way. The raw key header is read here and goes nowhere but resolveAgentSendKey, which
- * hashes it; no log line, return value or error below carries it.
+ * The shared core of the POST (sender) and PUT (closer) checks: which verdict does this request earn against
+ * `expectedAgent`? It neither counts nor logs, so each caller attaches its own counter and wording. The raw key header is
+ * read here and goes nowhere but resolveAgentSendKey, which hashes it; nothing returned carries it.
  *
  * - owner session / device key keep their own lane label (their identity is already stronger than a send key);
  * - no X-Agent-Key header: 'unsigned';
  * - a header that is repeated (Node joins repeats with ", " and the raw list shows each), empty, non-string or longer
  *   than the key cap: 'invalid', without any hashing or DB lookup;
- * - otherwise the key is resolved: unknown/expired -> 'invalid'; another agent's key -> 'mismatch'; the sender's own
- *   -> 'verified' (current) or 'verified_prev' (inside the rotation grace window).
+ * - otherwise the key is resolved: unknown/expired -> 'invalid'; another agent's key -> 'mismatch'; the expected
+ *   agent's own -> 'verified' (current) or 'verified_prev' (inside the rotation grace window).
+ */
+export function resolveKeyVerdict(
+  req: RouteContext['req'],
+  auth: RouteContext['auth'],
+  expectedAgent: string,
+): KeyVerdict {
+  if (auth?.kind === 'session') return { verdict: 'session' }
+  if (auth?.kind === 'device') return { verdict: 'device' }
+  const headers = req.headers as Record<string, string | string[] | undefined> | undefined
+  const value = headers?.[SENDER_KEY_HEADER]
+  const rawHeaders: unknown = (req as { rawHeaders?: unknown }).rawHeaders
+  const repeated = Array.isArray(rawHeaders)
+    ? rawHeaders.reduce<number>((n, h, i) => (i % 2 === 0 && typeof h === 'string' && h.toLowerCase() === SENDER_KEY_HEADER ? n + 1 : n), 0) > 1
+    : false
+  if (value === undefined && !repeated) return { verdict: 'unsigned' }
+  if (repeated || typeof value !== 'string' || value.length === 0 || value.length > AGENT_SEND_KEY_MAX_LEN) return { verdict: 'invalid' }
+  try {
+    const resolved = resolveAgentSendKey(value)
+    if (!resolved) return { verdict: 'invalid' }
+    if (resolved.agentId !== expectedAgent) return { verdict: 'mismatch', keyAgent: resolved.agentId }
+    return { verdict: resolved.which === 'prev' ? 'verified_prev' : 'verified' }
+  } catch (err) {
+    // The shadow check must never cost a message. The error text of the key store carries no key material.
+    return { verdict: 'invalid', lookupError: err instanceof Error ? err.message : 'unknown' }
+  }
+}
+
+/**
+ * Shadow-mode verdict on how the sender of a POST /api/messages row authenticated. It never decides anything: the
+ * route accepts the row either way. See resolveKeyVerdict for the verdicts; this adds the counter and the warn lines.
  */
 export function classifySenderAuth(
   req: RouteContext['req'],
@@ -115,46 +163,50 @@ export function classifySenderAuth(
   from: string,
   to: string,
 ): SenderAuth {
-  let verdict: SenderAuth
-  let keyAgent: string | undefined
-  if (auth?.kind === 'session') {
-    verdict = 'session'
-  } else if (auth?.kind === 'device') {
-    verdict = 'device'
-  } else {
-    const headers = req.headers as Record<string, string | string[] | undefined> | undefined
-    const value = headers?.[SENDER_KEY_HEADER]
-    const rawHeaders: unknown = (req as { rawHeaders?: unknown }).rawHeaders
-    const repeated = Array.isArray(rawHeaders)
-      ? rawHeaders.reduce<number>((n, h, i) => (i % 2 === 0 && typeof h === 'string' && h.toLowerCase() === SENDER_KEY_HEADER ? n + 1 : n), 0) > 1
-      : false
-    if (value === undefined && !repeated) {
-      verdict = 'unsigned'
-    } else if (repeated || typeof value !== 'string' || value.length === 0 || value.length > AGENT_SEND_KEY_MAX_LEN) {
-      verdict = 'invalid'
-    } else {
-      try {
-        const resolved = resolveAgentSendKey(value)
-        if (!resolved) {
-          verdict = 'invalid'
-        } else if (resolved.agentId !== from) {
-          verdict = 'mismatch'
-          keyAgent = resolved.agentId
-        } else {
-          verdict = resolved.which === 'prev' ? 'verified_prev' : 'verified'
-        }
-      } catch (err) {
-        // The shadow check must never cost a message. The error text of the key store carries no key material.
-        logger.warn({ err: err instanceof Error ? err.message : 'unknown' }, 'sender-key lookup failed; row recorded as invalid')
-        verdict = 'invalid'
-      }
-    }
-  }
+  const { verdict, keyAgent, lookupError } = resolveKeyVerdict(req, auth, from)
+  if (lookupError !== undefined) logger.warn({ err: lookupError }, 'sender-key lookup failed; row recorded as invalid')
   senderAuthCounters.set(verdict, (senderAuthCounters.get(verdict) ?? 0) + 1)
   if (verdict === 'mismatch' || verdict === 'invalid') {
     logger.warn({ from, to, senderAuth: verdict, keyAgent }, `Shadow sender check: ${verdict} send key on /api/messages POST (accepted, shadow mode)`)
   }
   return verdict
+}
+
+/**
+ * Card f137f980 (shadow): how did the CLOSER of a message authenticate? The key must belong to the row's recipient
+ * (`toAgent`, read from the stored row, never from the request): the recipient is the one entitled to close it.
+ *
+ * Same verdicts as resolveKeyVerdict, plus 'no_key_recipient' for a recipient that holds no send key (a system id, the
+ * owner, a federated address, the voice mailbox: anything isKnownAgent refuses), decided BEFORE any key work. A session
+ * or device key keeps its lane label first. It never throws: a failing key store is 'invalid'.
+ *
+ * It neither counts nor logs: the PUT handler computes the verdict BEFORE the close and calls recordCloserAuth only for
+ * the close that won, so a 409 loser or a 404 leaves no trace in the meter.
+ */
+export function classifyCloserAuth(
+  req: RouteContext['req'],
+  auth: RouteContext['auth'],
+  toAgent: string,
+): KeyVerdict<CloserAuth> {
+  try {
+    if (auth?.kind === 'session' || auth?.kind === 'device') return resolveKeyVerdict(req, auth, toAgent)
+    const recipient = sanitizeAgentIdent(toAgent)
+    if (toAgent.includes('/') || !isKnownAgent(recipient)) return { verdict: 'no_key_recipient' }
+    return resolveKeyVerdict(req, auth, recipient)
+  } catch (err) {
+    return { verdict: 'invalid', lookupError: err instanceof Error ? err.message : 'unknown' }
+  }
+}
+
+/** Count (and, for the suspicious verdicts, log) the closer verdict of a close that took effect. No key, no hash, no content. */
+export function recordCloserAuth(id: number, toAgent: string, result: KeyVerdict<CloserAuth>): void {
+  const { verdict, keyAgent, lookupError } = result
+  if (lookupError !== undefined) logger.warn({ err: lookupError }, 'closer-key lookup failed; close recorded as invalid')
+  closerAuthCounters.set(verdict, (closerAuthCounters.get(verdict) ?? 0) + 1)
+  if (verdict === 'mismatch' || verdict === 'invalid' || verdict === 'unsigned') {
+    // TODO(enforce, Brainy 6367 Q3): in enforce mode an unsigned closer of an agent-addressed row gets a 403 (no receipt-less close).
+    logger.warn({ id, to: toAgent, closerAuth: verdict, keyAgent }, `Shadow closer check: ${verdict} send key on /api/messages PUT (accepted, shadow mode)`)
+  }
 }
 
 /**
@@ -777,9 +829,22 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // report in the recipient's name, also when the second caller was not the
     // recipient. A repeated PUT after a client timeout gets the same 409; the first
     // close already took effect.
+    //
+    // Card f137f980 (shadow): how did the CLOSER authenticate? The verdict is computed BEFORE the close from the stored
+    // row's recipient (the row's to_agent never changes, and it comes from the row, not from the request) and written by
+    // the SAME UPDATE as the status, so a lost race stores nothing. It runs only for a row that is still open (a closed
+    // one is a 409 below and earns no verdict) and never refuses: the answer, the delivery, the `notify` behaviour and
+    // the receipt text are what they were. 'off' skips all of it (null = the column stays empty).
     let ok = false
+    let closerVerdict: CloserAuth | null = null
     if (newStatus === 'done' || newStatus === 'failed') {
-      ok = closeOpenMessage(id, newStatus, result)
+      const pre = MESSAGE_SENDER_AUTH === 'off' ? undefined : getAgentMessage(id)
+      const closer = pre && pre.status !== 'done' && pre.status !== 'failed'
+        ? classifyCloserAuth(req, ctx.auth, pre.to_agent)
+        : undefined
+      ok = closeOpenMessage(id, newStatus, result, closer?.verdict ?? null)
+      if (ok && closer && pre) recordCloserAuth(id, pre.to_agent, closer)
+      closerVerdict = ok ? closer?.verdict ?? null : null
       if (!ok) {
         const current = getAgentMessage(id)
         if (current && (current.status === 'done' || current.status === 'failed')) {
@@ -808,10 +873,15 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       if (done && notify !== false && shouldNotifyDelegator(done.from_agent, done.to_agent, done.content)) {
         // A vagas NE legyen nema, ES legyen KOVETHETO: lasd resultSummary().
         const summary = resultSummary(id, result)
+        // Card f137f980: the receipt carries the closer's label ('receipt_<verdict>') instead of 'internal', so a receipt
+        // forged by an unsigned closer does not look like an in-process write. Off: the label stays 'internal'.
         createAgentMessage(
           done.to_agent,
           done.from_agent,
           `${COMPLETION_REPORT_PREFIX} msg_id:${id} status:${newStatus}\n\n${summary}`,
+          undefined,
+          undefined,
+          { senderAuth: closerVerdict ? `receipt_${closerVerdict}` : 'internal' },
         )
       }
       json(res, { ok: true }); return true
