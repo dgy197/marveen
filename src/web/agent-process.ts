@@ -37,6 +37,7 @@ import {
   detectsHeldPeerMessage,
   type FirstRunGateKind,
 } from '../pane-state.js'
+import { revokeAllAgentSendKeys } from './agent-send-keys.js'
 import { scheduleRecoveryBrief, cancelRecoveryBrief } from './restart-recovery-brief.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
@@ -79,7 +80,7 @@ import { measureClaudeCliVersion } from './claude-cli-version.js'
 import { decideStateObserver, stateObserverLaunchEnv } from './state-observer.js'
 import { launchableInstallDefault } from './default-model-guard.js'
 import { getClaudePidForSession, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
-import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE, FLEET_PYTHON_VENV } from '../config.js'
+import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE, FLEET_PYTHON_VENV, MESSAGE_SENDER_AUTH, type MessageSenderAuthMode } from '../config.js'
 import { fleetVenvBin } from '../fleet-venv.js'
 
 // FLEETVENV923: the `<venv>/bin:` prefix for a launch PATH, or '' when the venv
@@ -504,8 +505,18 @@ function writeKeyFileSafely(path: string, dir: string, data: string, h: KeysDirH
   }
 }
 
-/** Mint a fresh key for the agent and write it atomically (0600, dir 0700). Returns the file PATH only. */
-export function provisionAgentSendKey(agentId: string, dir: string = AGENT_KEYS_DIR, root?: string): string {
+/** Card 3f6500e6: MESSAGE_SENDER_AUTH=off makes the whole key feature inert (no mint, no file, no env). */
+export function agentSendKeysEnabled(mode: MessageSenderAuthMode = MESSAGE_SENDER_AUTH): boolean {
+  return mode !== 'off'
+}
+
+/**
+ * Mint a fresh key for the agent and write it atomically (0600, dir 0700). Returns the file PATH only.
+ * With mode 'off' (default: the frozen MESSAGE_SENDER_AUTH) it throws before touching anything: callers treat a
+ * throw as "start unsigned" and check agentSendKeysEnabled() first so the off case is silent.
+ */
+export function provisionAgentSendKey(agentId: string, dir: string = AGENT_KEYS_DIR, root?: string, mode: MessageSenderAuthMode = MESSAGE_SENDER_AUTH): string {
+  if (!agentSendKeysEnabled(mode)) throw new Error('sender auth is off: agent send keys are not provisioned')
   const path = agentKeyFilePath(agentId, dir) // validates before anything is touched
   const base = root ?? (dir === AGENT_KEYS_DIR ? PROJECT_ROOT : dirname(dir))
   verifyKeyParents(dir, base, true) // refuses a symlinked / loose parent chain BEFORE anything is created
@@ -548,15 +559,61 @@ export function clearAgentSendKey(agentId: string, dir: string = AGENT_KEYS_DIR)
   }
 }
 
+/**
+ * Card 3f6500e6, MESSAGE_SENDER_AUTH=off sweep (dashboard boot and every agent start): revoke every stored hash and
+ * remove what is left in the keys dir. Same safety as clearAgentSendKey: the install-root parents and the dir are
+ * verified first (a symlinked / foreign / loose one is refused quietly, nothing is unlinked through it), only regular
+ * files on the dir's device are unlinked, and the dir is re-checked against the held fd (dev+ino) before each unlink.
+ * Never throws, never logs a key or a path: one line with the counts. Returns null when mode is not 'off'.
+ */
+export function sweepAgentSendKeysWhenOff(dir: string = AGENT_KEYS_DIR, mode: MessageSenderAuthMode = MESSAGE_SENDER_AUTH, root?: string): { revoked: number; removed: number } | null {
+  if (agentSendKeysEnabled(mode)) return null
+  let revoked = 0
+  let removed = 0
+  try {
+    revoked = revokeAllAgentSendKeys()
+  } catch {
+    logger.warn('agent send-key sweep: revoke failed')
+  }
+  try {
+    const base = root ?? (dir === AGENT_KEYS_DIR ? PROJECT_ROOT : dirname(dir))
+    verifyKeyParents(dir, base, true)
+    const h = openKeysDir(dir, false)
+    if (h !== null) {
+      try {
+        for (const name of readdirSync(dir)) {
+          if (!AGENT_KEY_ID_RE.test(name) && !name.startsWith('.tmp.')) continue
+          const p = join(dir, name)
+          try {
+            const l = lstatSync(p)
+            if (l.isSymbolicLink() || !l.isFile() || l.dev !== h.dev) continue
+            const d = lstatSync(dir)
+            if (d.isSymbolicLink() || d.dev !== h.dev || d.ino !== h.ino) break // the dir was swapped: stop
+            unlinkSync(p)
+            removed++
+          } catch { /* leave it */ }
+        }
+      } finally {
+        closeSync(h.fd)
+      }
+    }
+  } catch {
+    logger.warn('agent send-key sweep: key dir refused')
+  }
+  logger.info({ revoked, removed }, 'sender auth off: agent send keys swept')
+  return { revoked, removed }
+}
+
 /** Shell prefix for a launch string: exports the key file PATH, never the key. */
 export function agentKeyLaunchEnv(keyFilePath: string): string {
   return `export ${AGENT_KEY_FILE_ENV}=${shSingleQuote(keyFilePath)} && `
 }
 
 /** Main agent (K3): the dashboard maintains its key file; boot calls this. Fail-open (shadow phase): null on error. */
-export function provisionMainAgentSendKey(): string | null {
+export function provisionMainAgentSendKey(mode: MessageSenderAuthMode = MESSAGE_SENDER_AUTH): string | null {
+  if (!agentSendKeysEnabled(mode)) return null // off: nothing minted, nothing written (card 3f6500e6)
   try {
-    return provisionAgentSendKey(MAIN_AGENT_ID)
+    return provisionAgentSendKey(MAIN_AGENT_ID, AGENT_KEYS_DIR, undefined, mode)
   } catch (err) {
     logger.warn({ err: err instanceof Error ? err.message : 'unknown' }, 'main agent send-key provisioning failed')
     return null
@@ -564,7 +621,8 @@ export function provisionMainAgentSendKey(): string | null {
 }
 
 /** Path the main agent's launcher should export (the file may not exist yet; senders fall back to unsigned). */
-export function mainAgentKeyFilePath(): string | null {
+export function mainAgentKeyFilePath(mode: MessageSenderAuthMode = MESSAGE_SENDER_AUTH): string | null {
+  if (!agentSendKeysEnabled(mode)) return null // off: the respawn launcher exports nothing
   try {
     return agentKeyFilePath(MAIN_AGENT_ID)
   } catch {
@@ -2662,7 +2720,9 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // Inter-agent send key (card 0d7e2c04 N2): file written 0600, launch string carries only the PATH.
     // Fail-open while the sender-auth rollout is in shadow mode: no key means unsigned sends, not a dead agent.
     let agentKeyEnv = ''
-    if (name !== MAIN_AGENT_ID) {
+    if (!agentSendKeysEnabled()) {
+      sweepAgentSendKeysWhenOff() // card 3f6500e6: off -> no key, no file, no env; leftovers are swept
+    } else if (name !== MAIN_AGENT_ID) {
       try {
         agentKeyEnv = agentKeyLaunchEnv(provisionAgentSendKey(name))
       } catch (err) {

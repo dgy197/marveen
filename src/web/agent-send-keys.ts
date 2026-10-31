@@ -123,3 +123,8 @@ export function revokeAgentSendKey(agentId: string): boolean {
   assertAgentId(agentId)
   return getDb().prepare('DELETE FROM agent_send_keys WHERE agent_id = ?').run(agentId).changes > 0
 }
+
+/** Revoke every stored key at once (MESSAGE_SENDER_AUTH=off sweep). Returns the number of rows removed. */
+export function revokeAllAgentSendKeys(): number {
+  return getDb().prepare('DELETE FROM agent_send_keys').run().changes
+}

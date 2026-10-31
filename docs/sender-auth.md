@@ -43,7 +43,14 @@ Before enforce (review residual, 0d7e2c04 BE round 2), closed in card ed5fc02c: 
 
 ## Rollback
 
-Set `MESSAGE_SENDER_AUTH=off` and restart the dashboard (needs Brainy's approval). The table and column are additive and may stay; key files are removed when each agent next stops. Full removal: revert the PR.
+Two levels (both need Brainy's approval for the restarts).
+
+(a) Runtime, no code change: set `MESSAGE_SENDER_AUTH=off`, restart the dashboard, then restart the agents. `off` makes the feature fully inert (card 3f6500e6):
+- no key is minted, no file is written, `MARVEEN_AGENT_KEY_FILE` is exported nowhere (the dashboard launch strings and the respawn launcher skip it; `scripts/channels.sh` exports it only if the file exists, which it will not);
+- on dashboard boot and on every agent start the dashboard revokes all rows of `agent_send_keys` and removes what is left in `store/.agent-keys/` (verified dir, regular files only, dev/ino re-checked before each unlink, never through a link; any anomaly is refused quietly); one log line with the counts;
+- `POST /api/messages` does not compute `sender_auth`; the sender scripts find no key file and send unsigned, as before.
+
+(b) Full: `git revert` of the branch(es) (0d7e2c04, ed5fc02c, 3f6500e6). No data migration is needed. The additive `agent_messages.sender_auth` column and the `agent_send_keys` table may stay: they are harmless and unused. The operator may delete `store/.agent-keys/` if anything is left in it; nothing else.
 
 ## What it does not fix
 
