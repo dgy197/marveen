@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { promisify } from 'node:util'
 import type http from 'node:http'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -45,7 +46,15 @@ vi.mock('../web/keychain.js', () => ({
 }))
 vi.mock('node:child_process', async (importOriginal) => {
   const orig = await importOriginal<typeof import('node:child_process')>()
-  return { ...orig, execSync: (cmd: string) => { if (cmd.startsWith('which ')) return '/usr/bin/claude'; h.exec.push(cmd); return '' } }
+  // Main's connectors route runs `claude mcp add` through the promisified execFile (card
+  // 89df7a00 / async CLI), not execSync: the fake answers that promisify.custom form, records
+  // only the add/remove calls, and never starts a process. execSync stays for `which`.
+  const wrapped: any = (...a: any[]) => (orig.execFile as any)(...a)
+  wrapped[promisify.custom] = (file: string, args: string[]) => {
+    if (file === 'claude' && args[0] === 'mcp' && (args[1] === 'add' || args[1] === 'remove')) h.exec.push(`${file} ${args.join(' ')}`)
+    return Object.assign(Promise.resolve({ stdout: '', stderr: '' }), { child: { stdin: { end: () => undefined } } })
+  }
+  return { ...orig, execFile: wrapped, execSync: (cmd: string) => { if (cmd.startsWith('which ')) return '/usr/bin/claude'; h.exec.push(cmd); return '' } }
 })
 vi.mock('../web/vault-bindings.js', () => ({
   syncSecret: () => ({ updated: 0, errors: [] }),
