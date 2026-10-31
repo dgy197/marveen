@@ -296,7 +296,14 @@ os.chmod(loose640, 0o640)
 tight400 = keyfile('mode400', VALID)
 os.chmod(tight400, 0o400)
 oversize = keyfile('oversize', VALID + '\n' * 300)  # one valid line, then padding: only the size check refuses it
-foreign_uid = {'MARVEEN_AGENT_KEY_EXPECT_UID': str(os.geteuid() + 4242)}  # test seam: "the file is owned by someone else"
+# test-only seam: a sitecustomize on PYTHONPATH makes os.geteuid() lie, so "the file is owned by someone else"
+SEAM_DIR = os.path.join(SANDBOX, 'seam')
+os.makedirs(SEAM_DIR)
+with open(os.path.join(SEAM_DIR, 'sitecustomize.py'), 'w') as f:
+    f.write('import os\n_real = os.geteuid\nos.geteuid = lambda: _real() + 4242\n')
+foreign_uid = {'PYTHONPATH': SEAM_DIR}
+hardlinked = keyfile('hardlinked', VALID)
+os.link(hardlinked, os.path.join(KEYS, 'hardlinked-twin'))
 
 CASES = (
     ('symlink to a valid key file', link, None),
@@ -305,6 +312,7 @@ CASES = (
     ('mode 0400', tight400, None),
     ('over 256 bytes', oversize, None),
     ('foreign uid', FESZEK_FILE, foreign_uid),
+    ('extra hard link', hardlinked, None),
     ('directory', KEYS, None),
 )
 for label, kf, extra in CASES:

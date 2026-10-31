@@ -356,7 +356,7 @@ export function agentKeyFilePath(agentId: string, dir: string = AGENT_KEYS_DIR):
  * foreign uid without root); `beforeRename` / `afterRename` run inside writeKeyFileSafely so a test can swap the keys
  * dir exactly in the window Node cannot close (it has no openat).
  */
-export const agentKeyFsSeam: { uid?: () => number; beforeRename?: () => void; afterRename?: () => void } = {}
+export const agentKeyFsSeam: { uid?: () => number; beforeRename?: () => void; afterRename?: () => void; afterVerify?: () => void } = {}
 
 function currentUid(): number | undefined {
   if (agentKeyFsSeam.uid) return agentKeyFsSeam.uid()
@@ -497,6 +497,8 @@ function writeKeyFileSafely(path: string, dir: string, data: string, h: KeysDirH
     } finally {
       closeSync(kfd)
     }
+    agentKeyFsSeam.afterVerify?.()
+    dirStillOurs() // a swap of the dir between the earlier check and the final key-file verification is caught here
   } catch (err) {
     unlinkIfOurs(renamed ? path : tmp)
     throw err
