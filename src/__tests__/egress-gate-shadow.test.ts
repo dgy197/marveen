@@ -6,7 +6,7 @@
 //   (d) the enforcing hook is untouched (still denies the same vectors) and the shadow has no deny path.
 import { describe, it, expect, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync, statSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync, statSync, symlinkSync, renameSync, utimesSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -181,6 +181,52 @@ describe('bounded log', () => {
     expect(readFileSync(log, 'utf-8')).toBe('{"n":2}\n')
     for (let i = 0; i < 3; i++) appendShadowLog({ n: 3 }, log)
     expect(statSync(log).size).toBeLessThanOrEqual(ROTATE_AT)
+  })
+
+  it('two concurrent rotations: the loser sees a fresh inode and does not rename over .1 (card 362dd786)', () => {
+    const log = join(dir, 'race.jsonl')
+    writeFileSync(log, 'o'.repeat(ROTATE_AT), { mode: 0o600 })
+    // The other process wins the race between our first stat and our lock: it rotates and starts a fresh log.
+    const seam = {
+      afterLock: () => {
+        renameSync(log, `${log}.1`)
+        writeFileSync(log, '{"other":1}\n', { mode: 0o600 })
+      },
+    }
+    expect(appendShadowLog({ n: 1 }, log, seam)).toBe(true)
+    expect(statSync(`${log}.1`).size).toBe(ROTATE_AT)
+    expect(readFileSync(`${log}.1`, 'utf-8')).toBe('o'.repeat(ROTATE_AT))
+    expect(readFileSync(log, 'utf-8')).toBe('{"other":1}\n{"n":1}\n')
+    expect(existsSync(`${log}.rotlock`)).toBe(false)
+  })
+
+  it('a stale lock is taken over, a fresh lock skips the rotation but the line is still appended', () => {
+    const stale = join(dir, 'stale.jsonl')
+    writeFileSync(stale, 'x'.repeat(ROTATE_AT), { mode: 0o600 })
+    writeFileSync(`${stale}.rotlock`, '', { mode: 0o600 })
+    const old = new Date(Date.now() - 60_000)
+    utimesSync(`${stale}.rotlock`, old, old)
+    expect(appendShadowLog({ n: 1 }, stale)).toBe(true)
+    expect(statSync(`${stale}.1`).size).toBe(ROTATE_AT)
+    expect(readFileSync(stale, 'utf-8')).toBe('{"n":1}\n')
+    expect(existsSync(`${stale}.rotlock`)).toBe(false)
+
+    const held = join(dir, 'held.jsonl')
+    writeFileSync(held, 'x'.repeat(ROTATE_AT), { mode: 0o600 })
+    writeFileSync(`${held}.rotlock`, '', { mode: 0o600 })
+    expect(appendShadowLog({ n: 2 }, held)).toBe(true)
+    expect(existsSync(`${held}.1`)).toBe(false)
+    expect(readFileSync(held, 'utf-8').endsWith('{"n":2}\n')).toBe(true)
+    expect(existsSync(`${held}.rotlock`)).toBe(true)
+  })
+
+  it('a lock failure never blocks the append (lock path is a directory)', () => {
+    const log = join(dir, 'lockfail.jsonl')
+    writeFileSync(log, 'x'.repeat(ROTATE_AT), { mode: 0o600 })
+    mkdirSync(`${log}.rotlock`)
+    expect(appendShadowLog({ n: 1 }, log)).toBe(true)
+    expect(existsSync(`${log}.1`)).toBe(false)
+    expect(readFileSync(log, 'utf-8').endsWith('{"n":1}\n')).toBe(true)
   })
 
   it('refuses a symlink at the log path and leaves its target alone', () => {
