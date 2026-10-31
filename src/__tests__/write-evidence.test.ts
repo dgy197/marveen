@@ -6,7 +6,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { checkWriteEvidence, findEvidence, readEvidenceLines, EVIDENCE_FILE, EVIDENCE_WINDOW_MS, WRITE_EVIDENCE_REPLY } from '../web/write-evidence.js'
+import { checkWriteEvidence, isTelegramMessageId, findEvidence, readEvidenceLines, EVIDENCE_FILE, EVIDENCE_WINDOW_MS, WRITE_EVIDENCE_REPLY } from '../web/write-evidence.js'
 
 const NOW = 1_780_000_000_000
 const line = (o: Record<string, unknown>) => JSON.stringify({ chat_id: '42', message_id: '901', text: '/model opus', at: NOW - 5_000, ...o })
@@ -58,6 +58,35 @@ describe('checkWriteEvidence', () => {
   })
   it('malformed lines and records without text/at are skipped', () => {
     expect(check(['{nope 901', JSON.stringify({ chat_id: '42', message_id: '901' }), ''])).toEqual({ ok: false, reason: 'not-found' })
+  })
+})
+
+describe('message id shape', () => {
+  it('"null" against a null-id log record: bad-message-id, claim never called', () => {
+    let claimCalls = 0
+    const v = checkWriteEvidence(
+      { chatId: '42', messageId: 'null', text: '/model opus', now: NOW },
+      () => [line({ message_id: null })],
+      () => { claimCalls++; return true },
+    )
+    expect(v).toEqual({ ok: false, reason: 'bad-message-id' })
+    expect(claimCalls).toBe(0)
+  })
+  it('non-digit or non-positive ids are refused as bad-message-id', () => {
+    for (const m of ['12a', ' 12', '-5', '0', '1e3']) {
+      expect(check([line({})], { messageId: m })).toEqual({ ok: false, reason: 'bad-message-id' })
+    }
+    expect(isTelegramMessageId('901')).toBe(true)
+    expect(isTelegramMessageId(901)).toBe(false)
+  })
+  it('findEvidence skips records with null / "null" / "abc" ids even when asked for that string', () => {
+    for (const id of [null, 'null', 'abc']) {
+      expect(findEvidence([line({ message_id: id })], '42', String(id))).toBeNull()
+    }
+  })
+  it('a numeric message_id record still matches the digit string (regression)', () => {
+    expect(findEvidence([line({ message_id: 123 })], '42', '123')?.message_id).toBe('123')
+    expect(check([line({ message_id: 123 })], { messageId: '123' })).toEqual({ ok: true })
   })
 })
 
