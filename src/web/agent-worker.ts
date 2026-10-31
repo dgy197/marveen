@@ -9,7 +9,8 @@ import { logger } from '../logger.js'
 import { launchableInstallDefaultSync, launchableDistributionDefaultSync } from './default-model-guard.js'
 import { measureClaudeCliVersionSync } from './claude-cli-version.js'
 import { CLAUDE_MODEL_MIN_CLI, baseModelId, isModelUnsupportedByCli } from '../claude-cli-support.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT, DEFAULT_AGENT_MODEL, DEFAULT_AGENT_MODEL_IS_DISTRIBUTION, WORKER_AUTOUPDATE } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, DEFAULT_AGENT_MODEL, DEFAULT_AGENT_MODEL_IS_DISTRIBUTION, WORKER_AUTOUPDATE, APP_TZ } from '../config.js'
+import { createAgentMessage } from '../db.js'
 import {
   capturePane,
   isSessionReadyForPrompt,
@@ -39,6 +40,13 @@ import { detectPaneState } from '../pane-state.js'
 import { notifyChannel } from '../notify.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { exactTmuxTarget } from '../tmux-target.js'
+import { clearLaunch, fingerprintFleetToken, launchFingerprint, recordLaunch } from './fleet-token-fingerprint.js'
+import {
+  createWorkerTokenRestarter,
+  queueWorkerRestartDigestNote,
+  WORKER_TOKEN_RESTART_HAZMESTER,
+  type WorkerTokenRestarter,
+} from './worker-token-restart.js'
 
 // =============================================================================
 // Interactive-tmux agent worker (jun.15 subscription migration).
@@ -443,7 +451,7 @@ export function decidePoll(opts: {
 
 // --- per-session mutex ---------------------------------------------------------
 
-function withWorkerLockFor<T>(ctx: WorkerCtx, fn: () => Promise<T>): Promise<T> {
+export function withWorkerLockFor<T>(ctx: WorkerCtx, fn: () => Promise<T>): Promise<T> {
   const run = ctx.chain.then(fn, fn)
   // Keep the chain alive regardless of this call's outcome.
   ctx.chain = run.then(() => undefined, () => undefined)
@@ -742,9 +750,12 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   if (WORKER_AUTOUPDATE && ctx === ctxSlow && autoUpdaterEnv.startsWith('export')) {
     logger.warn({ session: ctx.session }, 'WORKERAUTOUPDATE1011: WORKER_AUTOUPDATE is on but claude is not a native install; the slow worker stays pinned')
   }
+  // Computed once: the launch string and the stamp below must agree on whether
+  // this session exports the fleet token (card acdb8045 K4).
+  const exportsFleetToken = hasFleetOauthToken()
   const launch =
     workerKeyUnset +
-    (hasFleetOauthToken() ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : '') +
+    (exportsFleetToken ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : '') +
     `export CLAUDE_CONFIG_DIR=${shArg(ctx.configDir)}; ` +
     autoUpdaterEnv +
     `export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false; ` +
@@ -762,6 +773,11 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     recordGuardEvent({ source: 'launch-guard', where: 'agent-worker:launch-cmd', names: err.names, agent: ctx.session })
     return
   }
+  // Stamp BEFORE new-session: a token swap between the stamp and the pane's
+  // $(cat) can then only yield a false `stale` (one needless restart), never a
+  // stale session shown as current. A launch without the fleet token drops the
+  // stamp; an unreadable token leaves the state `unknown`. Fixed log text only.
+  stampWorkerLaunch(ctx.session, exportsFleetToken)
   execFileSync(TMUX, ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })
   logger.info({ session: ctx.session, cwd: ctx.home }, 'agent-worker: launched interactive worker session')
   // APRO920 (c)(2): same rationale as startAgentProcess's model-resolved log --
@@ -771,6 +787,18 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     'agent-worker: launch model resolved',
   )
   logWorkerClaudeVersion(ctx)
+}
+
+/** Record (or drop) the fleet-token launch stamp of one worker session. Never throws. */
+function stampWorkerLaunch(session: string, exportsFleetToken: boolean): void {
+  try {
+    const key = `worker:${session}`
+    const fp = exportsFleetToken ? fingerprintFleetToken() : null
+    const res = fp ? recordLaunch(key, fp, Date.now()) : clearLaunch(key)
+    if (!res.ok) logger.warn({ session }, 'agent-worker: fleet token launch stamp could not be written')
+  } catch {
+    logger.warn({ session }, 'agent-worker: fleet token launch stamp failed')
+  }
 }
 
 /**
@@ -964,6 +992,37 @@ function clearWorkerContext(ctx: WorkerCtx): void {
   }
 }
 
+// Worker self-restart on a fleet-token swap (card acdb8045 K4). The decision and
+// the loop guard live in worker-token-restart.ts; this is only the wiring.
+// Sessions are looked up by name, so the slow and the fast worker are guarded
+// separately (each restarts once per token change).
+const ctxBySession = (session: string): WorkerCtx | undefined =>
+  [ctxSlow, ctxFast].find(c => c.session === session)
+
+const tokenSwapRestarter: WorkerTokenRestarter = createWorkerTokenRestarter({
+  currentFingerprint: () => fingerprintFleetToken(),
+  launchFingerprint: (session) => launchFingerprint(`worker:${session}`),
+  restart: (session) => { const c = ctxBySession(session); if (c) restartWorkerSession(c) },
+  sessionAlive: (session) => sessionExistsOnHost(null, session),
+  allowed: () => workerStartAllowed(),
+  now: () => Date.now(),
+  timeLabel: (ms) => new Date(ms).toLocaleString('sv-SE', { timeZone: APP_TZ }).slice(0, 16),
+  addDigestNote: queueWorkerRestartDigestNote,
+  notifyHazmester: (text) => { createAgentMessage('system', WORKER_TOKEN_RESTART_HAZMESTER, text) },
+  info: (obj, msg) => logger.info(obj, msg),
+  warn: (obj, msg) => logger.warn(obj, msg),
+})
+
+/**
+ * Call INSIDE withWorkerLockFor(ctx, ...), before the request's first attempt:
+ * if the fleet token changed since this worker was launched, restart it once
+ * (never while a request runs -- the lock is held), then the request runs on the
+ * fresh session. Never throws.
+ */
+export function restartOnTokenSwap(ctx: WorkerCtx, restarter: WorkerTokenRestarter = tokenSwapRestarter): void {
+  restarter.check(ctx.session)
+}
+
 let reqCounter = 0
 function nextReqId(): string {
   reqCounter = (reqCounter + 1) % 1_000_000
@@ -1062,6 +1121,7 @@ export async function runViaWorker(
   const p = priority ?? classifyPriority(message)
   const ctx = p === 'fast' ? ctxFast : ctxSlow
   return withWorkerLockFor(ctx, async () => {
+    restartOnTokenSwap(ctx)
     for (let attempt = 0; attempt < 2; attempt++) {
       const r = await runWorkerAttempt(ctx, message, timeoutMs)
       if (r.kind === 'ok') return { text: r.text, error: r.error }
