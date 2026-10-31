@@ -322,7 +322,8 @@ describe('B1: a bundle carrying channel state also needs the credential switch',
         const res = await importBundle(makeBundle({ channels: true, fleet }), auth)
         expect(res.status).toBe(200)
         expect(readFileSync(join(agentDirPath(), '.claude', 'channels', 'telegram', 'access.json'), 'utf8')).toContain('999')
-        expect(readFileSync(join(agentDirPath(), '.claude', 'hooks', 'start.sh'), 'utf8')).toBe(EVIL_HOOK)
+        // overwrite of an existing agent: the bundle hooks do not land (BD3); the seeded agent has none
+        expect(existsSync(join(agentDirPath(), '.claude', 'hooks', 'start.sh'))).toBe(false)
         expect(warns(EXEC_ADMITTED)).toHaveLength(1)
         const w = warns(CRED_ADMITTED)
         expect(w).toHaveLength(1)
