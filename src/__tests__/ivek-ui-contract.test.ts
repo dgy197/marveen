@@ -567,7 +567,9 @@ describe('Ivek view: tab wiring and the existing views', () => {
     expect(CSS).toMatch(/\.dev-ivek-back \{ display: none;/)
     expect(CSS).toMatch(/@media \(max-width: 768px\) \{\s*\.dev-ivek-back \{ display: inline-flex;/)
     const ivekCss = CSS.slice(CSS.indexOf('/* === Fejlesztes > Ivek'), CSS.indexOf('/* === Fejlesztes > Kerdesek'))
-    expect(ivekCss).not.toMatch(/\bwidth:\s*\d+px|min-width:\s*\d{3,}px|white-space:\s*nowrap/)
+    // the @media condition (max-width: 768px) is required above; only declarations are checked here
+    const ivekDecls = ivekCss.replace(/@media[^{]*\{/g, "{")
+    expect(ivekDecls).not.toMatch(/\bwidth:\s*\d+px|min-width:\s*\d{3,}px|white-space:\s*nowrap/)
   })
 })
 
