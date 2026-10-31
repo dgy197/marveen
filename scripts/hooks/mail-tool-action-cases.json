@@ -1060,6 +1060,32 @@
         }
       },
       {
+        "label": "N3b guard: Forwarded label next to a forwardTo key",
+        "input": {
+          "addLabelIds": [
+            "Forwarded"
+          ],
+          "forwardTo": "x@evil.example"
+        }
+      },
+      {
+        "label": "N3b guard: Forwarded Items folder next to a forward key",
+        "input": {
+          "folder": "Forwarded Items",
+          "forward": true
+        }
+      },
+      {
+        "label": "N3b guard: Forwarded label next to a forward word in a non-label value",
+        "input": {
+          "addLabelIds": [
+            "Forwarded"
+          ],
+          "action": "forward",
+          "to": "x@evil.example"
+        }
+      },
+      {
         "label": "value-only: action redirect",
         "input": {
           "enabled": true,
@@ -1221,6 +1247,36 @@
         },
         "expected": null,
         "note": "manage_email keeps its own operation branch: the value forward is not read here (kind stays draft-required)"
+      },
+      {
+        "tool": "mcp__gmail__modify_labels",
+        "input": {
+          "id": "1",
+          "addLabelIds": [
+            "Forwarded"
+          ]
+        },
+        "expected": null,
+        "note": "N3b: a label identifier named Forwarded is a place, not an instruction"
+      },
+      {
+        "tool": "mcp__outlook__move_message",
+        "input": {
+          "folder": "Forwarded Items",
+          "messageId": "<a@b>"
+        },
+        "expected": null,
+        "note": "N3b: a folder identifier named Forwarded Items is a place, not an instruction"
+      },
+      {
+        "tool": "mcp__outlook__move_message",
+        "input": {
+          "destinationFolderId": "Forwarded",
+          "mailbox": "Forwarded Items",
+          "messageId": "<a@b>"
+        },
+        "expected": null,
+        "note": "N3b: destination folder / mailbox identifiers are free text for the forward-word check"
       }
     ]
   }
