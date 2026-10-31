@@ -294,6 +294,10 @@ export interface ImportResult {
   imported: {
     mainAgent: boolean
     agents: string[]
+    // Card 24e137ef D4: the agents this import CREATED (not overwrote), with the
+    // top-level key names of the package settings.json that were dropped. The
+    // route writes each one's settings from the default profile.
+    newAgents: { name: string; droppedSettings: string[] }[]
     globalSkills: number
     scheduledTasks: number
     memories: number
@@ -1220,7 +1224,13 @@ function mergeMainAccess(path: string, imported: unknown): unknown {
   return out
 }
 
-function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
+/**
+ * Writes one agent's files. Returns null for an existing agent, and for a NEW
+ * agent the top-level key names of the bundle's settings.json that were NOT
+ * written (card 24e137ef D4): the route generates a new agent's settings from the
+ * default profile, never from the package.
+ */
+function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): string[] | null {
   // B1: names already validated by validateNames() before this is called
   const dir = safeJoin(AGENTS_BASE_DIR, agent.name)
   const claudeDir = safeJoin(dir, '.claude')
@@ -1244,8 +1254,14 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
   // .mcp.json: de-placeholder vault refs (path denormalization happens at fleet level)
   trackedWrite(join(dir, '.mcp.json'), JSON.stringify(deplaceholderMcp(agent.mcp), null, 2), tracker)
 
-  if (!existingAgent && !existsSync(join(claudeDir, 'settings.json'))) {
-    trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(agent.settings, null, 2), tracker)
+  // Card 24e137ef D4: agent.settings is never written. An existing agent keeps its
+  // own settings.json; a new agent gets one generated from the default profile
+  // by the route after the import, so permissions.allow / hooks / env of the
+  // package never run with the agent's authority. Key names only are reported.
+  let droppedSettings: string[] | null = null
+  if (!existingAgent) {
+    const s = agent.settings
+    droppedSettings = s && typeof s === 'object' && !Array.isArray(s) ? Object.keys(s) : []
   }
 
   for (const [provider, access] of Object.entries(agent.channelsAccess ?? {})) {
@@ -1265,6 +1281,7 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
     trackedMkdir(skillDir, tracker)
     trackedWrite(join(skillDir, 'SKILL.md'), skill.skillMd, tracker)
   }
+  return droppedSettings
 }
 
 function importVaultSection(vault: VaultExport, tracker: WriteTracker): void {
@@ -1359,8 +1376,10 @@ export function importFleet(
     }
 
     // 1. Sub-agent files
+    const newAgents: { name: string; droppedSettings: string[] }[] = []
     for (const agent of fleet.agents ?? []) {
-      writeAgentFiles(agent, tracker)
+      const dropped = writeAgentFiles(agent, tracker)
+      if (dropped) newAgents.push({ name: agent.name, droppedSettings: dropped })
     }
 
     // 2. Global skills
@@ -1607,6 +1626,7 @@ export function importFleet(
       imported: {
         mainAgent: !!fleet.mainAgent,
         agents: (fleet.agents ?? []).map(a => a.name),
+        newAgents,
         globalSkills: (fleet.skills ?? []).length,
         scheduledTasks: (fleet.scheduledTasks ?? []).length,
         memories: (fleet.memories ?? []).length,

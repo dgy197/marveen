@@ -274,6 +274,10 @@ export interface ImportResult {
   // Card 24e137ef B1: staged entries that are NOT on the allowlist and so did not
   // land (relative names only, e.g. '.claude/settings.local.json').
   droppedEntries: string[]
+  // Card 24e137ef D4: top-level keys of the bundle's .claude/settings.json that
+  // were discarded for a NEW agent (the route generates the settings from the
+  // default profile). Key names only, never values. Empty on overwrite.
+  droppedSettings: string[]
 }
 
 // Card 24e137ef B1 (Brainy): local privilege/config state that a bundle must
@@ -375,6 +379,22 @@ function installStagedAgent(stagedAgentDir: string, dest: string, exists: boolea
   return dropped
 }
 
+// Card 24e137ef D4: a bundle does not choose a NEW agent's settings.json (its
+// permissions.allow / hooks / env would run with the agent's authority). The
+// staged file is dropped and its top-level key names are returned for the report;
+// the route then generates the settings from the default profile.
+function dropStagedSettings(stagedAgentDir: string): string[] {
+  const p = join(stagedAgentDir, '.claude', 'settings.json')
+  try { lstatSync(p) } catch { return [] }
+  let keys: string[] = []
+  try {
+    const parsed = JSON.parse(readFileSync(p, 'utf-8'))
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) keys = Object.keys(parsed)
+  } catch { keys = ['<unparseable>'] }
+  rmSync(p, { force: true })
+  return keys
+}
+
 // Card 89df7a00 N5: what the staged bundle holds that the caller may need a
 // switch for. Passed to the optional `admit` callback of the importers, which
 // runs after the bundle is extracted and listed but BEFORE any file lands in an
@@ -453,9 +473,10 @@ export function importAgentBundle(
       throw new Error(`Agent "${name}" already exists on this machine`)
     }
     applyKeptSecurityProfile(stagedAgentDir, exists ? dest : null)
+    const droppedSettings = exists ? [] : dropStagedSettings(stagedAgentDir)
     const droppedEntries = installStagedAgent(stagedAgentDir, dest, exists)
 
-    return { name, manifest, overwritten: exists, droppedEntries }
+    return { name, manifest, overwritten: exists, droppedEntries, droppedSettings }
   } finally {
     rmSync(work, { recursive: true, force: true })
   }
@@ -594,7 +615,7 @@ export function peekBundleKind(bundle: Buffer): 'agent' | 'fleet' {
 }
 
 export interface FleetImportResult {
-  imported: { name: string; overwritten: boolean; droppedEntries: string[] }[]
+  imported: { name: string; overwritten: boolean; droppedEntries: string[]; droppedSettings: string[] }[]
   skipped: { name: string; reason: string }[]
   includesSecrets: boolean
 }
@@ -654,8 +675,9 @@ export function importAllAgentsBundle(
       const exists = existsSync(dest)
       if (exists && !opts.overwrite) { skipped.push({ name, reason: 'already exists' }); continue }
       applyKeptSecurityProfile(stagedAgentDir, exists ? dest : null)
+      const droppedSettings = exists ? [] : dropStagedSettings(stagedAgentDir)
       const droppedEntries = installStagedAgent(stagedAgentDir, dest, exists)
-      imported.push({ name, overwritten: exists, droppedEntries })
+      imported.push({ name, overwritten: exists, droppedEntries, droppedSettings })
     }
 
     return { imported, skipped, includesSecrets: manifest.includesSecrets }

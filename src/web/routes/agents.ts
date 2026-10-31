@@ -2725,6 +2725,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         // creation (fleet policy, 2026-09-08) and idempotent, so re-importing over an
         // agent an operator has already configured leaves that row alone.
         for (const a of result.imported) seedContextGuardForNewAgent(a.name)
+        // Card 24e137ef D4: the importer dropped each NEW agent's bundle settings
+        // (see droppedSettings); the settings come from the default profile, as in creation.
+        for (const a of result.imported) if (!a.overwritten) writeAgentSettingsFromProfile(a.name, loadProfileTemplate('default'))
         trail.ok(fleetSubject(result.imported.map((a) => a.name)))
         logger.info(
           { imported: result.imported.map((a) => a.name), skipped: result.skipped, secrets: result.includesSecrets },
@@ -2746,6 +2749,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
       const result = importAgentBundle(bundle, { overrideName: overrideName || undefined, overwrite, admit })
       seedContextGuardForNewAgent(result.name)
+      // Card 24e137ef D4: a new agent's settings come from the default profile, never from the bundle.
+      if (!result.overwritten) writeAgentSettingsFromProfile(result.name, loadProfileTemplate('default'))
       trail.ok(result.name)
       logger.info({ name: result.name, overwritten: result.overwritten, secrets: result.manifest.includesSecrets }, 'Agent imported from bundle')
       json(res, {
@@ -2754,6 +2759,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         name: result.name,
         overwritten: result.overwritten,
         includedSecrets: result.manifest.includesSecrets,
+        droppedEntries: result.droppedEntries,
+        droppedSettings: result.droppedSettings,
       })
     } catch (err) {
       // The channel gate already wrote its 403; nothing was installed.

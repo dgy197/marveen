@@ -3,6 +3,8 @@ import { FLEET_IMPORT_APPLY_ENV, isAdminSwitchOn, callerLabel } from '../admin-s
 import { readBody, json } from '../http-helpers.js'
 import { exportFleet, importFleet, MIN_VAULT_PASSWORD_LEN, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
 import { serializeSkillsDir } from '../skills-dir-queue.js'
+import { writeAgentSettingsFromProfile } from '../agent-scaffold.js'
+import { loadProfileTemplate } from '../profiles.js'
 import { execGateApplies, admitCodeExecAdmin, codeExecAuditTrail } from '../code-exec-admin.js'
 import type { RouteContext } from './types.js'
 
@@ -92,6 +94,12 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
       let result: Awaited<ReturnType<typeof importFleet>>
       try {
         result = await serializeSkillsDir(() => importFleet(rawBody, { vaultPassword: vaultPassword || undefined, apply }))
+        // Card 24e137ef D4: importFleet never writes a new agent's settings.json from
+        // the package (result.imported.newAgents[].droppedSettings lists the dropped
+        // key names); it comes from the default profile, exactly as in creation.
+        if ('ok' in result) {
+          for (const a of result.imported.newAgents) writeAgentSettingsFromProfile(a.name, loadProfileTemplate('default'))
+        }
       } catch (err) {
         trail.failed(err)
         throw err

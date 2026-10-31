@@ -225,6 +225,18 @@ describe('agents.ts: the bundle import replaces a whole agent dir behind the gat
     expect(fleetRm).toBeGreaterThan(fleetAdmit)
   })
 
+  it('D4: a NEW agent (bundle import, fleet bundle, fleet transfer) gets its settings from the default profile, an overwrite does not', () => {
+    const agents = codeLines(file('web/routes/agents.ts').text).join('\n')
+    const head = agents.indexOf("path === '/api/agents/import' && method === 'POST'")
+    const importHandler = agents.slice(head)
+    expect(importHandler).toMatch(/if \(!result\.overwritten\) writeAgentSettingsFromProfile\(result\.name, loadProfileTemplate\('default'\)\)/)
+    expect(importHandler).toMatch(/if \(!a\.overwritten\) writeAgentSettingsFromProfile\(a\.name, loadProfileTemplate\('default'\)\)/)
+    const fleet = codeLines(file('web/routes/fleet.ts').text).join('\n')
+    expect(fleet).toMatch(/for \(const a of result\.imported\.newAgents\) writeAgentSettingsFromProfile\(a\.name, loadProfileTemplate\('default'\)\)/)
+    // the transfer importer itself never writes the package's settings
+    expect(codeLines(file('web/fleet-transfer.ts').text).join('\n')).not.toMatch(/JSON\.stringify\(agent\.settings/)
+  })
+
   it('the import handler gates once under its own action, behind execGateApplies, before the body is read', () => {
     const c = codeLines(file('web/routes/agents.ts').text)
     const text = c.join('\n')
