@@ -262,6 +262,21 @@ describe('409 conflict (F2.3)', () => {
     expect(handler.seen).toEqual([])
   })
 
+  for (const [name, interruption] of [['a transient error', 'error5xx'], ['a 429', 'rate429']] as const) {
+    it(`${name} during the conflict keeps the conflict state: one alert only, every retry >= 5 minutes apart (F3)`, async () => {
+      fake.mode = 'conflict'
+      fake.script = ['conflict', interruption, 'conflict', 'conflict']
+      const h = harness(okHandler())
+      void h.loop.run()
+      await waitFor(() => h.getUpdatesAt.length >= 5, 'five polls')
+      await h.loop.stop(2000)
+      for (let i = 1; i < 5; i++) expect(h.getUpdatesAt[i]! - h.getUpdatesAt[i - 1]!).toBeGreaterThanOrEqual(CONFLICT_RETRY_MS)
+      expect(h.clock.sleeps.slice(0, 4).every((ms) => ms >= CONFLICT_RETRY_MS)).toBe(true)
+      expect(h.lines.filter((l) => l.obj['alert'] === 'permission_bot_relay_conflict')).toHaveLength(1)
+      expect(h.lines.some((l) => l.obj['reason'] === 'api_transient' || l.obj['reason'] === 'rate_limited')).toBe(true)
+    })
+  }
+
   it('reports conflict in the status file and recovers to polling when the 409 clears', async () => {
     fake.mode = 'conflict'
     fake.modeCalls = 1

@@ -15,7 +15,7 @@
 import http from 'node:http'
 import type { AddressInfo, Socket } from 'node:net'
 
-export type FakeMode = 'normal' | 'conflict' | 'webhook_conflict' | 'error5xx' | 'unauthorized' | 'fatal_echo' | 'hang'
+export type FakeMode = 'normal' | 'conflict' | 'webhook_conflict' | 'error5xx' | 'unauthorized' | 'fatal_echo' | 'hang' | 'rate429'
 
 export interface FakeCall {
   method: string
@@ -28,6 +28,8 @@ export class FakeBotApi {
   mode: FakeMode = 'normal'
   // How many getUpdates calls the mode applies to; then back to 'normal'. null = forever.
   modeCalls: number | null = null
+  // Per-call script: each getUpdates takes the next entry; when empty, `mode` applies.
+  script: FakeMode[] = []
   webhookUrl = ''
   botId: number
   private queue: Array<Record<string, unknown> & { update_id: number }> = []
@@ -123,8 +125,9 @@ export class FakeBotApi {
     body: Record<string, unknown>,
     send: (status: number, payload: unknown, raw?: boolean) => void,
   ): Promise<void> {
-    const mode = this.mode
-    if (mode !== 'normal' && this.modeCalls !== null) {
+    const scripted = this.script.shift()
+    const mode = scripted ?? this.mode
+    if (scripted === undefined && mode !== 'normal' && this.modeCalls !== null) {
       this.modeCalls--
       if (this.modeCalls <= 0) { this.mode = 'normal'; this.modeCalls = null }
     }
@@ -141,6 +144,8 @@ export class FakeBotApi {
         return send(400, { ok: false, error_code: 400, description: `Bad Request: unexpected path ${req.url}` })
       case 'hang':
         return
+      case 'rate429':
+        return send(429, { ok: false, error_code: 429, description: 'Too Many Requests: retry after 1', parameters: { retry_after: 1 } })
       default:
         break
     }

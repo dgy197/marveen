@@ -351,9 +351,14 @@ export class PollLoop {
         await this.sleep(this.conflictRetryMs)
         return null
       case 'rate_limit': {
-        const wait = Math.min(Math.max((e.retryAfterSec ?? 0) * 1000, this.backoffBaseMs), this.conflictRetryMs)
+        // In the conflict state a 429 keeps it (no new alert) and the next try is
+        // still no sooner than the conflict interval.
+        const inConflict = this.current === 'conflict'
+        const wait = inConflict
+          ? this.conflictRetryMs
+          : Math.min(Math.max((e.retryAfterSec ?? 0) * 1000, this.backoffBaseMs), this.conflictRetryMs)
         this.status.bump('errors')
-        this.setState('degraded', 'rate_limited')
+        if (!inConflict) this.setState('degraded', 'rate_limited')
         this.log.warn({ reason: 'rate_limited', wait_ms: wait }, 'permission-bot-relay: rate limited')
         await this.sleep(wait)
         return null
@@ -366,10 +371,13 @@ export class PollLoop {
       }
       case 'transient':
       default:
+        // In the conflict state a transient error keeps it (no new alert) and the
+        // next try is still no sooner than the conflict interval.
+        const waitMs = this.current === 'conflict' ? Math.max(backoff, this.conflictRetryMs) : backoff
         this.status.bump('errors')
-        this.setState('degraded', 'api_transient')
-        this.log.warn({ reason: 'api_transient', method: e.method, wait_ms: backoff, msg_masked: e.message }, 'permission-bot-relay: Bot API call failed, backing off')
-        await this.sleep(backoff)
+        if (this.current !== 'conflict') this.setState('degraded', 'api_transient')
+        this.log.warn({ reason: 'api_transient', method: e.method, wait_ms: waitMs, msg_masked: e.message }, 'permission-bot-relay: Bot API call failed, backing off')
+        await this.sleep(waitMs)
         return null
     }
   }
