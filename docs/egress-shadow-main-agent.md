@@ -12,8 +12,9 @@ only adds a measurement next to it.
 
 ## Which settings file
 
-Target: the tracked project file `/Users/gyorgydecsi/marveen/.claude/settings.json`, in the existing
-`hooks.PreToolUse` list, as a `Bash` matcher entry, with the `--main-scope` flag. Not
+Registered in the tracked project file `.claude/settings.json` (deployed to
+`/Users/gyorgydecsi/marveen/.claude/settings.json` by merging this commit), in `hooks.PreToolUse`, as a
+`Bash` matcher entry AFTER the existing Bash gates, with the `--main-scope` flag. Not
 `/Users/gyorgydecsi/marveen/.channels-config/settings.json`, although that file is the main agent's own:
 
 - The repo's own provisioner drops `hooks` from the isolated config dir on every start
@@ -26,8 +27,10 @@ Target: the tracked project file `/Users/gyorgydecsi/marveen/.claude/settings.js
   `.channels-config`, or a provisioned sub-agent dir), and skip Gyuri's interactive sessions on the shared
   `~/.claude` (same rule as the enforcing hook, `mainScopeAppliesTo`).
 - The project file is git-tracked: the entry arrives by merge, and the rollback is a revert or removing
-  the entry. If a sub-agent session also loads this file, it additionally gets a shadow line (the log has
-  an `agent` field); it is harmless, the sub-agent's own enforcing hook is separate.
+  the entry. A provisioned sub-agent session that also loads this file is judged too (it has a config dir
+  of its own) and its line goes to the same log, tagged by the `agent` field (payload `agent_type`, else
+  `MARVEEN_AGENT_ID` / `MAIN_AGENT_ID`, else `null`). It is harmless (exit 0, no output); filter on `agent`
+  when reading the log. Which value the main agent itself carries was not measured.
 
 JSON to add (one more element in `hooks.PreToolUse`, next to the existing Bash entries):
 
@@ -38,13 +41,14 @@ JSON to add (one more element in `hooks.PreToolUse`, next to the existing Bash e
     {
       "type": "command",
       "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/egress-gate-shadow.mjs\" --main-scope; exit 0",
-      "timeout": 10
+      "timeout": 5
     }
   ]
 }
 ```
 
-`; exit 0` makes even a missing `node` or a load error non-blocking. Use the same node binary path as
+`timeout: 5` (seconds) bounds the hook; a command above 64 KiB or 2000 lines is not classified and is
+logged as `too_large` (the parser is quadratic in lines, card 80743e3a). `; exit 0` makes even a missing `node` or a load error non-blocking. Use the same node binary path as
 the neighbouring entries if they pin one (`/opt/homebrew/opt/node@22/bin/node`).
 
 ## Rollback (one step)
@@ -62,7 +66,7 @@ next session start. The log files can stay or be deleted by Brainy.
 ```
 
 Reason codes: `clean`, `measure-only`, the classifier's own codes for a would-be deny (`curl-external`,
-`wget-external`, `one-liner-external`, `function-indirect`, ...), `bad-input`,
+`wget-external`, `one-liner-external`, `function-indirect`, ...), `bad-input`, `too_large`,
 `shadow-error:<ErrorName>`. Never the command text, URL, host or token. To find which command a hash
 belongs to, hash the suspected command (`printf %s "$CMD" | shasum -a 256`) and compare.
 
