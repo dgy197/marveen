@@ -79,6 +79,7 @@ import { launchableInstallDefault } from './default-model-guard.js'
 import { getClaudePidForSession, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
 import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE, FLEET_PYTHON_VENV } from '../config.js'
 import { fleetVenvBin } from '../fleet-venv.js'
+import { clearLaunch, launchWithStamp, type LaunchStampOutcome } from './fleet-token-fingerprint.js'
 
 // FLEETVENV923: the `<venv>/bin:` prefix for a launch PATH, or '' when the venv
 // has no bin/ directory or its path cannot sit safely inside the double-quoted
@@ -3014,7 +3015,13 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // reported ok, no session existed under the agent's user, and the first
     // capture-pane failed against the router's empty tmux server.
     const startTarget = agentTmuxTarget(name)
-    runTmux(startTarget, ['new-session', '-d', '-s', session, buildLaunchCmd(dir)], { timeout: 10000 })
+    // Card acdb8045 K3: fleet-token launch stamp, written BEFORE new-session (launchWithStamp).
+    const stampAgent = (outcome: LaunchStampOutcome) => {
+      if (outcome === 'failed') logger.warn({ name }, 'fleet token launch stamp failed')
+    }
+    launchWithStamp(name, oauthTokenEnv, () => {
+      runTmux(startTarget, ['new-session', '-d', '-s', session, buildLaunchCmd(dir)], { timeout: 10000 })
+    }, { isMain: name === MAIN_AGENT_ID, onStamp: stampAgent })
 
     logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')
     // APRO920 (c)(2): the --model value actually passed, with the config-chain
@@ -3089,7 +3096,9 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
             if (existsSync(agentClaudeMd)) {
               try { symlinkSync(agentClaudeMd, join(fallbackCwd, 'CLAUDE.md')) } catch { /* degrade to context-less */ }
             }
-            runTmux(null, ['new-session', '-d', '-s', session, buildLaunchCmd(fallbackCwd)], { timeout: 10000 })
+            launchWithStamp(name, oauthTokenEnv, () => {
+              runTmux(null, ['new-session', '-d', '-s', session, buildLaunchCmd(fallbackCwd)], { timeout: 10000 })
+            }, { isMain: name === MAIN_AGENT_ID, onStamp: stampAgent })
             logger.warn({ name, session, fallbackCwd }, 'Agent --channels EPERM in trusted dir; relaunched from /tmp fallback')
           } catch (err) {
             if (err instanceof InteractiveKeyGuardError) {
@@ -3201,6 +3210,8 @@ export async function stopAgentProcess(name: string): Promise<{ ok: boolean; err
     // A LAUNCH-TITKOK NEM ELIK TUL A LEALLITAST. Enelkul egy rotalt kulcs REGI erteke a lemezen
     // maradna a kovetkezo inditasig, egy leallitott agense pedig hataridotlenul.
     clearLaunchSecrets(name)
+    // Card acdb8045 K3: the stopped session no longer holds a token; its stamp goes too.
+    if (name !== MAIN_AGENT_ID) clearLaunch(`agent:${name}`)
     await delay(2000)
     // Reap any orphaned plugin grandchild that tmux did not tear down. This is
     // a LOCAL pkill against this host's process table, so it only makes sense
