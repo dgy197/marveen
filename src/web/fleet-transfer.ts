@@ -1244,7 +1244,7 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
   // .mcp.json: de-placeholder vault refs (path denormalization happens at fleet level)
   trackedWrite(join(dir, '.mcp.json'), JSON.stringify(deplaceholderMcp(agent.mcp), null, 2), tracker)
 
-  if (!existsSync(join(claudeDir, 'settings.json'))) {
+  if (!existingAgent && !existsSync(join(claudeDir, 'settings.json'))) {
     trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(agent.settings, null, 2), tracker)
   }
 
