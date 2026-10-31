@@ -6,7 +6,7 @@
 // importFleet requires a live DB and filesystem, so those paths are integration-tested
 // by calling importFleet with a pre-encrypted payload and mocked DB / FS module.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { _encryptForTest, _decryptForTest, ENCRYPTED_FLEET_VERSION, MIN_VAULT_PASSWORD_LEN } from '../web/fleet-transfer.js'
 
 // ---------------------------------------------------------------------------
@@ -75,11 +75,16 @@ vi.mock('../web/agent-config.js', () => ({
   readJsonObjectForWrite: (path: string) => readJsonObjectForWriteMock(path),
 }))
 
+// Card 51538ebc: paths that "exist" for a test, and the text readFileSync returns for them.
+const fsExisting = vi.hoisted(() => new Map<string, string>())
+
 vi.mock('node:fs', async (importOriginal) => {
   const real = await importOriginal<typeof import('node:fs')>()
   return {
     ...real,
-    existsSync: () => false,
+    existsSync: (p: unknown) => fsExisting.has(String(p)),
+    readFileSync: ((p: unknown, ...rest: unknown[]) =>
+      fsExisting.has(String(p)) ? fsExisting.get(String(p))! : (real.readFileSync as Function)(p, ...rest)) as typeof real.readFileSync,
     mkdirSync: () => undefined,
     unlinkSync: () => undefined,
     rmSync: () => undefined,
@@ -839,5 +844,84 @@ describe('importFleet: a new agent takes no settings.json from the package', () 
     })
     const r = importFleet(noSettings, { apply: true }) as { imported: { newAgents: { name: string; droppedSettings: string[] }[] } }
     expect(r.imported.newAgents).toEqual([{ name: 'plain', droppedSettings: [] }])
+  })
+})
+
+// Card 51538ebc BD2: a package never chooses the privilege-bearing or machine-specific
+// agent-config keys. An existing agent / the main agent keeps its own values (absent
+// stays absent); a new agent gets none of them.
+describe('importFleet: the package never sets privileged or machine-specific config keys', () => {
+  const KEYS = ['securityProfile', 'claudePlan', 'capabilities', 'claudeConfigDir', 'oauthTokenFile', 'remoteHost', 'remoteWorkdir']
+  const PKG_CONFIG: Record<string, unknown> = {
+    model: 'claude-opus-5-5',
+    securityProfile: 'applier',
+    claudePlan: 'pkg-plan',
+    capabilities: ['pkg-cap'],
+    claudeConfigDir: '/pkg/claude-root',
+    oauthTokenFile: '/pkg/token',
+    remoteHost: 'pkg.example',
+    remoteWorkdir: '/pkg/work',
+  }
+  const agentFleet = (name: string) => JSON.stringify({
+    ...JSON.parse(MINIMAL_FLEET),
+    agents: [{ name, config: PKG_CONFIG, claudeMd: '', soulMd: '', mcp: {}, settings: {}, channelsAccess: {}, agentSkills: [] }],
+  })
+  const writtenConfig = async (path: string): Promise<Record<string, unknown>> => {
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    const call = vi.mocked(atomicWriteFileSync).mock.calls.filter((c) => String(c[0]) === path).at(-1)
+    expect(call).toBeDefined()
+    return JSON.parse(String(call![1]))
+  }
+
+  beforeEach(async () => {
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    vi.mocked(atomicWriteFileSync).mockClear()
+  })
+  afterEach(() => fsExisting.clear())
+
+  it('a new agent: none of the seven keys is written, other keys are', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    importFleet(agentFleet('newbot'), { apply: true })
+    const cfg = await writtenConfig('/mock/agents/newbot/agent-config.json')
+    for (const k of KEYS) expect(k in cfg).toBe(false)
+    expect(cfg.model).toBe('claude-opus-5-5')
+  })
+
+  it('an existing agent keeps its own claudePlan / capabilities / claudeConfigDir, the package values are ignored', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    fsExisting.set('/mock/agents/alpha/agent-config.json', JSON.stringify({
+      securityProfile: 'developer-junior', claudePlan: 'local-plan', capabilities: ['local-cap'], claudeConfigDir: '/local/root',
+    }))
+    importFleet(agentFleet('alpha'), { apply: true })
+    const cfg = await writtenConfig('/mock/agents/alpha/agent-config.json')
+    expect(cfg.securityProfile).toBe('developer-junior')
+    expect(cfg.claudePlan).toBe('local-plan')
+    expect(cfg.capabilities).toEqual(['local-cap'])
+    expect(cfg.claudeConfigDir).toBe('/local/root')
+    // Absent locally stays absent, the package value does not fill the gap.
+    for (const k of ['oauthTokenFile', 'remoteHost', 'remoteWorkdir']) expect(k in cfg).toBe(false)
+    expect(cfg.model).toBe('claude-opus-5-5')
+  })
+
+  it('the main agent follows the same rule (existing values kept, absent stays absent)', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const fleet = JSON.parse(FLEET_WITH_SOURCE_ID)
+    fleet.mainAgent.config = PKG_CONFIG
+    fsExisting.set('/mock/project/agent-config.json', JSON.stringify({ claudePlan: 'main-plan', capabilities: ['main-cap'] }))
+    importFleet(JSON.stringify(fleet), { apply: true })
+    const cfg = await writtenConfig('/mock/project/agent-config.json')
+    expect(cfg.claudePlan).toBe('main-plan')
+    expect(cfg.capabilities).toEqual(['main-cap'])
+    for (const k of ['securityProfile', 'claudeConfigDir', 'oauthTokenFile', 'remoteHost', 'remoteWorkdir']) expect(k in cfg).toBe(false)
+    expect(cfg.model).toBe('claude-opus-5-5')
+  })
+
+  it('the main agent on a fresh target gets none of the seven keys', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const fleet = JSON.parse(FLEET_WITH_SOURCE_ID)
+    fleet.mainAgent.config = PKG_CONFIG
+    importFleet(JSON.stringify(fleet), { apply: true })
+    const cfg = await writtenConfig('/mock/project/agent-config.json')
+    for (const k of KEYS) expect(k in cfg).toBe(false)
   })
 })

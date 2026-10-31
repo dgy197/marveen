@@ -15,6 +15,7 @@ import { join, basename, dirname, relative, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { agentDir } from './agent-config.js'
+import { applyKeptConfigKeys, readExistingConfigForKeep } from './package-config-keys.js'
 import { MAIN_AGENT_ID, RESERVED_AGENT_IDS } from '../config.js'
 import { sanitizeAgentName } from './sanitize.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -232,27 +233,23 @@ export function sanitizeImportedConfig(stagedAgentDir: string): void {
   if (changed) atomicWriteFileSync(cfgPath, JSON.stringify(cfg, null, 2))
 }
 
-// Card 24e137ef N3b (Brainy D1): a bundle never chooses the agent's privilege
-// profile. On overwrite of an existing agent the EXISTING securityProfile (and
-// the existing .claude/settings.json, which is derived from it) stays; for a new
-// agent the bundle's securityProfile is dropped so it falls back to 'default'.
+// Card 24e137ef N3b (Brainy D1) + card 51538ebc BD2/BD3: a bundle never chooses
+// the agent's privilege profile or login/host settings. On overwrite of an
+// existing agent every PACKAGE_UNTRUSTED_CONFIG_KEYS entry (securityProfile,
+// claudePlan, capabilities, claudeConfigDir, oauthTokenFile, remoteHost,
+// remoteWorkdir) keeps the EXISTING value, and the existing .claude/settings.json
+// (derived from the profile) and .claude/hooks stay (BD3: the kept settings must
+// not run the bundle's hook code). For a new agent the keys are dropped so the
+// defaults apply.
 // Runs on the staged dir, before the existing dir is removed.
 export function applyKeptSecurityProfile(stagedAgentDir: string, existingDest: string | null): void {
   const cfgPath = join(stagedAgentDir, 'agent-config.json')
-  let kept: string | undefined
-  if (existingDest) {
-    try {
-      const old = JSON.parse(readFileSync(join(existingDest, 'agent-config.json'), 'utf-8'))
-      if (typeof old.securityProfile === 'string' && old.securityProfile.trim()) kept = old.securityProfile.trim()
-    } catch { /* no readable config: default */ }
-  }
+  const existing = existingDest ? readExistingConfigForKeep(join(existingDest, 'agent-config.json')) : null
   if (existsSync(cfgPath)) {
     let cfg: Record<string, unknown> | null = null
     try { cfg = JSON.parse(readFileSync(cfgPath, 'utf-8')) } catch { /* unreadable: left as is */ }
-    if (cfg && typeof cfg === 'object') {
-      delete cfg.securityProfile
-      if (kept) cfg.securityProfile = kept
-      atomicWriteFileSync(cfgPath, JSON.stringify(cfg, null, 2))
+    if (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) {
+      atomicWriteFileSync(cfgPath, JSON.stringify(applyKeptConfigKeys(cfg, existing), null, 2))
     }
   }
   if (existingDest) {
@@ -263,6 +260,15 @@ export function applyKeptSecurityProfile(stagedAgentDir: string, existingDest: s
       cpSync(oldSettings, stagedSettings)
     } else {
       rmSync(stagedSettings, { force: true })
+    }
+    // Card 51538ebc BD3: hooks follow settings.json. The existing agent's hooks dir
+    // replaces the staged one; an old agent without hooks leaves none behind.
+    const oldHooks = join(existingDest, '.claude', 'hooks')
+    const stagedHooks = join(stagedAgentDir, '.claude', 'hooks')
+    rmSync(stagedHooks, { recursive: true, force: true })
+    if (existsSync(oldHooks)) {
+      mkdirSync(join(stagedHooks, '..'), { recursive: true })
+      cpSync(oldHooks, stagedHooks, { recursive: true })
     }
   }
 }
