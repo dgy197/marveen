@@ -603,9 +603,14 @@ approval; the operational runbook is kept with the project, not in this repo.
 
 - The enabled headless profile is `read`: no Bash, no edit. `edit` stays off
   until a canary measures what the CLI does with it under `--restricted`.
-- A ledger source that went `broken` stays broken: `CreditLedger.resetSource`
-  exists but nothing in the product calls it, so the `ledger_broken:<id>` HOLD
-  condition does not clear by itself.
+- A ledger source that went `broken` stays broken, with one exception: reason
+  `missing` (the file was not there) is retried on every poll and, when the
+  file is back, read again from its first byte. Every other reason (damaged
+  line, `truncated`, `replaced`, `rewritten`, `symlink`, `not_regular`,
+  `too_large`, `partial_timeout`, `batch_conflict`, ...) only clears through
+  `CreditLedger.resetSource`, which nothing in the product calls. A HOLD that
+  `ledger_broken:<id>` already latched also needs a newer calibration, as every
+  latch does.
 - A batch whose requests partly failed never reaches `expected_requests`; its
   reservation (`max(0, amount - ingested)`) stays counted.
 - The `--max-budget-usd` cap is checked after a response, so a run can exceed it
