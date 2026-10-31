@@ -778,7 +778,14 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   // stale session shown as current. A launch without the fleet token drops the
   // stamp; an unreadable token leaves the state `unknown`. Fixed log text only.
   stampWorkerLaunch(ctx.session, exportsFleetToken)
-  execFileSync(TMUX, ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })
+  try {
+    execFileSync(TMUX, ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })
+  } catch (err) {
+    // No session was launched: drop the pre-written stamp so it does not claim the
+    // new token for a dead session (state becomes `unknown`; the lazy start restamps).
+    try { clearLaunch(`worker:${ctx.session}`) } catch { /* best effort */ }
+    throw err
+  }
   logger.info({ session: ctx.session, cwd: ctx.home }, 'agent-worker: launched interactive worker session')
   // APRO920 (c)(2): same rationale as startAgentProcess's model-resolved log --
   // which config-chain element supplied the --model value.

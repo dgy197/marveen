@@ -119,11 +119,13 @@ export function createWorkerTokenRestarter(deps: WorkerTokenRestartDeps): Worker
         s.attempted = current
         deps.restart(session)
         const stampAfter = deps.launchFingerprint(session)
-        const ok = stampAfter === current
+        // The stamp is written BEFORE new-session, so a failed launch can still show
+        // the new fingerprint: success also needs the session to be up afterwards.
+        const ok = stampAfter === current && deps.sessionAlive(session)
         s.history.push({ at: now, ok })
 
         if (!ok) {
-          deps.warn({ session, reason: 'fleet-token-changed' }, 'worker: token-swap restart did not complete (stamp unchanged); will not retry for this token')
+          deps.warn({ session, reason: 'fleet-token-changed' }, 'worker: token-swap restart did not complete (no live session with the new stamp); will not retry for this token')
           return 'failed'
         }
 
