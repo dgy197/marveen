@@ -22,9 +22,11 @@ fail(){ echo "  FAIL  $*"; FAILED=1; }
 # eldobhato temp konyvtarban el, es a szkript env-valtozon at latja oket
 # (seeme-send.py: SEEME_INTERNAL_FILE / SEEME_DASH_TOKEN_FILE) -- a valodi
 # store/ tartalmat egyaltalan nem erinti a teszt.
-FIXTURE_DIR="$(mktemp -d /tmp/seeme-send-fixtures-XXXX)"
+FIXTURE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/seeme-send-fixtures-XXXX")"
 export SEEME_INTERNAL_FILE="$FIXTURE_DIR/seeme-internal-numbers.json"
 export SEEME_DASH_TOKEN_FILE="$FIXTURE_DIR/.dashboard-token"
+# never the live dashboard: a dead loopback port (card e487f46c)
+export SEEME_DASH_BASE="http://127.0.0.1:9"
 printf '{"internal": ["36305552860"]}' > "$SEEME_INTERNAL_FILE"
 printf 'teszt-fixture-token-nem-valodi' > "$SEEME_DASH_TOKEN_FILE"
 trap 'rm -rf "$FIXTURE_DIR"' EXIT
@@ -83,7 +85,7 @@ out="$(printf '%s' "teszt" | python3 "$SCRIPT" --to +36301234567 --approval "nem
   || fail "nem letezo approval-id elutasitasat vartam, kaptam (rc=$rc): $out"
 
 echo "--- mutacios kontroll (4. kikotes: a kontroll TUDJON bukni) ---"
-MUT="$(mktemp /tmp/seeme-send-mutated-XXXX.py)"
+MUT="$(mktemp "${TMPDIR:-/tmp}/seeme-send-mutated-XXXX.py")"
 trap 'rm -f "$MUT"; rm -rf "$FIXTURE_DIR"' EXIT
 # A TELJES kulso-agat kivesszuk: az `if not is_internal:` felteteltdet mindig-
 # hamisra cachereljuk, tehat egy KULSO szam is BELSOKENT viselkedik -- approval

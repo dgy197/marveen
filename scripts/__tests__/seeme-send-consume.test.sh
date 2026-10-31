@@ -28,6 +28,7 @@ trap cleanup EXIT
 
 EXT="36301234567"
 APPROVAL="appr-ext-1"
+ANCHOR="$(python3 -c 'import hashlib,json,sys; print(hashlib.sha256(json.dumps({"kind":"sms","number":sys.argv[1],"text":"teszt uzenet"},ensure_ascii=False,sort_keys=True,separators=(",",":")).encode()).hexdigest())' "$EXT")"
 REQLOG="$FIX/requests.log"
 : > "$REQLOG"
 
@@ -36,10 +37,11 @@ REQLOG="$FIX/requests.log"
 # conditional write, in miniature); /gateway answers a SeeMe success. "gone-404"
 # is an unknown approval for the consume step only.
 cat > "$FIX/fake.py" <<'PY'
-import json, sys, threading
+import hashlib, json, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 log_path, port_file, ext = sys.argv[1], sys.argv[2], sys.argv[3]
 consumed = set()
+ANCHOR = hashlib.sha256(json.dumps({"kind": "sms", "number": ext, "text": "teszt uzenet"}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 lock = threading.Lock()
 def note(line):
     with lock, open(log_path, "a") as fh:
@@ -61,7 +63,7 @@ class H(BaseHTTPRequestHandler):
         aid = self.path.rsplit("/", 1)[1]
         note("GET " + aid)
         return self.send_json(200, {"id": aid, "status": "approved", "category": "external_message",
-                                    "content_hash": None, "action_description": f"SMS a {ext} szamra"})
+                                    "content_hash": ANCHOR, "resolved_at": int(time.time()) - 5, "timeout_at": int(time.time()) + 3000, "action_description": f"SMS a {ext} szamra"})
     def do_POST(self):
         aid = self.path.split("/")[3]
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
@@ -112,7 +114,7 @@ order="$(grep -E '^(CONSUME|GATEWAY)' "$REQLOG" | cut -d' ' -f1 | tr '\n' ' ')"
 [ $rc -eq 0 ] && [ "$order" = "CONSUME GATEWAY " ] \
   && pass "exit 0, exactly one consume and then one send" \
   || fail "expected 'CONSUME GATEWAY', got '$order' (rc=$rc): $out"
-grep -q "^CONSUME $APPROVAL category=external_message consumer=seeme-send.py hash=None$" "$REQLOG" \
+grep -q "^CONSUME $APPROVAL category=external_message consumer=seeme-send.py hash=$ANCHOR$" "$REQLOG" \
   && pass "the consume names the category, the tool and the approval's own anchor" \
   || fail "consume body not as expected: $(grep '^CONSUME' "$REQLOG")"
 
@@ -158,7 +160,7 @@ fi
 
 echo "--- mutation control: without the consume call the replay sends twice ---"
 MUT="$FIX/seeme-send-mutated.py"
-sed 's/^        consume_approval(args.approval, rec, reference)$/        pass/' "$SCRIPT" > "$MUT"
+sed 's/^        consume_approval(args.approval, anchor, reference)$/        pass/' "$SCRIPT" > "$MUT"
 if diff -q "$SCRIPT" "$MUT" >/dev/null 2>&1; then
   fail "the sed pattern matched nothing: the mutation did not change the file"
 else
