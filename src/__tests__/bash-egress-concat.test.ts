@@ -89,6 +89,9 @@ const CONTROLS: Array<[string, string]> = [
   ['L09', `node -e "fetch('http://localhost:3420/api/' + 'kanban')"`],
   ['L10', `python3 -c "import requests; requests.get('http://127.0.0.1:3420/x', headers={'Authorization': 'Bearer t'}, timeout=5)"`],
   ['L11', `node -e "fetch(\`http://localhost:\${3420}/api/health\`)"`],
+  // A lone '://' (split, replace) names no destination; a comment line after a literal is not a continuation.
+  ['L12', `python3 -c "import urllib.request as u; p = 'a'.split('://'); u.urlopen('http://localhost:3420/' + p[0])"`],
+  ['L13', `python3 <<'EOF'\nimport urllib.request as u\nb = 'http://localhost'\n# fetch it\nu.urlopen(b)\nEOF`],
 ]
 
 describe('A: curl / wget argv decisions are unchanged (AC6)', () => {
@@ -158,6 +161,12 @@ describe('X: more shapes of the same invariant', () => {
     ['X07', `python3 -c "import urllib.request as u, socket; socket.create_connection(('x', 1)); u.urlopen('redis://evil.example:6379')"`],
     // A heredoc body is not shell-joined: its quotes are literal, the language-level join still denies.
     ['X08', `node <<'EOF'\nfetch('http://127.0.0.1' + '.evil.example/x')\nEOF`],
+    // A comment line between the pieces does not end the literal.
+    ['X10', `python3 <<'EOF'\nimport urllib.request as u\nu.urlopen(('http://localhost'\n # c\n '.evil.example'))\nEOF`],
+    // The scheme separator in its own literal.
+    ['X11', `python3 -c "import urllib.request as u; u.urlopen('http'+'://evil.example')"`],
+    // A backslash after the host: WHATWG reads it as a slash, so the host is not provably complete.
+    ['X12', `python3 -c "import urllib.request as u; u.urlopen('http://localhost\\\\@evil.example/x')"`],
   ]
   for (const [id, cmd] of DENY) {
     it(`${id} denies`, () => {

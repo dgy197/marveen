@@ -425,13 +425,100 @@ export function isExternal(url) {
   if (h === null || h === '') return false
   return !isLocalHost(h)
 }
+
+// --- Destinations in interpreter code (card 44167c0b) -----------------------------------------------
+// URL_RE stops at a quote or a backslash, so a URL built from adjacent literals (`'https://api.github.com'
+// '.evil.example'`, `"https://ev"'il.example'`, `'ht'+'tps://x'`) showed no URL, or only a vendor / local
+// PREFIX, and passed. The invariant: network-using interpreter code passes only if every destination in it
+// reads as ONE complete literal host, and that host is local or vendor. What cannot be read as a complete
+// host is an OPEN host and denies, however it was built. Used at both interpreter call sites (one-liner
+// body, heredoc / here-string feed); the curl / wget argv path does not come here.
+const SCHEME_SPLIT = /(?<![A-Za-z0-9_])(?:https?|ftps?|sftp|scp|tftp|smbs?|dict|gophers?|imaps?|pop3s?|smtps?|ldaps?|telnet|mqtt|rtsp|h?t{1,2}ps?):\/?['"`\\$]/i
+// `[userinfo@]` then `[v6]` or a dotted name; sticky, started at the first character after `://`.
+const CODE_AUTHORITY = /(?:[^@\s/?#'"`\\<>()]*@)?(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]*)/y
+// What makes a literal go on: behind a `)` another string or `+`; behind a newline also `.`, `%` or `\`.
+const GROUP_CONTINUES = /^(?:[+'"`]|[A-Za-z]{1,2}['"])/
+const LINE_CONTINUES = /^(?:[+'"`.%\\]|[A-Za-z]{1,2}['"])/
+const FILLER_WINDOW = 4000
+// Skip blanks, newlines and comments (`# ...`, `// ...`, `/* ... */`). Returns the rest, or null when the
+// window ended inside the filler (unknown: the caller reads it as a continuation).
+function skipFiller(s) {
+  let i = 0
+  for (;;) {
+    while (i < s.length && /\s/.test(s[i])) i++
+    if (i >= s.length) return s.length >= FILLER_WINDOW ? null : ''
+    if (s[i] === '#' || (s[i] === '/' && s[i + 1] === '/')) { const e = s.indexOf('\n', i); if (e === -1) return s.length >= FILLER_WINDOW ? null : ''; i = e; continue }
+    if (s[i] === '/' && s[i + 1] === '*') { const e = s.indexOf('*/', i + 2); if (e === -1) return null; i = e + 2; continue }
+    return s.slice(i)
+  }
+}
+// Does a literal that just closed (`after` = the text right behind its closing quote) END there? After
+// optional blanks the next character must be `) , ; ] }`, a newline, or the end of the text. A newline is a
+// real end only if the next line does not go on with a string, `+`, `.` or `%` (Python joins adjacent
+// strings across lines inside parentheses; JS carries on with a leading `+` or `.`). A `)` is an end unless
+// it only groups the literal: `('https://api.github.com') + '.evil.example'`.
+function literalEnds(after) {
+  const rest = after.slice(0, FILLER_WINDOW).replace(/^[ \t]+/, '')
+  if (rest === '') return after.length < FILLER_WINDOW
+  const n = rest[0]
+  if (n === ',' || n === ';' || n === ']' || n === '}') return true
+  if (n === ')') { const nx = skipFiller(rest.slice(1)); return nx !== null && !GROUP_CONTINUES.test(nx) }
+  if (n === '\n' || n === '\r') { const nx = skipFiller(rest); return nx !== null && !LINE_CONTINUES.test(nx) }
+  return false
+}
+const printable = (s) => s.replace(/[\x00-\x1f\x7f]/g, '?')
+function scanCode(text, closed, open) {
+  for (let from = text.indexOf('://'); from !== -1; from = text.indexOf('://', from)) {
+    const at = from + 3
+    from = at
+    const bare = !/[A-Za-z0-9+.-]/.test(text[at - 4] ?? '')   // no scheme-like character before `://`
+    CODE_AUTHORITY.lastIndex = at
+    const a = CODE_AUTHORITY.exec(text)
+    const host = a[1]
+    const end = at + a[0].length
+    const c = text[end]
+    let ok
+    if (c === undefined || /[/?#:\s)]/.test(c)) ok = true
+    else if (c === "'" || c === '"' || c === '`') ok = literalEnds(text.slice(end + 1, end + 1 + FILLER_WINDOW))
+    else ok = false
+    if (host === '') {
+      if (c === '/') continue                 // `file:///x`: an empty host followed by `/` names no network destination
+      if (bare && ok) continue                // a lone `'://'` (split, replace): nothing is named
+    } else if (ok) {
+      const h = host.toLowerCase()
+      if (!isLocalHost(h)) closed.push(h)
+      continue
+    }
+    open.push(`<open host: ${printable(host + (c ?? '')).slice(0, 40)}>`)
+  }
+  if (SCHEME_SPLIT.test(text)) open.push('<split scheme>')
+}
+// The destinations of interpreter code: the external hosts that are CLOSED (read as a whole), then the
+// markers for what is not. `shellJoin` adds the reading bash gives a one-liner (quotes removed, adjacent
+// pieces joined: shellWords); a heredoc / here-string body is not shell-joined, its quotes are literal. The
+// union of the readings only adds findings. shellWords may throw AmbiguousShellSyntax; it is NOT caught
+// here, classify() denies on it. A `<...>` marker is never a vendor host, so the caller's filter keeps it.
+export function codeDestinations(text, { shellJoin = false } = {}) {
+  const closed = []
+  const open = []
+  scanCode(text, closed, open)
+  if (shellJoin) scanCode(shellWords(text).join(' '), closed, open)
+  return [...new Set(closed), ...new Set(open)]
+}
 function spans(masked) {
   const out = []; let start = 0
   // A lone `&` ends a command like `;` (`bash <&3 & wait`, #1931 review 8); `&` of a redirection
   // (`2>&1`, `<&3`, `&>f`) does not. `|&` splits at both characters: a pipe, then an empty span.
   // The `|` of `>|` (write over noclobber) is a redirection, not a pipe (#1931 review 9).
   const re = /&&|\|\||;|(?<!>)\||\n|(?<![<>])&(?!>)/g; let m
-  while ((m = re.exec(masked))) { out.push([start, m.index]); start = m.index + m[0].length }
+  while ((m = re.exec(masked))) {
+    // A backslash-escaped separator (`u\;u.urlopen(...)`, `a\&b`) is a literal character of the word, not
+    // the end of the command (card 44167c0b, B07): splitting there cut an interpreter body in two.
+    let bs = 0
+    while (m.index - bs > 0 && masked[m.index - bs - 1] === '\\') bs++
+    if (bs % 2 === 1) { re.lastIndex = m.index + 1; continue }
+    out.push([start, m.index]); start = m.index + m[0].length
+  }
   out.push([start, masked.length])
   return out
 }
@@ -1834,7 +1921,9 @@ function classifyCommand(command, depth, vendorHosts, vendorDomains, stdinTainte
         if (!computed) continue
       }
       if (!(PYTHON.test(cmd.toLowerCase()) ? pythonUsesNetwork(text) : usesNetwork(cmd, text))) continue
-      const found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
+      // The body is read as the interpreter gets it (no shell join: quotes are literal here); a host
+      // that is not provably complete is a finding of its own (codeDestinations).
+      const found = codeDestinations(text, { shellJoin: false })
       const hosts = [...new Set(found)].filter((h) => !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
       if (hosts.length) return { deny: true, reason: 'heredoc-external', hosts }
     }
@@ -2008,7 +2097,9 @@ function classifyCommand(command, depth, vendorHosts, vendorDomains, stdinTainte
           found = curlDestinations(argv.slice(at + 1), { allowConfig: true })
         }
       } else if (at !== -1) found = wgetDestinations(argv.slice(at + 1))
-      else found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
+      // A one-liner's code is judged as written AND as bash hands it to the interpreter (shell join);
+      // curl / wget with no argv hit keep the old scan. AmbiguousShellSyntax from the join is not caught.
+      else found = target === 'one-liner' ? codeDestinations(text, { shellJoin: true }) : [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
       // The PLAIN reading leaves a loop variable unexpanded; its values are judged in the loop
       // readings that follow, so here alone an unresolved host is not a finding.
       if (text === plain && (variants === null || variants.some((v) => v !== plain))) found = found.filter((h) => !h.startsWith('<unresolved:'))
