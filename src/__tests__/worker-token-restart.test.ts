@@ -144,10 +144,12 @@ describe('worker token-swap restart: loop guard', () => {
   it('restart whose session is not alive afterwards: failed, no ok digest line, no hazmester message, counted', () => {
     const { st } = harness()
     let calls = 0
+    let stamp: string | null = FP_A // launched with the old token
+    // agent-worker re-stamps before new-session and clears the stamp when new-session fails
     const dead = createWorkerTokenRestarter({
       currentFingerprint: () => FP_B,
-      launchFingerprint: () => FP_B, // stamp already shows the new fingerprint
-      restart: () => { st.restarts++ },
+      launchFingerprint: () => stamp,
+      restart: () => { st.restarts++; stamp = null },
       sessionAlive: () => (++calls === 1), // alive before, dead after the restart
       allowed: () => true,
       now: () => st.now,
@@ -162,7 +164,9 @@ describe('worker token-swap restart: loop guard', () => {
     expect(st.notes).toEqual([])
     expect(st.hazmester).toEqual([])
     expect(st.logs.join('\n')).toContain('did not complete')
-    expect(dead.check(SESSION)).toBe('skipped') // attempted for this fingerprint
+    // stamp cleared -> state unknown -> the detector never restarts on unknown
+    expect(dead.check(SESSION)).toBe('none')
+    expect(st.restarts).toBe(1)
   })
 
   it('a half-written (unreadable) token read in between does not reset the guard', () => {
