@@ -22,6 +22,7 @@ import { updateEnvFile } from '../env.js'
 import { envEntryProblem } from '../env-entry.js'
 import { isAdminSwitchKey } from './admin-switch.js'
 import { AGENTS_BASE_DIR, listAgentNames, readJsonObjectForWrite } from './agent-config.js'
+import { applyKeptConfigKeys, readExistingConfigForKeep } from './package-config-keys.js'
 import { safeJoin, sanitizeAgentName } from './sanitize.js'
 import { importedLabelColor } from '../css-color.js'
 import { SCHEDULED_TASKS_DIR, type ScheduledTaskWritten } from './scheduled-tasks-io.js'
@@ -1167,8 +1168,16 @@ function writeMainAgentFiles(ma: MainAgentExport, tracker: WriteTracker): void {
 
   if (ma.claudeMd) trackedWrite(join(PROJECT_ROOT, 'CLAUDE.md'), ma.claudeMd, tracker)
   if (ma.soulMd) trackedWrite(join(PROJECT_ROOT, 'SOUL.md'), ma.soulMd, tracker)
-  if (ma.config && Object.keys(ma.config).length)
-    trackedWrite(join(PROJECT_ROOT, 'agent-config.json'), JSON.stringify(ma.config, null, 2), tracker)
+  // Card 51538ebc BD2: same rule as for sub-agents: the package never sets
+  // PACKAGE_UNTRUSTED_CONFIG_KEYS; the existing main config keeps its values.
+  if (ma.config && Object.keys(ma.config).length) {
+    const mainCfgPath = join(PROJECT_ROOT, 'agent-config.json')
+    const mainConfig = applyKeptConfigKeys(
+      { ...(ma.config as Record<string, unknown>) },
+      existsSync(mainCfgPath) ? readExistingConfigForKeep(mainCfgPath) : null,
+    )
+    trackedWrite(mainCfgPath, JSON.stringify(mainConfig, null, 2), tracker)
+  }
   trackedWrite(join(PROJECT_ROOT, '.mcp.json'), JSON.stringify(deplaceholderMcp(ma.mcp), null, 2), tracker)
   trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(ma.settings, null, 2), tracker)
 
@@ -1236,17 +1245,15 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): string[] | 
   const claudeDir = safeJoin(dir, '.claude')
   trackedMkdir(claudeDir, tracker)
 
-  // Card 24e137ef N3b: the bundle never chooses the privilege profile. An existing
-  // agent keeps its own securityProfile and settings.json; a new agent gets no
-  // profile (default). A new agent's settings.json still comes from the bundle.
+  // Card 24e137ef N3b + card 51538ebc BD2: the package never chooses the privilege
+  // profile or the login/host keys (PACKAGE_UNTRUSTED_CONFIG_KEYS). An existing
+  // agent keeps its own values and settings.json; a new agent gets none of them
+  // (defaults).
   const existingAgent = existsSync(join(dir, 'agent-config.json'))
-  let keptProfile: unknown
-  if (existingAgent) {
-    try { keptProfile = JSON.parse(readFileSync(join(dir, 'agent-config.json'), 'utf-8')).securityProfile } catch { /* default */ }
-  }
-  const importedConfig: Record<string, unknown> = { ...(agent.config as Record<string, unknown>) }
-  delete importedConfig.securityProfile
-  if (typeof keptProfile === 'string' && keptProfile.trim()) importedConfig.securityProfile = keptProfile.trim()
+  const importedConfig = applyKeptConfigKeys(
+    { ...(agent.config as Record<string, unknown>) },
+    existingAgent ? readExistingConfigForKeep(join(dir, 'agent-config.json')) : null,
+  )
   trackedWrite(join(dir, 'agent-config.json'), JSON.stringify(importedConfig, null, 2), tracker)
   if (agent.claudeMd) trackedWrite(join(dir, 'CLAUDE.md'), agent.claudeMd, tracker)
   if (agent.soulMd) trackedWrite(join(dir, 'SOUL.md'), agent.soulMd, tracker)

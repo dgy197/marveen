@@ -595,6 +595,66 @@ describe('bundle import allowlist (card 24e137ef B1)', () => {
         expect(existsSync(join(destBase, 'victim', '.claude', 'settings.json'))).toBe(false)
         expect(r.droppedSettings).toEqual([])
       })
+
+      // Card 51538ebc BD2: the bundle never chooses these agent-config keys.
+      const PKG_CONFIG = JSON.stringify({
+        model: 'm',
+        securityProfile: 'applier',
+        claudePlan: 'pkg-plan',
+        capabilities: ['pkg-cap'],
+        claudeConfigDir: '/pkg/root',
+        oauthTokenFile: '/pkg/token',
+        remoteHost: 'pkg.example',
+        remoteWorkdir: '/pkg/work',
+      })
+      const UNTRUSTED = ['securityProfile', 'claudePlan', 'capabilities', 'claudeConfigDir', 'oauthTokenFile', 'remoteHost', 'remoteWorkdir']
+      const readCfg = (destBase: string) =>
+        JSON.parse(readFileSync(join(destBase, 'victim', 'agent-config.json'), 'utf-8')) as Record<string, unknown>
+
+      it('BD2 overwrite keeps the existing claudePlan / capabilities, absent keys stay absent', () => {
+        const destBase = join(tmp, 'agents')
+        makeAgent(join(destBase, 'victim'), {
+          'agent-config.json': JSON.stringify({ securityProfile: 'developer-junior', claudePlan: 'local-plan', capabilities: ['local-cap'], claudeConfigDir: '/local/root' }),
+        })
+        run(pack({ 'agent-config.json': PKG_CONFIG }), destBase, true)
+        const cfg = readCfg(destBase)
+        expect(cfg.securityProfile).toBe('developer-junior')
+        expect(cfg.claudePlan).toBe('local-plan')
+        expect(cfg.capabilities).toEqual(['local-cap'])
+        expect(cfg.claudeConfigDir).toBe('/local/root')
+        for (const k of ['oauthTokenFile', 'remoteHost', 'remoteWorkdir']) expect(k in cfg).toBe(false)
+        expect(cfg.model).toBe('m')
+      })
+
+      it('BD2 new agent: none of the seven keys lands', () => {
+        const destBase = join(tmp, 'agents')
+        run(pack({ 'agent-config.json': PKG_CONFIG }), destBase, false)
+        const cfg = readCfg(destBase)
+        for (const k of UNTRUSTED) expect(k in cfg).toBe(false)
+        expect(cfg.model).toBe('m')
+      })
+
+      // Card 51538ebc BD3: the kept settings.json must not run the bundle's hook code.
+      it('BD3 overwrite: the existing hooks dir survives, the bundle hook file does not land', () => {
+        const destBase = join(tmp, 'agents')
+        makeAgent(join(destBase, 'victim'), {
+          'CLAUDE.md': 'old',
+          '.claude/settings.json': '{"mine":true}\n',
+          '.claude/hooks/mine.py': 'print("local")',
+        })
+        run(pack({ 'CLAUDE.md': 'x', '.claude/hooks/evil.py': 'print("pkg")', '.claude/hooks/mine.py': 'print("pkg-override")' }), destBase, true)
+        const hooks = join(destBase, 'victim', '.claude', 'hooks')
+        expect(readdirSync(hooks)).toEqual(['mine.py'])
+        expect(readFileSync(join(hooks, 'mine.py'), 'utf-8')).toBe('print("local")')
+      })
+
+      it('BD3 overwrite of an agent without hooks: no hooks dir after the import', () => {
+        const destBase = join(tmp, 'agents')
+        makeAgent(join(destBase, 'victim'), { 'CLAUDE.md': 'old' })
+        run(pack({ 'CLAUDE.md': 'x', '.claude/hooks/evil.py': 'print("pkg")' }), destBase, true)
+        expect(existsSync(join(destBase, 'victim', '.claude', 'hooks'))).toBe(false)
+        expect(readFileSync(join(destBase, 'victim', 'CLAUDE.md'), 'utf-8')).toBe('x')
+      })
     })
   }
 
