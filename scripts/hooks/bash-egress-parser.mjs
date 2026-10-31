@@ -1715,9 +1715,34 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
   }
 }
 
+// Check raw input, including feeds, before any transformation can hide an ANSI prefix.
+// Only a complete literal echo/printf command is exempt; unknown execution contexts deny.
+function rawAnsiInputDeny(raw) {
+  if (!raw.includes("$'")) return false
+  if (/\\\r?\n/.test(raw)) return true
+  const literal = /^(?:[^\s'"\\$`;|&<>(){}*?\[\]#]|\\[^\r\n]|\$'(?:[^'\\]|\\[^\r\n])*'|'[^']*'|"(?:[^"\\$`]|\\[^\r\n]|\$\$|\$')*")+/
+  const start = /^[ \t]*(?:echo|printf)(?=[ \t]|$)/.exec(raw)
+  if (!start) return true
+  let rest = raw.slice(start[0].length)
+  // printf -v is assignment, not literal output. Require an unambiguous non-option format.
+  if (start[0].trim() === 'printf' && !/^[ \t]+(?:\$'|'|")?[%A-Za-z0-9_]/.test(rest)) return true
+  while (rest.length) {
+    if (/^[ \t]*$/.test(rest)) return false
+    const space = /^[ \t]+/.exec(rest)
+    if (!space) return true
+    rest = rest.slice(space[0].length)
+    const word = literal.exec(rest)
+    if (!word) return true
+    rest = rest.slice(word[0].length)
+  }
+  return false
+}
+
 function classifyCommand(command, depth, vendorHosts, vendorDomains, stdinTainted) {
   if (depth === 0) fnMemo = new Map()
-  const norm = String(command ?? '').replace(/\\\r?\n/g, ' ')
+  const raw = String(command ?? '')
+  if (rawAnsiInputDeny(raw)) return { deny: true, reason: 'raw-ansi-execution-context', hosts: [] }
+  const norm = raw.replace(/\\\r?\n/g, ' ')
   const lifted = liftSubstitutions(norm)
   const { inners, innerAts, herestrings, bodies } = lifted
   let orig = lifted.stripped

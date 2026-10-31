@@ -360,7 +360,8 @@ function dquoteEnd(src, from) {
   return -1
 }
 
-export function maskInertLiterals(command, heredocs, lenient = false) {
+export function maskInertLiterals(command, heredocs, lenient = false, diagnostic = {}) {
+  diagnostic.reason = null
   const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
   let cur = ''
   let i = 0
@@ -407,7 +408,10 @@ export function maskInertLiterals(command, heredocs, lenient = false) {
     }
 
     // Shell-dependent quoting cannot safely preserve literals or heredoc boundaries.
-    if (src.startsWith("$$'", i)) return null
+    if (src.startsWith("$$'", i)) {
+      diagnostic.reason = 'ambiguous-dollar-quote'
+      return null
+    }
 
     if (c === '$' && src[i + 1] === "'") { // ANSI-C: \' does escape
       let j = i + 2
@@ -1736,9 +1740,11 @@ function decide(toolName, toolInput, opts = {}) {
     }
     // The scheduler check is the ANCHORED one -- it fires on what sits at a
     // segment START -- so it is the one a fake segment boundary can mislead, and
-    // the only one that gets quote-aware segments. Null (unresolvable quoting)
-    // falls back to the naive split, i.e. to scanning strictly more.
-    const masked = maskInertLiterals(safeCommand)
+    // the only one that gets quote-aware segments. Preserve the legacy null fallback,
+    // except for shell-dependent dollar quoting, which cannot use read exemptions.
+    const diagnostic = {}
+    const masked = maskInertLiterals(safeCommand, undefined, false, diagnostic)
+    if (diagnostic.reason === 'ambiguous-dollar-quote') return { deny: true, reason: diagnostic.reason }
     for (const seg of (masked == null ? naiveSegs : splitSegments(masked))) {
       // scheduler binaries: deny the exec/submit forms, allow pure read-listing
       if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg)) return { deny: true }

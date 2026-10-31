@@ -4,11 +4,11 @@ import { readFileSync } from 'node:fs'
 import { classify } from '../../scripts/hooks/bash-egress-parser.mjs'
 
 describe('direct function literal arguments', () => {
-  const review2Probes: { label: string; cmd: string }[] = JSON.parse(readFileSync(
+  const review2Probes: { label: string; cmd: string; reason: string }[] = JSON.parse(readFileSync(
     new URL('./fixtures/egress-corpus/ansi-c-review2.json', import.meta.url), 'utf8',
   ))
-  it.each(review2Probes)('denies review-2 ANSI-C regression: $label', ({ cmd }) => {
-    expect(classify(cmd).deny).toBe(true)
+  it.each(review2Probes)('denies review-2 ANSI-C regression: $label', ({ cmd, reason }) => {
+    expect(classify(cmd)).toMatchObject({ deny: true, reason })
   })
   const ansiCProbes: string[] = JSON.parse(readFileSync(
     new URL('./fixtures/egress-corpus/ansi-c-positionals.json', import.meta.url), 'utf8',

@@ -6,11 +6,27 @@ import { classify, shellWords } from '../../scripts/hooks/bash-egress-parser.mjs
 import { gateDecision, maskInertLiterals } from '../../scripts/self-pace-gate.mjs'
 
 describe('ANSI-C boundaries', () => {
-  const structural: { rule: string; cmd: string }[] = JSON.parse(readFileSync(
+  const structural: { rule: string; cmd: string; reason: string }[] = JSON.parse(readFileSync(
     new URL('./fixtures/egress-corpus/ansi-c-structural.json', import.meta.url), 'utf8',
   ))
-  it.each(structural)('fails closed structurally: $rule', ({ cmd }) => {
-    expect(classify(cmd).deny).toBe(true)
+  it.each(structural)('fails closed structurally: $rule', ({ cmd, reason }) => {
+    expect(classify(cmd)).toMatchObject({ deny: true, reason })
+  })
+
+  it.each([false, true])('distinguishes the new null source in lenient=%s mode', (lenient) => {
+    const diagnostic = { reason: null as string | null }
+    expect(maskInertLiterals("echo $$'text'", [], lenient, diagnostic)).toBeNull()
+    expect(diagnostic.reason).toBe('ambiguous-dollar-quote')
+    expect(maskInertLiterals('echo "unfinished', [], lenient, diagnostic)).toBeNull()
+    expect(diagnostic.reason).toBeNull()
+    expect(gateDecision('Bash', { command: 'echo "unfinished' }).deny).toBe(false)
+    expect(gateDecision('Bash', { command: "echo $$'text'" }))
+      .toMatchObject({ deny: true, reason: 'ambiguous-dollar-quote' })
+  })
+
+  it.each(['trap', 'source', 'sh', 'eval', '$COMMAND', 'xargs sh'])('checks raw ANSI input for %s', (command) => {
+    expect(classify(`${command} $'printf hello'`))
+      .toMatchObject({ deny: true, reason: 'raw-ansi-execution-context' })
   })
 
   it.each([false, true])('returns null for ambiguous quoting in lenient=%s mode', (lenient) => {
@@ -33,24 +49,31 @@ describe('ANSI-C boundaries', () => {
     String.raw`sh -c "printf \$'hello'"`,
     String.raw`eval "printf \$'hello'"`,
     "bash <<'EOF'\nprintf $'hello'\nEOF",
+    "bash <<EOF\nprintf $'hello'\nEOF",
+    "sh <<< \"printf $'hello'\"",
   ])('fails closed on ANSI-C in shell payloads: %s', (cmd) => {
-    expect(classify(cmd)).toMatchObject({ deny: true, reason: 'shell-payload-ansi-quote' })
+    expect(classify(cmd)).toMatchObject({ deny: true, reason: 'raw-ansi-execution-context' })
   })
 
   it.each([
     "printf $'a\\tb\\n'",
     "sh -c 'printf $1' _ abc",
-    "curl -s -d $'line1\\nline2' http://localhost:3420/api/x",
-    `bash -c 'printf "%s" "literal $'text"'`,
   ])('retains ordinary local ANSI-C and quoted payload text: %s', (cmd) => {
     expect(classify(cmd).deny).toBe(false)
+  })
+
+  it.each([
+    "curl -s -d $'line1\\nline2' http://localhost:3420/api/x",
+    `bash -c 'printf "%s" "literal $'text"'`,
+  ])('conservatively denies ANSI text outside literal output commands: %s', (cmd) => {
+    expect(classify(cmd)).toMatchObject({ deny: true, reason: 'raw-ansi-execution-context' })
   })
 
   it('rejects ambiguous quoting instead of losing heredoc or null-path bookkeeping', () => {
     const cmd = String.raw`echo $$'\' ; at now ; echo '\'`
     expect(maskInertLiterals(cmd)).toBeNull()
     expect(gateDecision('Bash', { command: cmd }).deny).toBe(true)
-    expect(classify(cmd)).toMatchObject({ deny: true, reason: 'ambiguous-dollar-quote' })
+    expect(classify(cmd)).toMatchObject({ deny: true, reason: 'raw-ansi-execution-context' })
   })
 
   it.each([

