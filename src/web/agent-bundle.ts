@@ -747,6 +747,12 @@ export function peekBundleKind(bundle: Buffer): 'agent' | 'fleet' {
     if (!existsSync(manifestPath)) {
       throw new Error('Invalid bundle: manifest.json missing (not a Marveen bundle?)')
     }
+    // Card 068eda52 B1: this runs before the lstat walk, so a FIFO manifest.json
+    // must be refused here, before any read (a read on a FIFO blocks the dashboard).
+    const mst = lstatSync(manifestPath)
+    if (!mst.isFile()) throw new Error('Invalid bundle: not a regular file at manifest.json')
+    if (mst.nlink > 1) throw new Error('Invalid bundle: hard link at manifest.json')
+    if (mst.size > 1024 * 1024) throw new Error('Invalid bundle: manifest.json is too large')
     let parsed: unknown
     try { parsed = JSON.parse(readFileSync(manifestPath, 'utf-8')) } catch {
       throw new Error('Invalid bundle: manifest.json is not valid JSON')

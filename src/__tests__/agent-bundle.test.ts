@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { fileURLToPath } from 'node:url'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, symlinkSync, linkSync, lstatSync } from 'node:fs'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -993,8 +994,10 @@ describe('bundle import: no symlink anywhere in the extracted tree (card 51538eb
     expect(readdirSync(destBase)).toEqual([])
   })
 
-  // Card 068eda52: a FIFO entry must be refused in the lstat walk, before any read
-  // (a read on a FIFO would hang). The elapsed check guards against a hang.
+  // Card 068eda52: a FIFO entry must be refused before any read (a read on a FIFO
+  // blocks forever). A synchronous hang cannot be caught by an in-process elapsed
+  // check, so each call runs in a child node process with a hard timeout: a
+  // regression kills the child and fails the test instead of hanging vitest.
   function fifoBundle(name: string, agentRel: string, files: string[]): Buffer | null {
     const root = join(tmp, name)
     makeAgent(join(root, agentRel), { 'CLAUDE.md': 'x' })
@@ -1008,14 +1011,40 @@ describe('bundle import: no symlink anywhere in the extracted tree (card 51538eb
     return tarUp(root, files)
   }
 
+  const REPO_ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..', '..')
+  function runInChild(fn: 'importAgentBundle' | 'importAllAgentsBundle' | 'peekBundleKind', bundle: Buffer, destBase: string): { timedOut: boolean; error: string | null } {
+    const bundleFile = join(tmp, `child-${fn}.tar.gz`)
+    writeFileSync(bundleFile, bundle)
+    const script = join(tmp, `child-${fn}.mts`)
+    writeFileSync(script, [
+      `import { readFileSync } from 'node:fs'`,
+      `import { join } from 'node:path'`,
+      `import * as m from ${JSON.stringify(join(REPO_ROOT, 'src', 'web', 'agent-bundle.ts'))}`,
+      `const [, , fn, file, destBase] = process.argv`,
+      `const b = readFileSync(file)`,
+      `try {`,
+      `  if (fn === 'peekBundleKind') m.peekBundleKind(b)`,
+      `  else (m as any)[fn](b, { resolveDest: (n: string) => join(destBase, n) })`,
+      `  console.log(JSON.stringify({ error: null }))`,
+      `} catch (e) { console.log(JSON.stringify({ error: (e as Error).message })) }`,
+      '',
+    ].join('\n'))
+    const r = spawnSync(process.execPath, ['--import', 'tsx', script, fn, bundleFile, destBase], {
+      cwd: REPO_ROOT, encoding: 'utf-8', timeout: 30000, killSignal: 'SIGKILL',
+    })
+    if (r.error || r.signal) return { timedOut: true, error: null }
+    const line = r.stdout.trim().split('\n').pop() ?? ''
+    return { timedOut: false, error: JSON.parse(line).error }
+  }
+
   it('(068eda52) single bundle containing a FIFO is refused without hanging', () => {
     const bundle = fifoBundle('pack-fifo-single', 'agent', ['manifest.json', 'agent'])
     if (!bundle) return
     const destBase = join(tmp, 'dest')
     mkdirSync(destBase, { recursive: true })
-    const t0 = Date.now()
-    expect(() => importAgentBundle(bundle, asNew(destBase))).toThrow(/not a regular file at agent[\\/]pipe$/)
-    expect(Date.now() - t0).toBeLessThan(10000)
+    const r = runInChild('importAgentBundle', bundle, destBase)
+    expect(r.timedOut).toBe(false)
+    expect(r.error).toMatch(/not a regular file at agent[\\/]pipe$/)
     expect(readdirSync(destBase)).toEqual([])
   })
 
@@ -1024,9 +1053,24 @@ describe('bundle import: no symlink anywhere in the extracted tree (card 51538eb
     if (!bundle) return
     const destBase = join(tmp, 'dest')
     mkdirSync(destBase, { recursive: true })
-    const t0 = Date.now()
-    expect(() => importAllAgentsBundle(bundle, asNew(destBase))).toThrow(/not a regular file at agents[\\/]x[\\/]pipe$/)
-    expect(Date.now() - t0).toBeLessThan(10000)
+    const r = runInChild('importAllAgentsBundle', bundle, destBase)
+    expect(r.timedOut).toBe(false)
+    expect(r.error).toMatch(/not a regular file at agents[\\/]x[\\/]pipe$/)
     expect(readdirSync(destBase)).toEqual([])
+  })
+
+  it('(068eda52 B1) peekBundleKind refuses a FIFO manifest.json without hanging', () => {
+    const root = join(tmp, 'pack-fifo-manifest')
+    mkdirSync(root, { recursive: true })
+    try {
+      execFileSync('mkfifo', [join(root, 'manifest.json')])
+    } catch {
+      console.warn('mkfifo unavailable, skipping FIFO manifest test')
+      return
+    }
+    const bundle = tarUp(root, ['manifest.json'])
+    const r = runInChild('peekBundleKind', bundle, join(tmp, 'dest'))
+    expect(r.timedOut).toBe(false)
+    expect(r.error).toBe('Invalid bundle: not a regular file at manifest.json')
   })
 })
