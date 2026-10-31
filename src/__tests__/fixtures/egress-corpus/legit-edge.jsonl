@@ -128,3 +128,11 @@
 {"id":"L128","class":"L","family":"MISC","cmd":"trap 'curl -s http://localhost:3420/api/health' EXIT; sleep 1","expect":"allow"}
 {"id":"L129","class":"L","family":"MISC","cmd":"curl() { command curl --max-time 5 \"$@\"; }; curl -s http://localhost:3420/api/health","expect":"allow"}
 {"id":"L130","class":"L","family":"MISC","cmd":"export -f api 2>/dev/null; bash -c 'api() { curl -s http://localhost:3420$1; }; api /api/health'","expect":"allow"}
+{"id":"L131","class":"L","family":"INTERP","cmd":"node -e \"const p='/api/x'; fetch('http://localhost:3420'+p)\"","expect":"allow"}
+{"id":"L132","class":"L","family":"INTERP","cmd":"python3 -c \"import urllib.request as u; h={'A': 'b'}; u.urlopen(u.Request('http://127.0.0.1:3420/api', headers=h))\"","expect":"allow"}
+{"id":"L133","class":"L","family":"INTERP","cmd":"python3 -c \"import urllib.request as u; p=3420; u.urlopen(f'http://localhost:{p}')\"","expect":"allow"}
+{"id":"L134","class":"L","family":"INTERP","cmd":"node -e \"fetch('http://nas.local:5000/x')\"","expect":"allow"}
+{"id":"L135","class":"L","family":"INTERP","cmd":"python3 -c \"import urllib.request as u; u.urlopen('http://[::1]:3420/api/health')\"","expect":"allow"}
+{"id":"L136","class":"L","family":"INTERP","cmd":"python3 -c \"import requests; requests.get('http://127.0.0.1:3420/x', headers={'Authorization': 'Bearer t'}, timeout=5)\"","expect":"allow"}
+{"id":"L137","class":"L","family":"INTERP","cmd":"node -e \"fetch(`http://localhost:${3420}/api/health`)\"","expect":"allow"}
+{"id":"L138","class":"L","family":"INTERP","cmd":"python3 -c \"import urllib.request as u; u.urlopen('file:///tmp/x.json')\"","expect":"allow"}
