@@ -454,7 +454,11 @@ def manage_email_is_send(tool_input: dict) -> bool:
     to stop the SEND. Fail-closed stays: only an explicit draft:true passes,
     a missing/ambiguous flag is a send.
     """
-    if not _manage_email_op_closed(tool_input.get("operation")):
+    # Card 6164c9cf: `action` can only ADD closure, never re-open a closed
+    # operation -- the same rule as the copy gate. A non-string action adds nothing.
+    action = tool_input.get("action")
+    action_outbound = isinstance(action, str) and _manage_email_op_outbound(action)
+    if not (_manage_email_op_closed(tool_input.get("operation")) or action_outbound):
         return False
     return not _is_explicit_draft(tool_input)
 

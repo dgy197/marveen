@@ -486,6 +486,17 @@ with tempfile.TemporaryDirectory() as td:
                                    "tool_input": {"operation": 42}})
     check("manage_email with a non-string operation is DENIED (fail-closed)", code == 2,
           f"exit={code}")
+    # Card 6164c9cf: `action` can only ADD closure, never re-open an operation.
+    for label, op, extra, want in (
+        ("operation=search action=send", "search", {"action": "send"}, 2),
+        ("operation=search action=Reply-All", "search", {"action": "Reply-All"}, 2),
+        ("operation=search action=search", "search", {"action": "search"}, 0),
+        ("operation=search action=['send'] (non-string adds nothing)", "search", {"action": ["send"]}, 0),
+        ("operation=search action=send draft:true (explicit draft)", "search", {"action": "send", "draft": True}, 0),
+        ("operation=send action=search (action never re-opens)", "send", {"action": "search"}, 2),
+    ):
+        code, _, _ = run_gate(store1, manage(op, **extra))
+        check(f"manage_email {label} -> exit {want} at level 1", code == want, f"exit={code}")
     # MANAGEDRAFT905: a send OPERATION carrying an explicit draft:true is a
     # DRAFT, not a send -- `{"operation":"reply","draft":true}` is the only way
     # to write a threaded draft with this tool, and the sibling gate

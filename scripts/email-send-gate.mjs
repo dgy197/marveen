@@ -1770,7 +1770,10 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
   if (mailKind === 'manage_email') {
     // A missing or non-string operation is closed (card d8d3441e): it goes down
     // the address check + draft rule like an outbound one.
-    if (!manageEmailOpClosed(toolInput?.operation)) return { deny: false }
+    // Card 6164c9cf: `action` can only ADD closure, never re-open a closed
+    // operation (same rule as the copy gate); a non-string action adds nothing.
+    const actionOutbound = typeof toolInput?.action === 'string' && manageEmailOpOutbound(toolInput.action)
+    if (!manageEmailOpClosed(toolInput?.operation) && !actionOutbound) return { deny: false }
     // The address check runs before the draft rule, so it applies to the send
     // AND to the draft the deny message would send us back to write.
     const unparseable = unparseableRecipients(toolInput)
