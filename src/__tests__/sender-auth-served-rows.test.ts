@@ -30,7 +30,7 @@ function call(method: string, path: string, body?: unknown): Promise<{ statusCod
       ;(req as unknown as EventEmitter).emit('end')
     })
   }
-  const ctx = { req, res, path, method, url: new URL('http://localhost' + path), fedPeer: null, auth: { kind: 'token' } as Auth } as RouteContext
+  const ctx = { req, res, path: path.split('?')[0], method, url: new URL('http://localhost' + path), fedPeer: null, auth: { kind: 'token' } as Auth } as RouteContext
   return tryHandleMessages(ctx).then((handled) => {
     expect(handled).toBe(true)
     return state
