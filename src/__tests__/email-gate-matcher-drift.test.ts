@@ -306,8 +306,11 @@ const NAME_CASES = JSON.parse(
   cases: Array<{ name: string; expected: Kind; matcher_exempt?: string }>
   // classifier-null names the sub-agent gate still denies (mailToolAction), card 6151bb4d
   gate_only: { kind: string; names: string[] }
+  // classifier-null names the sub-agent gate ledger-checks as a draft (create + sending verb, invites), r1
+  gate_only_draft: { kind: string; names: string[] }
 }
 const GATE_ONLY = new Set(NAME_CASES.gate_only.names)
+const GATE_ONLY_DRAFT = new Set(NAME_CASES.gate_only_draft.names)
 
 function expectedFor(server: string, prefix: string, base: string): Kind {
   const b = NAME_CASES.bases[base]
@@ -521,13 +524,20 @@ describe('mail-tool names are classified by suffix, identically in Python and JS
     // gate_only is an exception list, not a loophole: each entry is a real fixture name with a null kind
     const nullNames = new Set(all.filter((c) => c.expected === null).map((c) => c.name))
     expect(NAME_CASES.gate_only.names.filter((n) => !nullNames.has(n))).toEqual([])
+    expect(NAME_CASES.gate_only_draft.names.filter((n) => !nullNames.has(n))).toEqual([])
     for (const c of all) {
       if (c.name === 'Bash') continue
       const d = gateDecision(c.name, { to: ['invented@example.com'], operation: 'send' }, verified)
       // classifier-null names listed in gate_only are denied fail-closed by mailToolAction
-      // (card 6151bb4d: bare verb on a mail server); every other null name passes.
-      expect(d.deny, c.name).toBe(c.expected !== null || GATE_ONLY.has(c.name))
+      // (card 6151bb4d: bare verb on a mail server); gate_only_draft ones are ledger-checked
+      // as drafts; every other null name passes.
+      const gatedOnly = GATE_ONLY.has(c.name) || GATE_ONLY_DRAFT.has(c.name)
+      expect(d.deny, c.name).toBe(c.expected !== null || gatedOnly)
       if (c.expected === null && GATE_ONLY.has(c.name)) expect(d.kind, c.name).toBe(NAME_CASES.gate_only.kind)
+      if (c.expected === null && GATE_ONLY_DRAFT.has(c.name)) {
+        expect(d.kind, c.name).toBe(NAME_CASES.gate_only_draft.kind)
+        expect(gateDecision(c.name, { to: ['known@example.com'] }, verified).deny, c.name).toBe(false)
+      }
       if (c.expected === 'draft') {
         expect(d.kind, c.name).toBe('unverified-recipient')
         expect(gateDecision(c.name, { to: ['known@example.com'] }, verified).deny, c.name).toBe(false)
