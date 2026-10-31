@@ -114,10 +114,41 @@ describe('acquireRelayLock: basic', () => {
     expect(r.ok && r.tookOver).toBe(true)
   })
 
-  it('corrupt lock file -> takeover', () => {
-    writeFileSync(lockPath, '{"v":1,"pid":', { mode: 0o600 })
-    const r = acquireRelayLock(lockPath, { probe: fakeProbe() })
-    expect(r.ok && r.tookOver).toBe(true)
+  it('unparseable or other-version lock file -> lock_unrecognized (F2), never taken over, file untouched', () => {
+    const cases = ['{"v":1,"pid":', 'not json at all\n', JSON.stringify({ v: 2, pid: deadPid(), start: 's', cmd_sha256: 'c', nonce: 'n' }) + '\n']
+    for (const body of cases) {
+      writeFileSync(lockPath, body, { mode: 0o600 })
+      const r = acquireRelayLock(lockPath, { probe: fakeProbe() })
+      expect(r).toEqual({ ok: false, reason: 'lock_unrecognized' })
+      expect(readFileSync(lockPath, 'utf8')).toBe(body)
+      expect(existsSync(`${lockPath}.takeover`)).toBe(false)
+    }
+  })
+
+  it('two interleaved takeovers (F1): the one whose judged record was replaced meanwhile refuses, the other holds', () => {
+    writeRecord(lockPath, deadPid(), 'x', 'x')
+    const base = fakeProbe()
+    let fired = false
+    let b: ReturnType<typeof acquireRelayLock> | undefined
+    const probeA: ProcessProbe = {
+      identity: base.identity,
+      isAlive(pid) {
+        if (!fired) {
+          fired = true
+          // A's mutex is gone (crashed-mutex break): B runs a whole takeover inside A's window.
+          rmSync(`${lockPath}.takeover`, { force: true })
+          b = acquireRelayLock(lockPath, { probe: base })
+        }
+        return isPidAlive(pid)
+      },
+    }
+    const a = acquireRelayLock(lockPath, { probe: probeA })
+    expect(b && b.ok && b.tookOver).toBe(true)
+    expect(a).toEqual({ ok: false, reason: 'lock_busy' })
+    const rec = JSON.parse(readFileSync(lockPath, 'utf8'))
+    expect(b && b.ok && rec.nonce === b.lock.nonce).toBe(true)
+    expect(statSync(lockPath).mode & 0o777).toBe(0o600)
+    expect(readdirSync(dir).filter((f) => f.includes('.new-') || f.includes('.stale-'))).toEqual([])
   })
 
   it('live holder whose identity cannot be read -> lock_unverifiable (fail-closed), lock untouched', () => {

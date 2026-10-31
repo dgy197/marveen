@@ -17,9 +17,15 @@
 // Stale takeover runs under a second, O_EXCL mutex (`<lock>.takeover`): only the
 // mutex holder may re-read, judge and replace the lock, so two starts that both
 // see the same stale record cannot both win. The loser gets `lock_busy` (launchd
-// retries). The stale file is renamed aside and compared byte-for-byte with what
-// was judged; if it is not the same file (someone replaced it meanwhile), it is
-// put back with a no-clobber link and the attempt gives up.
+// retries). The mutex holder re-reads the lock, checks it is still byte-for-byte
+// the record it judged, and replaces it with ONE atomic rename(2) of a fresh temp
+// file (the lock path never disappears, so nobody can slip a new lock in between).
+// It then re-reads the lock and proceeds only if it carries OUR nonce; a loser
+// (another takeover replaced it again) refuses with lock_busy and touches nothing.
+//
+// An unparseable or other-version lock file is NOT taken over: spec F2 allows a
+// takeover only for a dead or recycled pid, and a file we cannot read tells us
+// neither. It is refused as `lock_unrecognized`; the owner removes the file by hand.
 //
 // Fail-closed: if the holder is alive but its identity cannot be read (ps not
 // available), the result is `lock_unverifiable`, never a takeover. If our OWN
@@ -41,6 +47,7 @@ export type LockRefusal =
   | 'already_running'
   | 'lock_busy'
   | 'lock_unverifiable'
+  | 'lock_unrecognized'
   | 'lock_identity_unavailable'
   | 'lock_io_error'
 
@@ -92,9 +99,8 @@ function readIfExists(path: string): string | null {
   }
 }
 
-// Exclusive, atomic publish: temp file (O_EXCL, 0600) + link(2). Throws EEXIST
-// when the target exists.
-function publishExclusive(path: string, content: string): void {
+// Private temp file next to the target (O_EXCL, 0600), fully written.
+function writeTemp(path: string, content: string): string {
   const dir = dirname(path)
   const tmp = join(dir, `.${basename(path)}.new-${process.pid}-${randomBytes(6).toString('hex')}`)
   const fd = openSync(tmp, 'wx', 0o600)
@@ -102,9 +108,30 @@ function publishExclusive(path: string, content: string): void {
     fchmodSync(fd, 0o600)
     writeSync(fd, content)
     fsyncSync(fd)
+  } catch (err) {
+    try { unlinkSync(tmp) } catch { /* best effort */ }
+    throw err
   } finally {
     closeSync(fd)
   }
+  return tmp
+}
+
+// Atomic replace of an existing target: the path is never absent.
+function replaceAtomic(path: string, content: string): void {
+  const tmp = writeTemp(path, content)
+  try {
+    renameSync(tmp, path)
+  } catch (err) {
+    try { unlinkSync(tmp) } catch { /* best effort */ }
+    throw err
+  }
+}
+
+// Exclusive, atomic publish: temp file (O_EXCL, 0600) + link(2). Throws EEXIST
+// when the target exists.
+function publishExclusive(path: string, content: string): void {
+  const tmp = writeTemp(path, content)
   try {
     linkSync(tmp, path)
   } finally {
@@ -112,13 +139,12 @@ function publishExclusive(path: string, content: string): void {
   }
 }
 
-type Verdict = 'live' | 'stale' | 'unverifiable'
+type Verdict = 'live' | 'stale' | 'unverifiable' | 'unrecognized'
 
 function judge(raw: string, probe: ProcessProbe): Verdict {
   const rec = parseRecord(raw)
-  // Our own code always writes a complete record (link publish), so an
-  // unparsable lock is a leftover, not a holder in the middle of writing.
-  if (!rec) return 'stale'
+  // Neither readable nor taken over (F2): not a record of this version.
+  if (!rec) return 'unrecognized'
   if (!probe.isAlive(rec.pid)) return 'stale'
   const id = probe.identity(rec.pid)
   if (!id) return 'unverifiable'
@@ -128,6 +154,26 @@ function judge(raw: string, probe: ProcessProbe): Verdict {
 
 function errCode(err: unknown): string | undefined {
   return (err as NodeJS.ErrnoException | null)?.code
+}
+
+// Removes a takeover mutex left by a crashed holder. The old mutex is moved aside
+// with one rename(2) and only deleted if it is the very file (inode, mtime) that
+// was judged stale; a fresh mutex of another start is linked back (no clobber).
+function breakStaleMutex(mutexPath: string, nowMs: number, staleMs: number): void {
+  try {
+    const before = statSync(mutexPath)
+    if (nowMs - before.mtimeMs <= staleMs) return
+    const aside = `${mutexPath}.stale-${process.pid}-${randomBytes(6).toString('hex')}`
+    renameSync(mutexPath, aside)
+    try {
+      const moved = statSync(aside)
+      if (moved.ino !== before.ino || moved.dev !== before.dev || moved.mtimeMs !== before.mtimeMs) {
+        try { linkSync(aside, mutexPath) } catch { /* someone created a new one */ }
+      }
+    } finally {
+      try { unlinkSync(aside) } catch { /* best effort */ }
+    }
+  } catch { /* gone already */ }
 }
 
 export function acquireRelayLock(path: string, opts: LockOptions = {}): LockResult {
@@ -180,9 +226,7 @@ export function acquireRelayLock(path: string, opts: LockOptions = {}): LockResu
     try { writeSync(fd, mutexToken) } finally { closeSync(fd) }
   } catch (err) {
     if (errCode(err) !== 'EEXIST') return { ok: false, reason: 'lock_io_error' }
-    try {
-      if (now() - statSync(mutexPath).mtimeMs > mutexStaleMs) unlinkSync(mutexPath)
-    } catch { /* gone already */ }
+    breakStaleMutex(mutexPath, now() , mutexStaleMs)
     return { ok: false, reason: 'lock_busy' }
   }
 
@@ -200,27 +244,19 @@ export function acquireRelayLock(path: string, opts: LockOptions = {}): LockResu
     const verdict = judge(raw, probe)
     if (verdict === 'live') return { ok: false, reason: 'already_running' }
     if (verdict === 'unverifiable') return { ok: false, reason: 'lock_unverifiable' }
+    if (verdict === 'unrecognized') return { ok: false, reason: 'lock_unrecognized' }
 
-    const aside = `${path}.stale-${process.pid}-${randomBytes(6).toString('hex')}`
+    // Still exactly the record we judged? (a crashed-mutex break can let a second
+    // takeover run in between; then we are the loser.)
+    if (readIfExists(path) !== raw) return { ok: false, reason: 'lock_busy' }
     try {
-      renameSync(path, aside)
-    } catch (err) {
-      return { ok: false, reason: errCode(err) === 'ENOENT' ? 'lock_busy' : 'lock_io_error' }
+      replaceAtomic(path, content)
+    } catch {
+      return { ok: false, reason: 'lock_io_error' }
     }
-    const moved = readIfExists(aside)
-    if (moved !== raw) {
-      // Not the file we judged: put it back without clobbering, give up.
-      try { linkSync(aside, path) } catch { /* someone created a new one */ }
-      try { unlinkSync(aside) } catch { /* best effort */ }
-      return { ok: false, reason: 'lock_busy' }
-    }
-    try { unlinkSync(aside) } catch { /* best effort */ }
-    try {
-      publishExclusive(path, content)
-      return { ok: true, lock: makeLock(), tookOver: true }
-    } catch (err) {
-      return { ok: false, reason: errCode(err) === 'EEXIST' ? 'lock_busy' : 'lock_io_error' }
-    }
+    // Proceed only if the lock still carries OUR nonce.
+    if (readIfExists(path) !== content) return { ok: false, reason: 'lock_busy' }
+    return { ok: true, lock: makeLock(), tookOver: true }
   } catch {
     return { ok: false, reason: 'lock_io_error' }
   } finally {
