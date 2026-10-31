@@ -35,6 +35,7 @@ import {
 } from '../config.js'
 import { resolveDashboardOrigin } from './agent-scaffold.js'
 import { logger } from '../logger.js'
+import { drainWorkerRestartDigestNotes } from './worker-token-restart.js'
 
 export const HB_METRICS_SENTINEL = 'HB_METRICS_V1'
 
@@ -233,7 +234,7 @@ function renderFailureSections(firstLine: string): string {
  * HB_METRICS_V1. Anything else renders as muszer-hiba carrying the literal
  * first line.
  */
-export function renderHeartbeatMetricsBlock(raw: string | null, failureReason?: string): string {
+export function renderHeartbeatMetricsBlock(raw: string | null, failureReason?: string, extraDigestLines: readonly string[] = []): string {
   const now = new Date().toLocaleString('sv-SE', { timeZone: APP_TZ }).slice(0, 16)
   let body: string
   let tsLabel = now
@@ -249,6 +250,11 @@ export function renderHeartbeatMetricsBlock(raw: string | null, failureReason?: 
       if (parsed.ts) tsLabel = parsed.ts
       body = renderSections(parsed, firstLine)
     }
+  }
+  // Card acdb8045 K4: worker self-restarts after a fleet-token swap, one line
+  // each, once. The section exists only when there is something to say.
+  if (extraDigestLines.length > 0) {
+    body += '\n\n### Flotta-token\n' + extraDigestLines.join('\n')
   }
   return (
     `${HB_METRICS_BLOCK_MARKER} ts=${tsLabel} -- a worker merte prompt-osszeallitaskor]\n` +
@@ -272,6 +278,8 @@ export function renderHeartbeatMetricsBlock(raw: string | null, failureReason?: 
 export function collectHeartbeatMetricsBlock(): Promise<string> {
   const script = join(PROJECT_ROOT, 'scripts', 'heartbeat-metrics.sh')
   const origin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, AGENT_API_ORIGIN)
+  // Taken once per block: a worker self-restart line goes into exactly one digest.
+  const restartNotes = drainWorkerRestartDigestNotes()
   return new Promise(resolve => {
     execFile(
       'bash',
@@ -294,13 +302,13 @@ export function collectHeartbeatMetricsBlock(): Promise<string> {
           if (err) {
             logger.warn({ err: String(err) }, 'heartbeat metrics instrument exited non-zero; rendering its (fail-closed) output')
           }
-          resolve(renderHeartbeatMetricsBlock(out))
+          resolve(renderHeartbeatMetricsBlock(out, undefined, restartNotes))
         } else {
           const reason = err
             ? (err.killed ? `instrument timeout after ${HB_METRICS_TIMEOUT_MS} ms` : String(err.message ?? err).split('\n')[0])
             : '(empty instrument output)'
           logger.error({ reason }, 'heartbeat metrics instrument produced no output')
-          resolve(renderHeartbeatMetricsBlock(null, reason))
+          resolve(renderHeartbeatMetricsBlock(null, reason, restartNotes))
         }
       },
     )
