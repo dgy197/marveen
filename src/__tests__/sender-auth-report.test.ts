@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { initDatabase, getDb, createAgentMessage } from '../db.js'
+import { initDatabase, getDb, createAgentMessage, closeOpenMessage } from '../db.js'
 import { tryHandleMessages } from '../web/routes/messages.js'
 import { mintAgentSendKey } from '../web/agent-send-keys.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -42,6 +42,74 @@ beforeAll(() => {
   // legacy: NULL column, recent; and an old row outside the window
   db.prepare("INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, sender_auth) VALUES ('sar-d','sar-b','x','done',?,NULL)").run(now - 100)
   db.prepare("INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, sender_auth) VALUES ('sar-old','sar-b','x','done',?,'unsigned')").run(now - 30 * 86400)
+})
+
+// Card f137f980 (E11, Q2): the same report also lists the closes, per (to, closer_auth).
+type CloserRow = { to: string; closer_auth: string; count: number; last_seen: number }
+const RESULT_TEXT = 'closer report secret result text'
+
+function closeRow(to: string, verdict: string | null, status: 'done' | 'failed' = 'done'): void {
+  const id = createAgentMessage('sarc-from', to, 'task').id
+  expect(closeOpenMessage(id, status, RESULT_TEXT, verdict)).toBe(true)
+}
+
+describe('sender-auth report: closers (card f137f980)', () => {
+  beforeAll(() => {
+    closeRow('sarc-iroda', 'verified')
+    closeRow('sarc-iroda', 'verified')
+    closeRow('sarc-iroda', 'unsigned', 'failed')
+    closeRow('sarc-feszek', 'mismatch')
+    closeRow('sarc-sys', 'no_key_recipient')
+    closeRow('sarc-iroda', null) // an old call / off mode: NULL = legacy
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare("INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, completed_at, closer_auth) VALUES ('sarc-from','sarc-old','x','done',?,?,'unsigned')").run(now - 31 * 86400, now - 30 * 86400)
+    // still open rows are not closes, whatever their column holds
+    db.prepare("INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, closer_auth) VALUES ('sarc-from','sarc-open','x','pending',?,'verified')").run(now - 10)
+  })
+
+  it('has a closers array next to rows, counted per (to, closer_auth) with last_seen; NULL is legacy; failed counts too', async () => {
+    const r = await get('', TOKEN)
+    expect(r.statusCode).toBe(200)
+    expect(Array.isArray(r.json.rows)).toBe(true)
+    const closers = (r.json.closers as CloserRow[]).filter((x) => x.to.startsWith('sarc-'))
+    const by = (t: string, a: string) => closers.find((x) => x.to === t && x.closer_auth === a)
+    expect(by('sarc-iroda', 'verified')?.count).toBe(2)
+    expect(by('sarc-iroda', 'unsigned')?.count).toBe(1)
+    expect(by('sarc-iroda', 'legacy')?.count).toBe(1)
+    expect(by('sarc-feszek', 'mismatch')?.count).toBe(1)
+    expect(by('sarc-sys', 'no_key_recipient')?.count).toBe(1)
+    expect(typeof by('sarc-iroda', 'verified')?.last_seen).toBe('number')
+    expect(closers.some((x) => x.to === 'sarc-old')).toBe(false) // outside the 7 day window
+    expect(closers.some((x) => x.to === 'sarc-open')).toBe(false) // not closed
+  })
+
+  it('a wider window includes the old close', async () => {
+    const r = await get('?days=60', TOKEN)
+    expect((r.json.closers as CloserRow[]).find((x) => x.to === 'sarc-old')?.count).toBe(1)
+  })
+
+  it('exposes only to, closer_auth, count, last_seen: no key, hash, result or content', async () => {
+    const r = await get('?days=60', TOKEN)
+    for (const row of r.json.closers as CloserRow[]) expect(Object.keys(row).sort()).toEqual(['closer_auth', 'count', 'last_seen', 'to'])
+    const hash = (getDb().prepare('SELECT key_hash FROM agent_send_keys WHERE agent_id = ?').get('sar-agent-0d7e') as { key_hash: string }).key_hash
+    expect(r.raw).not.toContain(rawKey)
+    expect(r.raw).not.toContain(hash)
+    expect(r.raw).not.toContain(RESULT_TEXT)
+    expect(r.raw).not.toContain('"content"')
+    expect(r.raw).not.toContain('"result"')
+  })
+
+  it('the rows array keeps its exact shape (additive change only)', async () => {
+    const r = await get('?days=60', TOKEN)
+    for (const row of r.json.rows as Row[]) expect(Object.keys(row).sort()).toEqual(['count', 'from', 'last_seen', 'sender_auth'])
+    expect(Object.keys(r.json).sort()).toEqual(['closers', 'days', 'mode', 'rows'])
+  })
+
+  it('refuses a request without a principal and bad days values, closers or not', async () => {
+    expect((await get('', undefined)).statusCode).toBe(401)
+    expect((await get('?days=0', TOKEN)).statusCode).toBe(400)
+  })
 })
 
 describe('sender-auth report', () => {

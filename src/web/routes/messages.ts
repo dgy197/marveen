@@ -5,7 +5,7 @@ import {
   markMessageDone, closeOpenMessage, getAgentMessage,
   closeOtelSpan,
   getPendingBacklogByAgent,
-  getSenderAuthReport, toServedMessage,
+  getSenderAuthReport, getCloserAuthReport, toServedMessage,
   countNewerMessagesForRows,
   getHeartbeatKanbanLive,
   COMPLETION_REPORT_PREFIX,
@@ -717,7 +717,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'days must be an integer between 1 and 90' }, 400)
       return true
     }
-    json(res, { mode: MESSAGE_SENDER_AUTH, days, rows: getSenderAuthReport(days) })
+    // Card f137f980 (Q2, additive): `closers` = the PUT side, per (to, closer_auth) over the rows closed in the window.
+    json(res, { mode: MESSAGE_SENDER_AUTH, days, rows: getSenderAuthReport(days), closers: getCloserAuthReport(days) })
     return true
   }
 
