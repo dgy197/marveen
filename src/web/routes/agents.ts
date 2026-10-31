@@ -187,6 +187,8 @@ import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js
 import { configDirFor } from '../main-transcript-root.js'
 import { kindAllowed, FORBIDDEN_KIND } from './auth.js'
 import { liveFleetTokenField } from '../fleet-token-drift-live.js'
+import { RESTART_STALE_PATH, handleFleetTokenRestartStale } from '../fleet-token-restart.js'
+import { liveRestartStaleDeps } from '../fleet-token-restart-live.js'
 import { isValidModelId, InvalidModelIdError } from '../../model-id.js'
 
 const execFileAsync = promisify(execFile)
@@ -845,6 +847,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       'Main-agent channel admin refused: disabled on this install',
     )
     json(res, { error: `A fő ügynök csatornáinak módosítása ki van kapcsolva ezen a telepítésen (${MAIN_CHANNEL_ADMIN_ENV}).` }, 403)
+    return true
+  }
+
+  // Card acdb8045 K6: restart every stale fleet-token agent, in sequence. Owner
+  // session only (decided inside, before any body is read); the per-agent
+  // /restart route below is deliberately untouched. Matched here, ahead of the
+  // generic /api/agents/:name routes.
+  if (path === RESTART_STALE_PATH && method === 'POST') {
+    await handleFleetTokenRestartStale(ctx, liveRestartStaleDeps)
     return true
   }
 
