@@ -310,6 +310,36 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
       }
     }
     expect(checked).toBe(21 * 28)
+    // The names the fleet can actually have: claude.ai account connectors
+    // (mcp__claude_ai_*) and a session-level harder-mail (Brainy's measurement,
+    // card 3d6e5181 Q6: no local mail MCP server, these are the live shapes).
+    const connectorMail = [
+      'mcp__claude_ai_Gmail__create_draft', 'mcp__claude_ai_Gmail__send_message', 'mcp__claude_ai_Gmail__search_threads',
+      'mcp__claude_ai_Outlook__create_rule', 'mcp__claude_ai_Outlook__list_messages', 'mcp__claude_ai_Outlook__update_settings',
+      'mcp__claude_ai_Microsoft_365__create_rule', 'mcp__claude_ai_Yahoo_Mail__set_forwarding',
+      'mcp__harder-mail__create_rule', 'mcp__harder-mail__set_forwarding',
+    ]
+    for (const tool of connectorMail) {
+      expect(canonical.test(tool), `EMAIL_GATE_MATCHER misses ${tool}`).toBe(true)
+      for (const script of EMAIL_HOOKS) expect(fired(script, tool), `${script} misses ${tool}`).toBe(true)
+    }
+    // Non-mail claude.ai connectors: the server segment carries no mail word, so
+    // no gate fires on their (non-send) tools. (A connector tool named send_* /
+    // reply / forward / draft is still caught by the older VERB alternatives,
+    // card 7f8b46a1, e.g. claude_ai_Slack__send_message; that is not this family.)
+    const connectorOther = [
+      'mcp__claude_ai_Google_Drive__search_files', 'mcp__claude_ai_Google_Drive__read_file_content',
+      'mcp__claude_ai_Google_Drive__create_file', 'mcp__claude_ai_Google_Drive__download_file_content',
+      'mcp__claude_ai_Google_Calendar__list_events', 'mcp__claude_ai_Google_Calendar__create_event',
+      'mcp__claude_ai_Slack__list_channels', 'mcp__claude_ai_Slack__read_channel', 'mcp__claude_ai_Slack__search_messages',
+      'mcp__claude_ai_Notion__notion-search', 'mcp__claude_ai_Linear__list_issues',
+      'mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql', 'mcp__claude_ai_Canva__generate_design',
+      'mcp__claude_ai_GitHub__list_pull_requests',
+    ]
+    for (const tool of connectorOther) {
+      expect(canonical.test(tool), `EMAIL_GATE_MATCHER fires on ${tool}`).toBe(false)
+      for (const script of EMAIL_HOOKS) expect(fired(script, tool), `${script} fires on ${tool}`).toBe(false)
+    }
     for (const tool of stays) {
       expect(canonical.test(tool), `EMAIL_GATE_MATCHER fires on ${tool}`).toBe(false)
       for (const script of EMAIL_HOOKS) {
