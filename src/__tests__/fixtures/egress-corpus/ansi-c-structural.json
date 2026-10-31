@@ -1,0 +1,13 @@
+[
+  { "rule": "D10 bash ANSI payload word", "cmd": "bash -c $'printf hello'" },
+  { "rule": "D10 sh ANSI payload word", "cmd": "sh -c $'printf hello'" },
+  { "rule": "D10 zsh ANSI payload word", "cmd": "zsh -c $'printf hello'" },
+  { "rule": "D10 dash ANSI payload word", "cmd": "dash -c $'printf hello'" },
+  { "rule": "D10 eval ANSI payload word", "cmd": "eval $'printf hello'" },
+  { "rule": "D10 concatenated ANSI payload word", "cmd": "bash -c pri$'ntf hello'" },
+  { "rule": "D11 xargs original shell payload", "cmd": "xargs bash -c \"printf \\$'hello'\"" },
+  { "rule": "D11 find original shell payload", "cmd": "find . -exec sh -c \"printf \\$'hello'\" \\;" },
+  { "rule": "D11 busybox original shell payload", "cmd": "busybox sh -c \"printf \\$'hello'\"" },
+  { "rule": "D11 ionice original shell payload", "cmd": "ionice -c3 bash -c \"printf \\$'hello'\"" },
+  { "rule": "D11 wrapper eval original payload", "cmd": "xargs eval \"printf \\$'hello'\"" }
+]

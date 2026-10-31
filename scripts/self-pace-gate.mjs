@@ -406,8 +406,8 @@ export function maskInertLiterals(command, heredocs, lenient = false) {
       cur += blank(src.slice(i, end + 1)); i = end + 1; continue
     }
 
-    // Shell-dependent quoting: leave the entire remaining suffix visible to both gates.
-    if (src.startsWith("$$'", i)) return cur + src.slice(i)
+    // Shell-dependent quoting cannot safely preserve literals or heredoc boundaries.
+    if (src.startsWith("$$'", i)) return null
 
     if (c === '$' && src[i + 1] === "'") { // ANSI-C: \' does escape
       let j = i + 2
@@ -1149,6 +1149,7 @@ function readWord(s, i) {
       if (e === -1) return null
       value += s.slice(i + 1, e); i = e + 1; continue
     }
+    if (s.startsWith("$$'", i)) return null
     if (c === '$' && s[i + 1] === "'") {
       let j = i + 2
       while (j < s.length && s[j] !== "'") j += s[j] === '\\' ? 2 : 1

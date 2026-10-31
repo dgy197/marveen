@@ -711,7 +711,7 @@ function dnsServerHosts(v) {
 const HOSTNAME = /^(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:.]+\]|(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})$/i
 
 // Split a shell text into words, honouring quotes and backslashes (substitutions are already lifted).
-export function shellWords(text) {
+export function shellWords(text, ansiWords = new Set()) {
   const out = []; let cur = null; let i = 0
   const push = () => { if (cur !== null) out.push(cur); cur = null }
   while (i < text.length) {
@@ -721,6 +721,7 @@ export function shellWords(text) {
     if (text.startsWith("$$'", i)) throw new AmbiguousShellSyntax('ambiguous-dollar-quote')
     if (c === '$' && text[i + 1] === "'") {
       // Keep the dollar marker: undecoded ANSI escapes must not become trusted command/host text.
+      ansiWords.add(out.length)
       cur += '$'
       let j = i + 2
       while (j < text.length && text[j] !== "'") {
@@ -1121,15 +1122,17 @@ function checkShellPayload(body) {
   }
 }
 
-export function shellCommandCall(cmd, text) {
-  const argv = shellWords(text)
-  const payload = (body, args) => {
+export function shellCommandCall(cmd, text, commandAt = null) {
+  const ansiWords = new Set()
+  const argv = shellWords(text, ansiWords)
+  const payload = (body, args, indexes) => {
+    if (indexes.some((i) => ansiWords.has(i))) throw new AmbiguousShellSyntax('ansi-shell-payload-word')
     checkShellPayload(body)
     return { body, args }
   }
-  const at = argv.findIndex((w) => w.split('/').pop() === cmd)
+  const at = commandAt ?? argv.findIndex((w) => w.split('/').pop() === cmd)
   if (at === -1) return null
-  if (cmd === 'eval') return payload(argv.slice(at + 1).join(' '), [])
+  if (cmd === 'eval') return payload(argv.slice(at + 1).join(' '), [], argv.map((_, i) => i).slice(at + 1))
   // `trap 'ACTION' SIG...` eval's ACTION in this shell when the signal comes (#1931 delta review
   // 5572280679, 4). One word alone is a signal to reset, and `-` / an empty action resets or ignores.
   if (cmd === 'trap') {
@@ -1141,8 +1144,8 @@ export function shellCommandCall(cmd, text) {
   let sawC = false
   for (let k = at + 1; k < argv.length; k++) {
     const w = argv[k]
-    if (w === '--' || w === '-') return sawC && k + 1 < argv.length ? payload(argv[k + 1], argv.slice(k + 2)) : null
-    if (!w.startsWith('-') && !w.startsWith('+')) return sawC ? payload(w, argv.slice(k + 1)) : null
+    if (w === '--' || w === '-') return sawC && k + 1 < argv.length ? payload(argv[k + 1], argv.slice(k + 2), [k + 1]) : null
+    if (!w.startsWith('-') && !w.startsWith('+')) return sawC ? payload(w, argv.slice(k + 1), [k]) : null
     if (/^[-+][A-Za-z]+$/.test(w) && w.includes('c')) sawC = true
     if (w === '-o' || w === '+o' || w === '-O' || w === '+O') k++
   }
@@ -1840,8 +1843,13 @@ function classifyCommand(command, depth, vendorHosts, vendorDomains, stdinTainte
       const ci = commandIndex(uw)
       const word = uw[ci] ?? mw[i] ?? ''
       const cmd = word.split('/').pop()
-      // Inspect original payloads before copyLive blanks escaped dollar signs.
-      if (SHELL.test(cmd) || cmd === 'eval') shellCommandCall(cmd, norm.slice(a, b))
+      // Inspect every shell/eval word on the original span, including unknown wrappers.
+      // copyLive's escaped-dollar blanking must never decide whether a payload is safe.
+      const originalSpan = norm.slice(a, b)
+      for (const [rawIndex, rawWord] of shellWords(originalSpan).entries()) {
+        const rawCommand = rawWord.split('/').pop()
+        if (SHELL.test(rawCommand) || rawCommand === 'eval') shellCommandCall(rawCommand, originalSpan, rawIndex)
+      }
       const args = uw.slice(ci + 1)
       // A loop variable in the command word is judged in its loop readings, not in the plain one.
       const loopOnly = text === plain && variants !== null && variants.some((v) => v !== plain)
