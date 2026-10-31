@@ -318,6 +318,10 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/connectors/external-paths' && method === 'POST') {
+    // Card 24e137ef B3: an external project path becomes a directory the fleet can
+    // assign and run in; gated for the bare Bearer, before the body. GET and DELETE stay open.
+    const gated = execGateApplies(ctx.auth, req)
+    if (gated && !admitCodeExecAdmin(ctx, 'connectors.external_paths.add')) return true
     const body = await readBody(req)
     const { path: p } = JSON.parse(body.toString()) as { path: string }
     const result = addExternalProjectPath(p)

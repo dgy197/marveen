@@ -48,6 +48,7 @@ export type CodeExecAction =
   | 'skills.assign'
   | 'fleet.import'
   | 'vault.bindings.add'
+  | 'connectors.external_paths.add'
 
 export const BEARER_CODE_EXEC_ADMIN_OFF = 'bearer_code_exec_admin_off'
 

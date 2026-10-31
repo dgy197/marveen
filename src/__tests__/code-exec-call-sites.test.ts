@@ -96,11 +96,11 @@ describe('connectors.ts: every route that reaches `claude mcp add` or a clone is
 
   it('the four entry points each call the gate once, under their own action, behind execGateApplies', () => {
     const c = code()
-    for (const action of ['connectors.add', 'mcp_catalog.install', 'connectors.github_repo.add', 'connectors.github_repo.update', 'vault.bindings.add']) {
+    for (const action of ['connectors.add', 'mcp_catalog.install', 'connectors.github_repo.add', 'connectors.github_repo.update', 'vault.bindings.add', 'connectors.external_paths.add']) {
       expect(c.match(new RegExp(`admitCodeExecAdmin\\(ctx, '${action.replace(/\./g, '\\.')}'\\)`, 'g')), action).toHaveLength(1)
     }
-    expect(c.match(/admitCodeExecAdmin\(/g)).toHaveLength(5)
-    expect(c.match(/execGateApplies\(ctx\.auth, req\)/g)).toHaveLength(5)
+    expect(c.match(/admitCodeExecAdmin\(/g)).toHaveLength(6)
+    expect(c.match(/execGateApplies\(ctx\.auth, req\)/g)).toHaveLength(6)
   })
 
   it('the gate stands before the first body read or catalog lookup of its handler', () => {
@@ -111,6 +111,7 @@ describe('connectors.ts: every route that reaches `claude mcp add` or a clone is
       ['connectors.github_repo.add', "path === '/api/connectors/github-repos' && method === 'POST'"],
       ['connectors.github_repo.update', "githubRepoMatch && method === 'PATCH'"],
       ['vault.bindings.add', "path === '/api/vault/bindings' && method === 'POST'"],
+      ['connectors.external_paths.add', "path === '/api/connectors/external-paths' && method === 'POST'"],
     ]
     for (const [action, header] of handlers) {
       const head = lines.findIndex(l => l.includes(header))

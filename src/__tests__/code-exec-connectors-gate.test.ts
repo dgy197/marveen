@@ -494,3 +494,70 @@ describe('G9: what takes entries away, or reads, stays open to the shared token 
     expect(warns(REFUSED)).toHaveLength(0)
   })
 })
+
+// Card 24e137ef B3: an external project path is a directory the fleet can assign
+// and run in. Adding one is code-exec class; reading and removing stay open.
+describe('B3: POST /api/connectors/external-paths is gated, GET and DELETE are not', () => {
+  const EXT = join(T.root, 'ext-project')
+  const EXT_PATH = '/api/connectors/external-paths'
+  const settingsFile = join(T.project, 'store', 'dashboard-settings.json')
+  const settingsBytes = () => (existsSync(settingsFile) ? readFileSync(settingsFile, 'utf8') : null)
+
+  beforeEach(() => {
+    mkdirSync(EXT, { recursive: true })
+    rmSync(settingsFile, { force: true })
+  })
+
+  for (const [who, auth] of [['token', TOKEN], ['full device key', DEVICE_FULL]] as const) {
+    it(`${who}, switch closed -> 403 bearer_code_exec_admin_off, body unread, store byte-identical`, async () => {
+      const before = settingsBytes()
+      const res = await call('POST', EXT_PATH, { auth, body: { path: EXT } })
+      expect(res.status).toBe(403)
+      expect(res.json()).toEqual(OFF_BODY)
+      expect(res.bodyRead).toBe(false)
+      expect(seq).not.toContain('body')
+      expect(settingsBytes()).toEqual(before)
+      const w = warns(REFUSED)
+      expect(w).toHaveLength(1)
+      expect(w[0][0]).toMatchObject({ action: 'connectors.external_paths.add', kind: auth!.kind, reason: 'switch_off' })
+    })
+  }
+
+  it('a token with a forged session cookie is still gated', async () => {
+    const res = await call('POST', EXT_PATH, { auth: TOKEN, body: { path: EXT }, headers: { cookie: `${SESSION_COOKIE_NAME}=forged` } })
+    expect(res.status).toBe(403)
+    expect(settingsBytes()).toBeNull()
+  })
+
+  it('token, switch open -> 200, the path is stored, one admit WARN', async () => {
+    setEnv('BEARER_CODE_EXEC_ADMIN_ENABLED=1')
+    const res = await call('POST', EXT_PATH, { auth: TOKEN, body: { path: EXT } })
+    expect(res.status).toBe(200)
+    expect(res.json()).toEqual({ ok: true, paths: [EXT] })
+    expect(JSON.parse(settingsBytes()!).externalProjectPaths).toEqual([EXT])
+    const w = warns(ADMITTED)
+    expect(w).toHaveLength(1)
+    expect(w[0][0]).toMatchObject({ action: 'connectors.external_paths.add', kind: 'token', via: 'switch' })
+  })
+
+  it('session -> 200 whatever the switch says, no gate WARN', async () => {
+    const res = await call('POST', EXT_PATH, { auth: SESSION, body: { path: EXT } })
+    expect(res.status).toBe(200)
+    expect(warns(REFUSED)).toHaveLength(0)
+    expect(warns(ADMITTED)).toHaveLength(0)
+  })
+
+  it('token carrying a live session cookie -> not gated', async () => {
+    const res = await call('POST', EXT_PATH, { auth: TOKEN, body: { path: EXT }, headers: { cookie: liveSessionCookie() } })
+    expect(res.status).toBe(200)
+    expect(warns(REFUSED)).toHaveLength(0)
+  })
+
+  it('GET and DELETE stay open to the bare token with the switch closed', async () => {
+    const get = await call('GET', EXT_PATH, { auth: TOKEN })
+    expect(get.status).toBe(200)
+    const del = await call('DELETE', EXT_PATH, { auth: TOKEN, body: { path: EXT } })
+    expect(del.status).toBe(200)
+    expect(warns(REFUSED)).toHaveLength(0)
+  })
+})
