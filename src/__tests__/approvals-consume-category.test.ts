@@ -110,6 +110,16 @@ describe('consumeCategoryApproval', () => {
     expect(consumeApproval({ id: 'c5', contentHash: HASH, consumer: 'send-tool', windowSeconds: 1800 }).ok).toBe(true)
   })
 
+  // Card 8e9f4670 N4: the permission-bot categories are consumed only by consume-run
+  // (owner trace + run binding); the generic consume refuses them like the credit-gate ones.
+  it.each(['rag_production_d', 'permission_bot_probe'])('a %s row is NEVER consumed by the generic route', (cat) => {
+    const id = `pb-${cat}`
+    approval(id, { category: cat })
+    expect(consumeCategoryApproval({ id, category: cat, contentHash: HASH, consumer: 't', windowSeconds: W })).toMatchObject({ ok: false, reason: 'wrong_category' })
+    expect(getApproval(id)!.consumed_at).toBeNull()
+    expect(getApproval(id)!.status).toBe('approved')
+  })
+
   // APPROVALCONSUME1022: a standing decision (the owner's last word on an anchor wins)
   // is not a one-off permission; the generic consume refuses it, by its own name or another.
   it.each(['email_standing_recipient', 'credential_alias'])('a %s row is a standing decision and is NEVER consumed here', (cat) => {

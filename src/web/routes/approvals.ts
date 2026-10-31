@@ -1,22 +1,31 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, APP_TZ } from '../../config.js'
+import type http from 'node:http'
+import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, APP_TZ, PERMISSION_BOT_ID } from '../../config.js'
 import {
   consumeApproval, consumeCategoryApproval,
   CATEGORY_CONSUME_DEFAULT_WINDOW_S, CATEGORY_CONSUME_MAX_WINDOW_S,
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals, clearSpentEmailPayloads,
   createAgentMessage, setApprovalTelegramMessageId, resolveApprovalFromTelegram,
   setApprovalCallbackNonceHashes, getDb, isOwnerVerified, PAYLOAD_MISMATCH_RESOLVER,
-  type Approval, type ApprovalTelegramRefusal,
+  setPermissionBotNonceHashes, resolveApprovalFromPermissionBot, consumeOwnerRunApproval, recordRunConsumeRefusal,
+  type Approval, type ApprovalTelegramRefusal, type PermissionBotRefusal, type OwnerRunConsumeRefusal,
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { RESPONSE_MAC_HEADER, loadOrCreateResponseKey, responseKeyPath, responseMac } from '../../permission-bot-relay/response-mac.js'
 import { resolveOwnerChatId, resolveAlertOwnerChat } from '../../owner-chat.js'
 import { sendOwnerMessage } from '../../notify.js'
 import { channelStateDir, readChannelToken } from '../../channel-provider.js'
 import { TEST_RUN_PREFIX } from '../../test-run-marker.js'
-import { sendTelegramMessage, type TelegramInlineKeyboard } from '../telegram.js'
+import { sendTelegramMessage, clearTelegramInlineKeyboard, type TelegramInlineKeyboard } from '../telegram.js'
+import { getSecret } from '../vault.js'
+import { PERMISSION_BOT_VAULT_ID } from '../permission-bot-vault.js'
+import {
+  RAG_RESERVED_PREFIX, isPermissionBotCategory, parseRagApprovalPayload,
+  validateRagApprovalRequest, type RagApprovalPayload,
+} from '../rag-approval-payload.js'
 import { envelopeBinding, type EnvelopeUnboundReason, type EnvelopeV1 } from '../../approval-envelope.js'
 import { buildCallbackData, isCallbackNonce, newCallbackNonce, nonceHash } from '../approval-callback-data.js'
 import {
@@ -227,6 +236,12 @@ function fallbackInBand(approval: Approval, reason: string): void {
 // requester allowed on this path is the main agent, which already knows the
 // action is approved; an [APPROVAL_REQUEST] marker would mislead it.
 function notifyOwner(approval: Approval, chatApprovedMessageId: number | string | null = null): void {
+  // Card 9a77b3e5: a permission-bot category goes out through the permission
+  // bot ONLY, never through the main bot's token below.
+  if (isPermissionBotCategory(approval.category)) {
+    notifyPermissionBot(approval)
+    return
+  }
   const informative = chatApprovedMessageId != null
 
   // APPROVALVAK821 fixed this path so the request reaches the OWNER and not only
@@ -663,6 +678,159 @@ async function sendPlainAfterFailure(token: string, ownerChat: string, approval:
   }
 }
 
+// --- Card 9a77b3e5: the permission bot (rag_production_d, permission_bot_probe) ---
+//
+// The owner's buttons for these rows are sent by the permission bot,
+// whose token the dashboard reads in-process from the
+// Vault entry below. The token is never logged, returned or put in a message;
+// only its bot id (the part before the colon) is ever used outside the send
+// call itself. The callback comes back through the relay (POST
+// /api/approvals/:id/permission-bot); this process only SENDS, it never polls.
+export { PERMISSION_BOT_VAULT_ID }
+
+type PermissionBotTokenReader = () => string | null
+const vaultPermissionBotToken: PermissionBotTokenReader = () => {
+  try { return getSecret(PERMISSION_BOT_VAULT_ID) } catch { return null }
+}
+let permissionBotTokenReader: PermissionBotTokenReader = vaultPermissionBotToken
+
+/** Test seam: replace the Vault read of the permission-bot token (null = the real one); returns the previous reader. */
+export function setPermissionBotTokenReader(reader: PermissionBotTokenReader | null): PermissionBotTokenReader {
+  const prev = permissionBotTokenReader
+  permissionBotTokenReader = reader ?? vaultPermissionBotToken
+  return prev
+}
+
+// The tokens of the main bot as far as this install knows it: the one the main
+// channel plugin polls, then the one the dashboard's own sends use.
+function mainBotTokens(): string[] {
+  const tokens: string[] = []
+  try {
+    const channel = readChannelToken('telegram', join(channelStateDir('telegram'), '.env'))
+    if (telegramBotId(channel) != null && channel) tokens.push(channel)
+  } catch { /* unreadable: the other source decides */ }
+  if (telegramBotId(TELEGRAM_BOT_TOKEN) != null) tokens.push(TELEGRAM_BOT_TOKEN)
+  return tokens
+}
+
+export type PermissionBotUnavailable =
+  | 'bot_id_unpinned' | 'token_missing' | 'token_malformed' | 'token_bot_mismatch'
+  | 'main_bot_unresolved' | 'same_as_main_bot'
+
+type PermissionBot =
+  | { ok: true; token: string; botId: string }
+  | { ok: false; reason: PermissionBotUnavailable }
+
+type PermissionBotWithMain =
+  | { ok: true; token: string; botId: string; mainBotId: string }
+  | { ok: false; reason: PermissionBotUnavailable }
+
+// The permission bot as configured NOW. Its id is the PINNED PERMISSION_BOT_ID
+// (process env / install .env at startup, outside the Bearer's reach); the Vault
+// token is only the credential to SEND with, and only while its bot id (the part
+// before the colon) IS the pinned id. A missing or malformed pin, no token, a
+// malformed token, or a token of another bot is no bot (fail-closed): a token
+// swapped into the Vault is never used and never defines who may approve.
+function resolvePermissionBot(): PermissionBot {
+  const pinned = PERMISSION_BOT_ID
+  if (typeof pinned !== 'string' || !TELEGRAM_BOT_ID_RE.test(pinned)) return { ok: false, reason: 'bot_id_unpinned' }
+  let raw: string | null = null
+  try { raw = permissionBotTokenReader() } catch { raw = null }
+  const token = typeof raw === 'string' ? raw.trim() : ''
+  if (token === '') return { ok: false, reason: 'token_missing' }
+  const tokenBotId = telegramBotId(token)
+  if (tokenBotId == null) return { ok: false, reason: 'token_malformed' }
+  if (tokenBotId !== pinned) return { ok: false, reason: 'token_bot_mismatch' }
+  return { ok: true, token, botId: pinned }
+}
+
+// The same, plus the main bot's id: the SEND and the decision paths need it (the
+// permission bot must not be the main bot, and a main-bot press must never
+// decide). The consume path does not: it only compares against the pinned id.
+function resolvePermissionBotWithMain(): PermissionBotWithMain {
+  const bot = resolvePermissionBot()
+  if (!bot.ok) return bot
+  const mains = mainBotTokens()
+  const mainBotId = mains.length > 0 ? telegramBotId(mains[0]) : null
+  if (mainBotId == null) return { ok: false, reason: 'main_bot_unresolved' }
+  if (mainBotId === bot.botId || mains.some(m => sameTelegramBot(m, bot.token))) return { ok: false, reason: 'same_as_main_bot' }
+  return { ok: true, token: bot.token, botId: bot.botId, mainBotId }
+}
+
+// The owner-facing text of a permission-bot request. Built from the stored,
+// validated payload -- never from the requester's action_description -- so
+// the owner reads the package, run and window he is approving.
+export function buildPermissionBotText(approval: Approval, payload: RagApprovalPayload): string {
+  const title = approval.category === 'permission_bot_probe'
+    ? 'Engedély-bot próba (nem engedélyez semmit)'
+    : 'RAG éles futás (D) jóváhagyása'
+  return [
+    title,
+    `Kérő ügynök: ${approval.agent_id}`,
+    `Azonosító: ${approval.id.slice(0, 8)}`,
+    `Csomag (sha256 első 16 jele): ${payload.package_sha256.slice(0, 16)}`,
+    `Futás (run_id): ${payload.run_id}`,
+    `Írási ablak: ${budapestTime(payload.write_window_start)} - ${budapestTime(payload.write_window_end)} (Budapest)`,
+    `Lejárat: ${approval.timeout_at ? budapestTime(approval.timeout_at) : 'nincs'}`,
+  ].join('\n')
+}
+
+function notifyPermissionBot(approval: Approval): void {
+  const bot = resolvePermissionBotWithMain()
+  if (!bot.ok) {
+    logger.warn({ approvalId: approval.id, reason: bot.reason }, 'permission-bot approval NOT sent: the permission bot is unavailable -- the owner was not asked')
+    fallbackInBand(approval, 'permission-bot-unavailable')
+    return
+  }
+  const ownerChat = telegramOwnerUserId()
+  if (ownerChat == null) {
+    logger.warn({ approvalId: approval.id, reason: 'owner_unresolved' }, 'permission-bot approval NOT sent: the strict owner is unresolved -- the owner was not asked')
+    fallbackInBand(approval, 'no-owner-chat')
+    return
+  }
+  enqueueOwnerNotification(approval.id, async () => {
+    const secretPart = bot.token.slice(bot.token.indexOf(':') + 1)
+    try {
+      const current = getApproval(approval.id)
+      const nowS = Math.floor(Date.now() / 1000)
+      if (!current || current.status !== 'pending' || (current.timeout_at != null && current.timeout_at <= nowS)) {
+        logger.info({ approvalId: approval.id, status: current?.status ?? null }, 'permission-bot approval notification skipped: decided, expired or gone while it waited in the queue')
+        return
+      }
+      const parsed = parseRagApprovalPayload(current.action_payload, current.category)
+      if (!parsed.ok) {
+        logger.warn({ approvalId: approval.id, field: parsed.field }, 'permission-bot approval NOT sent: the stored payload is not the canonical one')
+        return
+      }
+      const approveNonce = newCallbackNonce()
+      const rejectNonce = newCallbackNonce()
+      // The hashes go onto the row BEFORE the message: a press can only ever
+      // match a button that exists.
+      if (!setPermissionBotNonceHashes(approval.id, { approved: nonceHash(approveNonce), rejected: nonceHash(rejectNonce) })) {
+        logger.warn({ approvalId: approval.id, reason: 'nonce_not_bound' }, 'permission-bot approval NOT sent: the buttons could not be bound to the row')
+        return
+      }
+      const keyboard = approvalButtons(approval.id, approveNonce, rejectNonce)
+      let messageId: number | null
+      try {
+        messageId = await sendButtonMessage(bot.token, ownerChat, buildPermissionBotText(current, parsed.payload), approval.id, keyboard)
+      } catch (err) {
+        throw new Error(`permission-bot message failed: ${scrubbedErrorText(err, [bot.token, secretPart, approveNonce, rejectNonce])}`)
+      }
+      if (messageId != null && !setApprovalTelegramMessageId(approval.id, messageId)) {
+        logger.warn({ approvalId: approval.id }, 'permission-bot message sent, but its message id was NOT stamped onto the row')
+      }
+      if (messageId == null) {
+        logger.warn({ approvalId: approval.id }, 'permission-bot message sent without a message_id: NOT bound, every press will be refused (not_bound)')
+      }
+      logger.info({ approvalId: approval.id, messageId, botId: bot.botId }, 'permission-bot approval notification sent')
+    } catch (err) {
+      logger.warn({ err, approvalId: approval.id }, 'permission-bot approval notification FAILED -- the owner was not asked')
+      fallbackInBand(approval, 'send-failed')
+    }
+  })
+}
+
 function notifyMainAgent(approval: Approval): void {
   // APPROVALVAK821 (b): when the requester IS the main agent, this used to
   // deliver the notification back to the requester itself -- which counted as
@@ -1020,6 +1188,270 @@ function handleTelegramDecision(res: RouteContext['res'], rawId: string, body: u
   json(res, out, httpStatus)
 }
 
+// --- Card 9a77b3e5: the permission bot's decision and the run consume ---
+
+// An approval id as a URL carries it: the dashed UUID, or the same without
+// dashes (the callback_data form). Returns the dashed form, or null.
+function normalizeApprovalId(raw: string): string | null {
+  if (APPROVAL_ID_RE.test(raw)) return raw
+  if (/^[0-9a-f]{32}$/.test(raw)) {
+    return `${raw.slice(0, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}-${raw.slice(16, 20)}-${raw.slice(20)}`
+  }
+  return null
+}
+
+const PERMISSION_BOT_REFUSAL_HTTP: Record<PermissionBotRefusal, number> = {
+  bad_request: 400,
+  not_found: 404,
+  wrong_category: 409,
+  already_resolved: 409,
+  expired: 409,
+  not_bound: 409,
+  payload_mismatch: 409,
+  message_mismatch: 403,
+  owner_mismatch: 403,
+  bot_mismatch: 403,
+  bad_nonce: 403,
+}
+
+const CONSUME_RUN_REFUSAL_HTTP: Record<OwnerRunConsumeRefusal, number> = {
+  bad_request: 400,
+  not_found: 404,
+  wrong_category: 409,
+  not_approved: 409,
+  owner_unresolved: 503,
+  not_owner_verified: 409,
+  unbound: 409,
+  package_mismatch: 409,
+  run_id_mismatch: 409,
+  window_not_open: 409,
+  window_closed: 409,
+  already_consumed: 409,
+  run_id_already_used: 409,
+}
+
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/
+const RUN_ID_RE = /^[0-9a-f]{32}$/
+const TELEGRAM_BOT_ID_RE = /^[1-9][0-9]{0,15}$/
+
+// owner_verified and run_window of a permission-bot row (GET). Informative
+// only: the permission is granted by the consume alone.
+function permissionBotView(approval: Approval): { owner_verified: boolean; run_window: { start: number; end: number; open: boolean } | null } {
+  const bot = resolvePermissionBot()
+  const owner = telegramOwnerUserId()
+  const ownerVerified = bot.ok && owner != null && isOwnerVerified(approval.id, owner, bot.botId)
+  const parsed = approval.action_payload == null ? null : parseRagApprovalPayload(approval.action_payload, approval.category)
+  const now = Math.floor(Date.now() / 1000)
+  const runWindow = parsed && parsed.ok
+    ? {
+        start: parsed.payload.write_window_start,
+        end: parsed.payload.write_window_end,
+        open: now >= parsed.payload.write_window_start && now <= parsed.payload.write_window_end,
+      }
+    : null
+  return { owner_verified: ownerVerified, run_window: runWindow }
+}
+
+type PermissionBotDecisionRequest = {
+  id: string
+  decision: 'approved' | 'rejected'
+  nonce: string
+  fromId: string
+  chatId: string
+  messageId: number
+  botId: string
+}
+
+// Shape only. On failure, the NAME of the first bad field, never its value.
+function parsePermissionBotDecision(rawId: string, raw: unknown): PermissionBotDecisionRequest | { badField: string } {
+  const id = normalizeApprovalId(rawId)
+  if (id == null) return { badField: 'id' }
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return { badField: 'body' }
+  const b = raw as Record<string, unknown>
+  if (b.decision !== 'approved' && b.decision !== 'rejected') return { badField: 'decision' }
+  if (!isCallbackNonce(b.nonce)) return { badField: 'nonce' }
+  if (typeof b.from_id !== 'string' || !TELEGRAM_USER_ID_RE.test(b.from_id)) return { badField: 'from_id' }
+  if (typeof b.chat_id !== 'string' || !TELEGRAM_CHAT_ID_RE.test(b.chat_id)) return { badField: 'chat_id' }
+  if (typeof b.message_id !== 'number' || !Number.isSafeInteger(b.message_id) || b.message_id <= 0) return { badField: 'message_id' }
+  if (typeof b.bot_id !== 'string' || !TELEGRAM_BOT_ID_RE.test(b.bot_id)) return { badField: 'bot_id' }
+  return { id, decision: b.decision, nonce: b.nonce, fromId: b.from_id, chatId: b.chat_id, messageId: b.message_id, botId: b.bot_id }
+}
+
+// Card 0c15f6f7 A1: every answer of the permission-bot route carries an HMAC of
+// the per-install response key, so the relay can tell this process from a
+// stranger that listens on the port while the dashboard is down. The key is read
+// per answer (0600 file, created exclusively if missing) and never leaves this
+// process; an unusable key means no header, and the relay then shows "unknown".
+let responseKeyPathOverride: string | null = null
+
+/** Test seam: point the response key at another file (null = the store's); returns the previous one. */
+export function setPermissionBotResponseKeyPath(p: string | null): string | null {
+  const prev = responseKeyPathOverride
+  responseKeyPathOverride = p
+  return prev
+}
+
+function permissionBotJson(res: http.ServerResponse, rawId: string, nonce: string, data: unknown, status: number): void {
+  const bodyText = JSON.stringify(data)
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'private, no-store',
+  }
+  const id = normalizeApprovalId(rawId)
+  if (id != null) {
+    const key = loadOrCreateResponseKey(responseKeyPathOverride ?? responseKeyPath(join(PROJECT_ROOT, 'store')))
+    const mac = responseMac(key, id.replace(/-/g, ''), nonce, status, bodyText)
+    if (mac != null) headers[RESPONSE_MAC_HEADER] = mac
+  }
+  res.writeHead(status, headers)
+  res.end(bodyText)
+}
+
+function handlePermissionBotDecision(res: RouteContext['res'], rawId: string, body: unknown): void {
+  const logId = normalizeApprovalId(rawId)
+  const rawNonce = (body !== null && typeof body === 'object' && !Array.isArray(body)) ? (body as Record<string, unknown>).nonce : undefined
+  const nonce = typeof rawNonce === 'string' ? rawNonce : ''
+  const send = (data: unknown, status: number): void => permissionBotJson(res, rawId, nonce, data, status)
+  const refuse = (status: number, reason: string, extra: Record<string, unknown> = {}): void => {
+    logger.warn({ id: logId, reason, ...extra }, 'Approval permission-bot decision refused')
+    send({ ok: false, reason, ...extra }, status)
+  }
+  const parsed = parsePermissionBotDecision(rawId, body)
+  if ('badField' in parsed) return refuse(400, 'bad_request', { field: parsed.badField })
+
+  const ownerId = telegramOwnerUserId()
+  if (ownerId == null) return refuse(503, 'owner_unresolved')
+  const bot = resolvePermissionBotWithMain()
+  if (!bot.ok) return refuse(503, 'permission_bot_unavailable', { why: bot.reason })
+  if (parsed.chatId !== parsed.fromId) return refuse(403, 'owner_mismatch')
+
+  const result = resolveApprovalFromPermissionBot({
+    id: parsed.id,
+    decision: parsed.decision,
+    nonce: parsed.nonce,
+    fromId: parsed.fromId,
+    chatId: parsed.chatId,
+    messageId: parsed.messageId,
+    botId: parsed.botId,
+    ownerId,
+    expectedBotId: bot.botId,
+    mainBotId: bot.mainBotId,
+  })
+  if (result.ok) {
+    const approval = result.approval ?? getApproval(parsed.id)
+    const resolvedAt = approval?.resolved_at ?? Math.floor(Date.now() / 1000)
+    logger.info({ id: parsed.id, status: parsed.decision }, 'Approval resolved from the permission bot\'s button')
+    // The buttons are spent: take them off, best effort, in the notification
+    // queue (ordered, never blocks the answer).
+    const { token, botId } = bot
+    const messageId = parsed.messageId
+    const chatId = parsed.chatId
+    const secretPart = token.slice(token.indexOf(':') + 1)
+    enqueueOwnerNotification(parsed.id, async () => {
+      try {
+        await clearTelegramInlineKeyboard(token, chatId, messageId)
+      } catch (err) {
+        logger.warn({ id: parsed.id, botId, err: scrubbedErrorText(err, [token, secretPart]) }, 'permission-bot buttons could not be taken off (the press is decided anyway)')
+      }
+    })
+    send({
+      ok: true,
+      approval,
+      outcome_text: parsed.decision === 'approved'
+        ? `✅ Jóváhagyva: ${budapestTime(resolvedAt)} (Budapest).`
+        : `❌ Elutasítva: ${budapestTime(resolvedAt)} (Budapest).`,
+    }, 200)
+    return
+  }
+  const reason: PermissionBotRefusal = result.reason ?? 'bad_request'
+  const out: Record<string, unknown> = {}
+  if (reason === 'already_resolved' && result.approval) out.status = result.approval.status
+  return refuse(PERMISSION_BOT_REFUSAL_HTTP[reason] ?? 400, reason, out)
+}
+
+type ConsumeRunRequest = { id: string; category: string; packageSha256: string; runId: string; consumer: string }
+
+function parseConsumeRun(rawId: string, raw: unknown): ConsumeRunRequest | { badField: string } {
+  const id = normalizeApprovalId(rawId)
+  if (id == null) return { badField: 'id' }
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return { badField: 'body' }
+  const b = raw as Record<string, unknown>
+  if (typeof b.category !== 'string' || !isPermissionBotCategory(b.category)) return { badField: 'category' }
+  if (typeof b.package_sha256 !== 'string' || !SHA256_HEX_RE.test(b.package_sha256)) return { badField: 'package_sha256' }
+  if (typeof b.run_id !== 'string' || !RUN_ID_RE.test(b.run_id)) return { badField: 'run_id' }
+  if (!isConsumerName(b.consumer)) return { badField: 'consumer' }
+  return { id, category: b.category, packageSha256: b.package_sha256, runId: b.run_id, consumer: b.consumer.trim() }
+}
+
+function handleConsumeRun(res: RouteContext['res'], rawId: string, body: unknown): void {
+  const logId = normalizeApprovalId(rawId)
+  const parsed = parseConsumeRun(rawId, body)
+  if ('badField' in parsed) {
+    logger.warn({ id: logId, reason: 'bad_request', field: parsed.badField }, 'Approval run consume refused')
+    // Contract 5: every attempt with a well-formed id leaves an event row. The
+    // reason names the bad field, never its value; actor/ref only if well-formed.
+    if (logId != null) {
+      const raw = body !== null && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : {}
+      try {
+        recordRunConsumeRefusal({
+          id: logId,
+          reason: `bad_request:${parsed.badField}`,
+          consumer: isConsumerName(raw.consumer) ? raw.consumer : null,
+          runId: typeof raw.run_id === 'string' && RUN_ID_RE.test(raw.run_id) ? raw.run_id : null,
+        })
+      } catch (err) {
+        logger.warn({ err, id: logId }, 'Approval run consume refusal event could not be written')
+      }
+    }
+    json(res, { ok: false, reason: 'bad_request', field: parsed.badField }, 400)
+    return
+  }
+  // The consume path needs only the pinned permission-bot id (not the main bot's).
+  const bot = resolvePermissionBot()
+  if (!bot.ok) {
+    logger.warn({ id: parsed.id, reason: 'permission_bot_unavailable', why: bot.reason }, 'Approval run consume refused')
+    try {
+      recordRunConsumeRefusal({ id: parsed.id, reason: 'permission_bot_unavailable', consumer: parsed.consumer, runId: parsed.runId })
+    } catch (err) {
+      logger.warn({ err, id: parsed.id }, 'Approval run consume refusal event could not be written')
+    }
+    json(res, { ok: false, reason: 'permission_bot_unavailable' }, 503)
+    return
+  }
+  const result = consumeOwnerRunApproval({
+    id: parsed.id,
+    category: parsed.category,
+    packageSha256: parsed.packageSha256,
+    runId: parsed.runId,
+    consumer: parsed.consumer,
+    expectedBotId: bot.botId,
+    expectedOwnerId: telegramOwnerUserId(),
+  })
+  if (result.ok && result.approval && result.payload) {
+    const a = result.approval
+    logger.info({ id: parsed.id, consumer: parsed.consumer, runId: parsed.runId }, 'Approval run consumed')
+    json(res, {
+      ok: true,
+      approval: {
+        id: a.id,
+        category: a.category,
+        status: a.status,
+        consumed_at: a.consumed_at,
+        consumed_by: a.consumed_by,
+        consumed_ref: a.consumed_ref,
+        package_sha256: result.payload.package_sha256,
+        run_id: result.payload.run_id,
+        write_window_start: result.payload.write_window_start,
+        write_window_end: result.payload.write_window_end,
+      },
+    })
+    return
+  }
+  const reason: OwnerRunConsumeRefusal = result.reason ?? 'bad_request'
+  logger.warn({ id: parsed.id, consumer: parsed.consumer, reason }, 'Approval run consume refused')
+  json(res, { ok: false, reason }, CONSUME_RUN_REFUSAL_HTTP[reason] ?? 400)
+}
+
 export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -1061,6 +1493,39 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     if (typeof action_description !== 'string' || !action_description.trim()) {
       json(res, { error: 'action_description is required' }, 400)
       return true
+    }
+    // Card 9a77b3e5: the permission-bot categories (and the reserved
+    // rag_production_ prefix) take a bound, canonical payload; every other
+    // category goes through unchanged. The prefix check is case-insensitive so
+    // no spelling of the reserved prefix slips through as a plain category.
+    let permissionPayload: RagApprovalPayload | null = null
+    const categoryName = category.trim()
+    if (isPermissionBotCategory(categoryName) || categoryName.toLowerCase().startsWith(RAG_RESERVED_PREFIX)) {
+      const refuse = (field: string, error: string): void => json(res, { error, field }, 400)
+      if (!isPermissionBotCategory(categoryName)) {
+        refuse('category', `${RAG_RESERVED_PREFIX} is a reserved prefix`)
+        return true
+      }
+      // A bare agent id: lowercase letters, digits, - and _ (no attribution look-alikes).
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(agent_id.trim())) {
+        refuse('agent_id', 'agent_id must be a bare agent id for this category')
+        return true
+      }
+      if (owner_approved_message_id !== undefined && owner_approved_message_id !== null) {
+        refuse('owner_approved_message_id', 'owner_approved_message_id is not accepted for this category')
+        return true
+      }
+      const valid = validateRagApprovalRequest({
+        category: categoryName,
+        actionPayload: action_payload,
+        contentHash: content_hash,
+        nowSec: Math.floor(Date.now() / 1000),
+      })
+      if (!valid.ok) {
+        refuse(valid.field, valid.error)
+        return true
+      }
+      permissionPayload = valid.payload
     }
     if (action_payload !== undefined && typeof action_payload !== 'string') {
       json(res, { error: 'action_payload must be a string (JSON) if provided' }, 400)
@@ -1151,7 +1616,10 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     }
 
     const id = randomUUID()
-    const timeout_at = computeTimeoutAt(category, timeout_seconds)
+    // A permission-bot request never outlives its write window.
+    const timeout_at = permissionPayload
+      ? Math.min(computeTimeoutAt(category, timeout_seconds), permissionPayload.write_window_end)
+      : computeTimeoutAt(category, timeout_seconds)
     let approval = createApproval({
       id,
       agent_id: agent_id.trim(),
@@ -1257,7 +1725,41 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  // POST /api/approvals/:id/telegram -- 345f34e2: the owner's approve/reject
+  // POST /api/approvals/:id/consume-run -- card 9a77b3e5: the single use of a
+  // rag_production_d approval by the run it authorises. The e-mail /consume
+  // above is untouched.
+  const consumeRunMatch = path.match(/^\/api\/approvals\/([^/]+)\/consume-run$/)
+  if (consumeRunMatch && method === 'POST') {
+    let body: unknown
+    try {
+      body = JSON.parse((await readBody(req)).toString())
+    } catch {
+      // Unparseable JSON is a 'body' field error like any other: same answer,
+      // same log line, same event row (handleConsumeRun owns all three).
+      handleConsumeRun(res, consumeRunMatch[1], undefined)
+      return true
+    }
+    handleConsumeRun(res, consumeRunMatch[1], body)
+    return true
+  }
+
+  // POST /api/approvals/:id/permission-bot -- card 9a77b3e5: the owner's
+  // press on the permission bot's button, forwarded by the relay over loopback.
+  const permissionBotMatch = path.match(/^\/api\/approvals\/([^/]+)\/permission-bot$/)
+  if (permissionBotMatch && method === 'POST') {
+    let body: unknown
+    try {
+      body = JSON.parse((await readBody(req)).toString())
+    } catch {
+      logger.warn({ id: normalizeApprovalId(permissionBotMatch[1]), reason: 'bad_request', field: 'body' }, 'Approval permission-bot decision refused')
+      permissionBotJson(res, permissionBotMatch[1], '', { ok: false, reason: 'bad_request', field: 'body' }, 400)
+      return true
+    }
+    handlePermissionBotDecision(res, permissionBotMatch[1], body)
+    return true
+  }
+
+  // POST /api/approvals/:id/telegram -- the owner's approve/reject
   // button, sent by the channel plugin (see handleTelegramDecision). Every
   // refusal has the {ok:false, reason} shape, an unreadable body included.
   const telegramMatch = path.match(/^\/api\/approvals\/([^/]+)\/telegram$/)
@@ -1280,6 +1782,10 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const approval = getApproval(idMatch[1])
     if (!approval) {
       json(res, { error: 'Not found' }, 404)
+      return true
+    }
+    if (isPermissionBotCategory(approval.category)) {
+      json(res, { ...approval, ...permissionBotView(approval) })
       return true
     }
     json(res, approval)

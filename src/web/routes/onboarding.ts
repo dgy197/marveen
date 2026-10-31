@@ -207,7 +207,11 @@ export const API_KEY_RE = /^sk-ant-api\d{2}-[A-Za-z0-9_-]{20,}$/
 // keep every other line verbatim, append the new value, chmod 600. Never sed.
 // Refuses (throws InvalidEnvEntryError, writes nothing) a key that is not a
 // plain variable name or a value holding any control character.
+//
+// Card 9a77b3e5 (B4): PERMISSION_BOT_ID is never written from here: it pins
+// which bot may sign approvals, so it is set by the operator out-of-band.
 export function setEnvKey(key: string, value: string): void {
+  if (typeof key === 'string' && key.trim().toUpperCase() === 'PERMISSION_BOT_ID') throw new Error('refusing to write PERMISSION_BOT_ID through setEnvKey')
   if (typeof key !== 'string' || !ENV_KEY_RE.test(key)) throw new InvalidEnvEntryError(String(key), 'key')
   if (typeof value !== 'string' || CONTROL_CHAR_RE.test(value)) throw new InvalidEnvEntryError(key, 'value')
   let lines: string[] = []
