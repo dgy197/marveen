@@ -60,11 +60,16 @@ HASZNALAT:
 
   --dry-run    : a cimzett-alakot, az osztalyozast es a KAPUT ellenorzi, kiirja, van-e
                  credentials -- de NEM kuld, credentials nelkul is lefut.
-  --approval   : kulso cimzettnel KOTELEZO. A szkript lekerdezi, es CSAK `approved`
-                 statusznal kuld, ES csak ha a cimzett szama SZEREPEL a keres
-                 leirasaban. Kuldes elott FELHASZNALJA (POST .../consume): egy
-                 jovahagyas EGY kuldesre szol, a masodik kiserlet 409-et kap, es
+  --approval   : kulso cimzettnel KOTELEZO. A szkript lekerdezi, es CSAK akkor kuld, ha
+                 (1) `approved` az allapot, (2) a content_hash EGYEZIK a kuldendo
+                 {szam, szoveg} boritek hash-evel (lasd content_anchor), (3) a
+                 jovahagyas az idoablakon belul van, (4) a cimzett szama PONTOSAN
+                 (normalizalva, nem elo-/utotag) szerepel a leirasban. Kuldes elott
+                 FELHASZNALJA (POST .../consume, a sajat hash-sel es max_age_seconds-szal):
+                 egy jovahagyas EGY kuldesre szol, a masodik kiserlet 409-et kap, es
                  nem kuld (APPROVALCONSUME1022). A dry-run nem fogyaszt.
+  --print-anchor: kiirja a content_hash-t, amivel a jovahagyast KERNI kell (a STDIN-szoveg
+                 es a --to szam alapjan); nem hiv halozatot, nem kell credentials.
   --reference  : sajat azonosito a SeeMe fele (opcionalis, alapertelmezetten
                  `fleet-adhoc-<unix-ido>`).
 
@@ -77,7 +82,7 @@ BELSO SZAMOK: store/seeme-internal-numbers.json -> {"internal": ["36305552860", 
   A SZAMFORMATUM ITT ES A KULDESNEL IS: '+' NELKuLI nemzetkozi alak (36...), ahogy a
   SeeMe API varja -- lasd kaszap-crm/src/lib/sms.ts normalizeHungarianMobile().
 """
-import argparse, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, hashlib, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ENV_FILE = os.path.join(ROOT, "store", "seeme-gateway.env")
@@ -107,10 +112,58 @@ USER_AGENT = "kaszap-jobs-seeme-gateway/1.0 (+marveen)"
 # a ket gateway MAS vezetekes formatumot var, es ezt NEM eltus rossz iranyba tenne.
 HU_MOBILE = re.compile(r"^36(20|30|31|50|70)\d{7}$")
 
+# Card e487f46c: the approval binds the exact message. The anchor is the sha256 of the
+# canonical JSON of the {kind, number, text} envelope, built the same way as the e-mail
+# gate's content_anchor (scripts/hooks/email-approval-gate.py; src/approval-envelope.ts):
+# json.dumps(ensure_ascii=False, sort_keys=True, separators=(",", ":")) hashed as UTF-8.
+# `number` is the normalised 36XXXXXXXXX form, `text` is the raw STDIN text byte for byte.
+ENVELOPE_KIND = "sms"
+SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+# Phone-looking runs inside a free-text description (for the exact-number check).
+PHONE_RUN = re.compile(r"(?<![\d+])\+?\d[\d \-]{6,}\d(?!\d)")
+# How long after the owner's decision (resolved_at) the approval may still be consumed.
+# Same default as the e-mail path (EMAIL_APPROVAL_WINDOW_S, 1800 s); the server caps it at 24 h.
+MAX_WINDOW_S = 24 * 3600
+
+
+def approval_window_s():
+    try:
+        v = int(os.environ.get("SEEME_APPROVAL_WINDOW_S", ""))
+    except ValueError:
+        return 1800
+    return min(v, MAX_WINDOW_S) if v > 0 else 1800
+
 
 def die(msg, code=1):
     print(f"FAIL: {msg}", file=sys.stderr)
     raise SystemExit(code)
+
+
+def mask_number(raw):
+    """All but the last two digits hidden; failure reasons never carry a full number."""
+    d = re.sub(r"\D", "", str(raw))
+    return "*" * (len(d) - 2) + d[-2:] if len(d) > 2 else "**"
+
+
+def content_anchor(number, text):
+    """sha256 hex of the canonical {kind, number, text} envelope, or None if unhashable."""
+    canon = json.dumps({"kind": ENVELOPE_KIND, "number": number, "text": text},
+                       ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    try:
+        raw = canon.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return hashlib.sha256(raw).hexdigest()
+
+
+def numbers_in(description):
+    """The normalised Hungarian mobile numbers named in a free-text description."""
+    found = set()
+    for m in PHONE_RUN.finditer(description):
+        n = normalize_number(m.group(0))
+        if n:
+            found.add(n)
+    return found
 
 
 def normalize_number(raw):
@@ -159,9 +212,10 @@ def load_internal():
     return nums, f"{len(nums)} belso szam betoltve"
 
 
-def check_approval(approval_id, to_number):
+def check_approval(approval_id, to_number, anchor):
+    """Fail-closed: every refusal is ONE line with neither the text nor the full number."""
     if not os.path.exists(DASH_TOKEN_FILE):
-        die(f"nincs dashboard-token ({DASH_TOKEN_FILE}), az approval nem ellenorizhető")
+        die("nincs dashboard-token, az approval nem ellenorizheto -- NEM kuldok")
     tok = open(DASH_TOKEN_FILE, encoding="utf-8").read().strip()
     req = urllib.request.Request(
         f"{DASH_BASE}/api/approvals/{approval_id}",
@@ -173,8 +227,8 @@ def check_approval(approval_id, to_number):
             code = resp.status
     except urllib.error.HTTPError as exc:
         die(f"az approval lekerdezese HTTP {exc.code} -- a kapu ZARVA marad")
-    except Exception as exc:
-        die(f"az approval lekerdezese nem sikerult ({exc}) -- a kapu ZARVA marad")
+    except Exception:
+        die("az approval lekerdezese nem sikerult -- a kapu ZARVA marad")
     if code != 200:
         die(f"az approval lekerdezese HTTP {code}")
     try:
@@ -183,33 +237,52 @@ def check_approval(approval_id, to_number):
         die("az approval valasza nem JSON")
     if isinstance(rec, list):
         rec = rec[0] if rec else {}
+    if not isinstance(rec, dict):
+        die("az approval valasza nem objektum")
     status = str(rec.get("status", "")).lower()
     if status != "approved":
-        die(f"az approval statusza '{status or 'ISMERETLEN'}', nem 'approved' -- NEM kuldok.\n"
-            f"      (pending eseten VARJ, ne kuldj; a level-1 kategoria sosem lesz autonom)")
+        die(f"az approval statusza '{status or 'ISMERETLEN'}', nem 'approved' -- NEM kuldok (pending: VARJ)")
     if str(rec.get("category")) != "external_message":
-        die(f"az approval kategoriaja '{rec.get('category')}', nem 'external_message' -- "
-            f"egy mas celra kapott engedely NEM ervenyes ide")
-    desc = str(rec.get("action_description") or "")
-    if to_number not in desc.replace(" ", "").replace("-", "").replace("+", ""):
-        die(f"az approval leirasaban NEM szerepel a cimzett szama ({to_number}).\n"
-            f"      Egy jovahagyas EGY cimzettre szol; nem hasznalom ujra masra.")
+        die(f"az approval kategoriaja '{rec.get('category')}', nem 'external_message' -- NEM kuldok")
+    # (1) the approval must be bound to exactly this {number, text}
+    ch = rec.get("content_hash")
+    if not isinstance(ch, str) or not SHA256_HEX.match(ch):
+        die("az approval nem kotott tartalomhoz (nincs content_hash) -- NEM kuldok; kerj ujat a --print-anchor hash-sel")
+    if ch != anchor:
+        die("az approval content_hash-e nem egyezik a kuldendo szoveg+szam boritekkel -- NEM kuldok")
+    # (3) time window: the owner's decision must be recent, and the approval's own timeout must not have passed
+    now = int(time.time())
+    window = approval_window_s()
+    resolved = rec.get("resolved_at")
+    if isinstance(resolved, bool) or not isinstance(resolved, (int, float)) or resolved <= 0:
+        die("az approval-nak nincs dontesi ideje (resolved_at) -- NEM kuldok")
+    if now - resolved > window:
+        die(f"az approval dontese {window} masodpercnel regebbi (expired) -- NEM kuldok; kerj ujat")
+    timeout_at = rec.get("timeout_at")
+    if isinstance(timeout_at, (int, float)) and not isinstance(timeout_at, bool) and timeout_at > 0:
+        if resolved > timeout_at or now > timeout_at:
+            die("az approval sajat idokorlatja lejart (timeout_at) -- NEM kuldok; kerj ujat")
+    # (4) exact number match after normalisation: no prefix/suffix hit inside a longer digit run
+    if to_number not in numbers_in(str(rec.get("action_description") or "")):
+        die(f"az approval leirasaban nem szerepel pontosan a cimzett szama ({mask_number(to_number)}) -- NEM kuldok")
     return rec
 
 
-def consume_approval(approval_id, rec, reference):
+def consume_approval(approval_id, anchor, reference):
     """A jovahagyas EGYSZERI felhasznalasa, KozVETLENuL a kuldes elott (APPROVALCONSUME1022).
     A check_approval csak azt nezi, hogy a sor `approved`; egymagaban ugyanazzal az
     id-vel akarhany SMS kimehetett. A dashboard egyetlen feltetelES irassal allitja a
     consumed_at-ot, tehat ket kiseRletbol pontosan egy kap igent. CSAK 200 utan kuldunk:
-    minden mas (409 elhasznalt/lejart, 404, halozati hiba) azt jelenti, hogy NEM."""
+    minden mas (409 elhasznalt/lejart, 404, halozati hiba) azt jelenti, hogy NEM.
+    A hash a SAJAT, a kuldendo szovegbol szamolt anchor (nem a rekordbol atvett ertek):
+    a szerver `content_hash IS ?`-vel veti ossze a jovahagyott horgonnyal."""
     tok = open(DASH_TOKEN_FILE, encoding="utf-8").read().strip()
     body = json.dumps({
         "category": "external_message",
-        # Az approval sajat horgonya (vagy null): a szerver `content_hash IS ?`-vel veti ossze.
-        "content_hash": rec.get("content_hash"),
+        "content_hash": anchor,
         "consumer": CONSUMER,
         "ref": reference,
+        "max_age_seconds": approval_window_s(),
     }).encode("utf-8")
     req = urllib.request.Request(
         f"{DASH_BASE}/api/approvals/{approval_id}/consume", data=body, method="POST",
@@ -225,11 +298,10 @@ def consume_approval(approval_id, rec, reference):
             reason = str(json.loads(exc.read().decode("utf-8", "replace")).get("reason") or "")
         except Exception:
             pass
-        die(f"az approval felhasznalasa HTTP {exc.code}{f' ({reason})' if reason else ''} -- NEM kuldok.\n"
-            f"      already_consumed: ezzel a jovahagyassal mar ment SMS; expired: a jovahagyas regi,\n"
-            f"      kerj ujat. Egy jovahagyas EGY kuldesre szol.")
-    except Exception as exc:
-        die(f"az approval felhasznalasa nem sikerult ({exc}) -- NEM kuldok")
+        die(f"az approval felhasznalasa HTTP {exc.code}{f' ({reason})' if reason else ''} -- NEM kuldok "
+            f"(already_consumed: mar ment SMS; expired/hash_mismatch: kerj ujat)")
+    except Exception:
+        die("az approval felhasznalasa nem sikerult -- NEM kuldok")
     if code != 200:
         die(f"az approval felhasznalasa HTTP {code} -- NEM kuldok")
     try:
@@ -254,11 +326,13 @@ def main():
     ap.add_argument("--approval", default=None, help="approval UUID (kulso cimzettnel KOTELEZO)")
     ap.add_argument("--reference", default=None, help="sajat azonosito a SeeMe fele")
     ap.add_argument("--dry-run", action="store_true", help="mindent ellenoriz, de nem kuld")
+    ap.add_argument("--print-anchor", action="store_true",
+                    help="kiirja az approval-keres content_hash-et (STDIN-szoveg + --to), nem kuld")
     args = ap.parse_args()
 
     to = normalize_number(args.to)
     if not to:
-        die(f"a cimzett nem magyar mobilszam ertelmezheto ({args.to!r}) -- "
+        die(f"a cimzett nem magyar mobilszam ertelmezheto ({mask_number(args.to)}) -- "
             f"vart alak: 36301234567 (barmilyen bemeneti formabol normalizalva)")
 
     if sys.stdin.isatty():
@@ -270,13 +344,20 @@ def main():
     if len(text) > 1600:
         die(f"a szoveg {len(text)} karakter -- 1600 folott nem kuldok el vakon, ossze kell vonni")
 
+    anchor = content_anchor(to, text)
+    if anchor is None:
+        die("a szoveg nem kodolhato UTF-8-ra (ervenytelen karakter) -- NEM kuldok")
+    if args.print_anchor:
+        print(anchor)
+        return
+
     # A KAPU ELoBB FUT, MINT A TITOK BETOLTESE -- ugyanaz a ket ok, mint az sms-send.py-ban:
     # (1) default-deny: egy tiltott kuldes ne is erjen hozza a credentialshoz;
     # (2) a kapu igy TESZTELHETo credentials nelkul is.
     internal, internal_note = load_internal()
     is_internal = to in internal
 
-    print(f"cimzett     : {to}")
+    print(f"cimzett     : {to if is_internal else mask_number(to)}")
     print(f"osztalyozas : {'BELSO' if is_internal else 'KULSO'}  ({internal_note})")
     print(f"hossz       : {len(text)} karakter")
 
@@ -284,16 +365,18 @@ def main():
         if not args.approval:
             die("KULSO cimzett, es nincs --approval.\n"
                 "      Az `external_message` level=1 ES maxLevel=1 (locked), tehat ez SOHA nem\n"
-                "      autonom. Elobb kerj jovahagyast, a cimzett szamaval a leirasban\n"
+                "      autonom. Elobb kerj jovahagyast, a cimzett szamaval a leirasban, es a\n"
+                "      content_hash-sel (ugyanazzal a szoveggel: ... | python3 scripts/sms/seeme-send.py --to <szam> --print-anchor):\n"
                 "      (idezett heredoc: a szovegben levo backtick vagy $(...) igy nem fut le):\n"
                 f"        curl -s -X POST {DASH_BASE}/api/approvals -H \"Content-Type: application/json\" \\\n"
                 "          -H \"Authorization: Bearer $(cat store/.dashboard-token)\" --data-binary @- <<'JSON'\n"
                 "        {\"agent_id\":\"<a neved>\",\"category\":\"external_message\",\"action_description\":"
-                f"\"SMS-t kuldenek a {to} szamra (SeeMe). A szoveg: ... Indok: ...\",\"timeout_seconds\":3600}}\n"
+                f"\"SMS-t kuldenek a {to} szamra (SeeMe). A szoveg: ... Indok: ...\","
+                f"\"content_hash\":\"<a --print-anchor kimenete>\",\"timeout_seconds\":3600}}\n"
                 "        JSON\n"
                 "      A valaszban kapott id-vel futtasd ujra: --approval <id>.")
-        rec = check_approval(args.approval, to)
-        print(f"approval    : {args.approval} -> approved "
+        rec = check_approval(args.approval, to, anchor)
+        print(f"approval    : {args.approval} -> approved, hash egyezik "
               f"(kert: {rec.get('requested_at')}, dontott: {rec.get('resolved_at')})")
     elif args.approval:
         print("approval    : megadva, de a cimzett BELSO -- nem kotelezo, nem is hasznalom kapunak")
@@ -311,7 +394,7 @@ def main():
     # A fogyasztas az UTOLSO lepes a kuldes elott: a dry-run, a hianyzo credentials es
     # minden korabbi elutasitas NEM eget el jovahagyast. Belso cimzettnel nincs mit fogyasztani.
     if not is_internal:
-        consume_approval(args.approval, rec, reference)
+        consume_approval(args.approval, anchor, reference)
 
     params = {
         "key": env["SEEME_API_KEY"],
