@@ -71,10 +71,10 @@ export function fakeReq(body: unknown) {
   }
 }
 
-export async function route(method: 'GET' | 'POST' | 'PATCH', path: string, body?: unknown): Promise<{ status: number; body: any; raw: string }> {
-  const out = { status: 0, body: null as any, raw: '' }
+export async function route(method: 'GET' | 'POST' | 'PATCH', path: string, body?: unknown): Promise<{ status: number; body: any; raw: string; headers: Record<string, string> }> {
+  const out = { status: 0, body: null as any, raw: '', headers: {} as Record<string, string> }
   const res: any = {
-    writeHead(status: number) { out.status = status; return res },
+    writeHead(status: number, headers?: Record<string, string>) { out.status = status; out.headers = headers ?? {}; return res },
     end(chunk?: string) { if (chunk) { out.raw = chunk; out.body = JSON.parse(chunk) } },
   }
   const url = new URL(`http://localhost:3420${path}`)

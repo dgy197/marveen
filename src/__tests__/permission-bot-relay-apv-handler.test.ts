@@ -22,6 +22,7 @@ import {
   type ApvHandlerOptions,
 } from '../permission-bot-relay/apv-handler.js'
 import { createDispatcher } from '../permission-bot-relay/dispatch.js'
+import { RESPONSE_MAC_HEADER, responseMac } from '../permission-bot-relay/response-mac.js'
 import type { RelayLog, UpdateHandler } from '../permission-bot-relay/poll-loop.js'
 import { FakeBotApi } from './helpers/fake-bot-api.js'
 import { installLoopbackGuard, selfTestLoopbackGuard, type LoopbackGuard } from './helpers/loopback-guard.js'
@@ -35,6 +36,8 @@ const STRANGER_N = 2002000002
 const MAIN_BOT_N = 777777777
 const BEARER_A = 'bearerAAAAfakeDashboardToken0001'
 const BEARER_B = 'bearerBBBBfakeDashboardToken0002'
+// The response key both the fake dashboard signs with and the relay verifies with.
+const TEST_KEY = Buffer.alloc(32, 7)
 
 // ---- fake dashboard ---------------------------------------------------------
 
@@ -43,6 +46,7 @@ type DashReply = { status: number; body?: unknown; raw?: string; headers?: Recor
 
 class FakeDashboard {
   calls: DashCall[] = []
+  sign: 'ok' | 'none' | 'badmac' | 'othernonce' | 'otherid' | 'otherkey' = 'ok'
   reply: DashReply = { status: 200, body: { ok: true, outcome_text: '✅ Jóváhagyva: 12:00 (Budapest).' } }
   port = 0
   private server: http.Server | null = null
@@ -69,8 +73,19 @@ class FakeDashboard {
     this.calls.push({ url: req.url ?? '', auth: req.headers['authorization'], body })
     const r = this.reply
     if (r === 'hang') return
-    res.writeHead(r.status, { 'content-type': 'application/json', ...(r.headers ?? {}) })
-    res.end(r.raw ?? JSON.stringify(r.body ?? {}))
+    const text = r.raw ?? JSON.stringify(r.body ?? {})
+    // Card 0c15f6f7 A1: sign the answer like the real route (or break the signature on purpose).
+    const id32 = (req.url ?? '').split('/')[3] ?? ''
+    const nonce = typeof body['nonce'] === 'string' ? body['nonce'] : ''
+    const mode = this.sign
+    const mac = mode === 'none' ? null
+      : mode === 'badmac' ? 'f'.repeat(64)
+      : mode === 'othernonce' ? responseMac(TEST_KEY, id32, `${nonce}x`, r.status, text)
+      : mode === 'otherid' ? responseMac(TEST_KEY, '0'.repeat(32), nonce, r.status, text)
+      : mode === 'otherkey' ? responseMac(Buffer.alloc(32, 9), id32, nonce, r.status, text)
+      : responseMac(TEST_KEY, id32, nonce, r.status, text)
+    res.writeHead(r.status, { 'content-type': 'application/json', ...(mac == null ? {} : { [RESPONSE_MAC_HEADER]: mac }), ...(r.headers ?? {}) })
+    res.end(text)
   }
 }
 
@@ -118,6 +133,7 @@ beforeEach(() => {
   bearerPath = join(dir, '.dashboard-token')
   writeFileSync(bearerPath, `${BEARER_A}\n`, { mode: 0o600 })
   dash.calls = []
+  dash.sign = 'ok'
   dash.reply = { status: 200, body: { ok: true, outcome_text: '✅ Jóváhagyva: 12:00 (Budapest).' } }
   bot.calls.length = 0
 })
@@ -155,6 +171,7 @@ function handler(over: Partial<ApvHandlerOptions> = {}): UpdateHandler {
     resolveOwner: () => OWNER,
     log: captureLog(),
     timeoutMs: 2000,
+    responseKey: TEST_KEY,
     ...over,
   })
   return createDispatcher({ 'apv:': apv }, { log: captureLog() })
@@ -369,6 +386,60 @@ describe('F3.4 dashboard answer -> exact toast, one request, no retry', () => {
     expect(Date.now() - t0).toBeLessThan(5000)
     expect(r).toEqual({ outcome: 'rejected', toast: TOAST_UNAVAILABLE, answers: 1 })
     expect(dash.calls).toHaveLength(1)
+  })
+
+  // Card 0c15f6f7 A1: a 200/409 counts only with a valid MAC of the response key.
+  const okReply: DashReply = { status: 200, body: { ok: true, outcome_text: '✅ Jóváhagyva: 12:00 (Budapest).' } }
+  const closedReply: DashReply = { status: 409, body: { ok: false, reason: 'already_resolved', status: 'approved' } }
+  for (const sign of ['none', 'badmac', 'othernonce', 'otherid', 'otherkey'] as const) {
+    it(`200 ok with signature "${sign}" -> unknown toast, rejected`, async () => {
+      dash.reply = okReply
+      dash.sign = sign
+      const r = await press(handler(), update(button().data))
+      expect(r).toEqual({ outcome: 'rejected', toast: TOAST_UNKNOWN, answers: 1 })
+    })
+    it(`409 already_resolved with signature "${sign}" -> unknown toast, never closed`, async () => {
+      dash.reply = closedReply
+      dash.sign = sign
+      const r = await press(handler(), update(button().data))
+      expect(r).toEqual({ outcome: 'rejected', toast: TOAST_UNKNOWN, answers: 1 })
+    })
+  }
+  it('signed 200 ok -> outcome_text toast, processed; signed 409 -> closed toast', async () => {
+    dash.reply = okReply
+    expect(await press(handler(), update(button().data))).toEqual({ outcome: 'processed', toast: '✅ Jóváhagyva: 12:00 (Budapest).', answers: 1 })
+    dash.reply = closedReply
+    expect(await press(handler(), update(button().data))).toEqual({ outcome: 'rejected', toast: TOAST_CLOSED, answers: 1 })
+  })
+  it('a relay with a null or absent key shows the unknown toast even for a signed 200', async () => {
+    dash.reply = okReply
+    for (const responseKey of [null, undefined]) {
+      const r = await press(handler({ responseKey }), update(button().data))
+      expect(r).toEqual({ outcome: 'rejected', toast: TOAST_UNKNOWN, answers: 1 })
+    }
+  })
+  it('an over-long body is unsigned even with a MAC over the whole text', async () => {
+    const raw = JSON.stringify({ ok: true, outcome_text: 'x', pad: 'p'.repeat(70_000) })
+    dash.reply = { status: 200, raw }
+    const r = await press(handler(), update(button().data))
+    expect(r).toEqual({ outcome: 'rejected', toast: TOAST_UNKNOWN, answers: 1 })
+  })
+  it('the unsigned warning carries the reason code and no MAC value', async () => {
+    dash.reply = okReply
+    dash.sign = 'badmac'
+    const before = allLog.length
+    await press(handler(), update(button().data))
+    const lines = allLog.slice(before).join('\n')
+    expect(lines).toContain('unsigned_response')
+    expect(lines).not.toContain('f'.repeat(64))
+    expect(lines).not.toContain(TEST_KEY.toString('hex'))
+  })
+  it('toastFor: unsigned 200/409 are unknown, other statuses are unchanged', () => {
+    const base = { kind: 'answered' as const, reason: null, ok: true, outcomeText: 'T' }
+    expect(toastFor({ ...base, status: 200, signed: false })).toBe(TOAST_UNKNOWN)
+    expect(toastFor({ ...base, status: 409, signed: false, reason: 'expired' })).toBe(TOAST_UNKNOWN)
+    expect(toastFor({ ...base, status: 200, signed: true })).toBe('T')
+    expect(toastFor({ ...base, status: 403, signed: false, reason: 'bad_nonce' })).toBe(TOAST_INVALID)
   })
 
   it('toastFor covers the unavailable kinds', () => {

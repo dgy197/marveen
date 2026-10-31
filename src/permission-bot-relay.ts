@@ -30,6 +30,7 @@ import { logger } from './logger.js'
 import { readEnvFile } from './env.js'
 import { STORE_DIR, WEB_PORT, PERMISSION_BOT_ID, TELEGRAM_BOT_TOKEN } from './config.js'
 import { channelStateDir, readChannelToken } from './channel-provider.js'
+import { loadOrCreateResponseKey, responseKeyPath } from './permission-bot-relay/response-mac.js'
 import { PRESSER_KEY_FILE_NAME, createApvHandler, dashboardTokenFileReader, loadOrCreatePresserKey } from './permission-bot-relay/apv-handler.js'
 import { createDispatcher } from './permission-bot-relay/dispatch.js'
 import { acquireRelayLock, type RelayLock } from './permission-bot-relay/lock.js'
@@ -154,6 +155,8 @@ async function runRelay(): Promise<void> {
         dashboardPort: WEB_PORT,
         readBearer: dashboardTokenFileReader(join(STORE_DIR, '.dashboard-token')),
         presserKey: loadOrCreatePresserKey(join(STORE_DIR, PRESSER_KEY_FILE_NAME)),
+        // Card 0c15f6f7 A1: the dashboard signs its answers with this key.
+        responseKey: loadOrCreateResponseKey(responseKeyPath(STORE_DIR)),
         log,
       }),
     },

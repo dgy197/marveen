@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import type http from 'node:http'
 import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, APP_TZ, PERMISSION_BOT_ID } from '../../config.js'
 import {
   consumeApproval,
@@ -12,6 +13,7 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { RESPONSE_MAC_HEADER, loadOrCreateResponseKey, responseKeyPath, responseMac } from '../../permission-bot-relay/response-mac.js'
 import { resolveOwnerChatId, resolveAlertOwnerChat } from '../../owner-chat.js'
 import { sendOwnerMessage } from '../../notify.js'
 import { channelStateDir, readChannelToken } from '../../channel-provider.js'
@@ -1076,11 +1078,44 @@ function parsePermissionBotDecision(rawId: string, raw: unknown): PermissionBotD
   return { id, decision: b.decision, nonce: b.nonce, fromId: b.from_id, chatId: b.chat_id, messageId: b.message_id, botId: b.bot_id }
 }
 
+// Card 0c15f6f7 A1: every answer of the permission-bot route carries an HMAC of
+// the per-install response key, so the relay can tell this process from a
+// stranger that listens on the port while the dashboard is down. The key is read
+// per answer (0600 file, created exclusively if missing) and never leaves this
+// process; an unusable key means no header, and the relay then shows "unknown".
+let responseKeyPathOverride: string | null = null
+
+/** Test seam: point the response key at another file (null = the store's); returns the previous one. */
+export function setPermissionBotResponseKeyPath(p: string | null): string | null {
+  const prev = responseKeyPathOverride
+  responseKeyPathOverride = p
+  return prev
+}
+
+function permissionBotJson(res: http.ServerResponse, rawId: string, nonce: string, data: unknown, status: number): void {
+  const bodyText = JSON.stringify(data)
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'private, no-store',
+  }
+  const id = normalizeApprovalId(rawId)
+  if (id != null) {
+    const key = loadOrCreateResponseKey(responseKeyPathOverride ?? responseKeyPath(join(PROJECT_ROOT, 'store')))
+    const mac = responseMac(key, id.replace(/-/g, ''), nonce, status, bodyText)
+    if (mac != null) headers[RESPONSE_MAC_HEADER] = mac
+  }
+  res.writeHead(status, headers)
+  res.end(bodyText)
+}
+
 function handlePermissionBotDecision(res: RouteContext['res'], rawId: string, body: unknown): void {
   const logId = normalizeApprovalId(rawId)
+  const rawNonce = (body !== null && typeof body === 'object' && !Array.isArray(body)) ? (body as Record<string, unknown>).nonce : undefined
+  const nonce = typeof rawNonce === 'string' ? rawNonce : ''
+  const send = (data: unknown, status: number): void => permissionBotJson(res, rawId, nonce, data, status)
   const refuse = (status: number, reason: string, extra: Record<string, unknown> = {}): void => {
     logger.warn({ id: logId, reason, ...extra }, 'Approval permission-bot decision refused')
-    json(res, { ok: false, reason, ...extra }, status)
+    send({ ok: false, reason, ...extra }, status)
   }
   const parsed = parsePermissionBotDecision(rawId, body)
   if ('badField' in parsed) return refuse(400, 'bad_request', { field: parsed.badField })
@@ -1120,13 +1155,13 @@ function handlePermissionBotDecision(res: RouteContext['res'], rawId: string, bo
         logger.warn({ id: parsed.id, botId, err: scrubbedErrorText(err, [token, secretPart]) }, 'permission-bot buttons could not be taken off (the press is decided anyway)')
       }
     })
-    json(res, {
+    send({
       ok: true,
       approval,
       outcome_text: parsed.decision === 'approved'
         ? `✅ Jóváhagyva: ${budapestTime(resolvedAt)} (Budapest).`
         : `❌ Elutasítva: ${budapestTime(resolvedAt)} (Budapest).`,
-    })
+    }, 200)
     return
   }
   const reason: PermissionBotRefusal = result.reason ?? 'bad_request'
@@ -1458,7 +1493,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
       logger.warn({ id: normalizeApprovalId(permissionBotMatch[1]), reason: 'bad_request', field: 'body' }, 'Approval permission-bot decision refused')
-      json(res, { ok: false, reason: 'bad_request', field: 'body' }, 400)
+      permissionBotJson(res, permissionBotMatch[1], '', { ok: false, reason: 'bad_request', field: 'body' }, 400)
       return true
     }
     handlePermissionBotDecision(res, permissionBotMatch[1], body)

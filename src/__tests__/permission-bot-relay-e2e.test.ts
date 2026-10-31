@@ -17,7 +17,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
 import http from 'node:http'
 import type { AddressInfo, Socket } from 'node:net'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -61,12 +61,13 @@ vi.mock('../web/vault.js', () => ({
 
 import { initDatabase, getApproval, getDb, listApprovalEvents } from '../db.js'
 import { logger } from '../logger.js'
-import { ownerNotificationsSettled } from '../web/routes/approvals.js'
+import { ownerNotificationsSettled, setPermissionBotResponseKeyPath } from '../web/routes/approvals.js'
+import { RESPONSE_MAC_HEADER, loadOrCreateResponseKey, responseKeyPath, verifyResponseMac } from '../permission-bot-relay/response-mac.js'
 import { buildCallbackData, newCallbackNonce } from '../web/approval-callback-data.js'
 import { createBotApi } from '../permission-bot-relay/bot-api.js'
 import { OffsetStore, StatusFile, relayPaths } from '../permission-bot-relay/offset-store.js'
 import { PollLoop, type RelayLog } from '../permission-bot-relay/poll-loop.js'
-import { createApvHandler, TOAST_CLOSED, TOAST_INVALID, TOAST_UNAVAILABLE } from '../permission-bot-relay/apv-handler.js'
+import { createApvHandler, TOAST_CLOSED, TOAST_INVALID, TOAST_UNAVAILABLE, TOAST_UNKNOWN } from '../permission-bot-relay/apv-handler.js'
 import { createDispatcher } from '../permission-bot-relay/dispatch.js'
 import { FakeBotApi } from './helpers/fake-bot-api.js'
 import { installLoopbackGuard, selfTestLoopbackGuard, type LoopbackGuard } from './helpers/loopback-guard.js'
@@ -89,6 +90,7 @@ interface DashCall { url: string; auth: string | undefined; body: Record<string,
 
 class LoopbackDashboard {
   calls: DashCall[] = []
+  dropMac = false
   port = 0
   private server: http.Server | null = null
   private sockets = new Set<Socket>()
@@ -113,9 +115,9 @@ class LoopbackDashboard {
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown> } catch { body = {} }
     const url = req.url ?? ''
     const auth = req.headers['authorization']
-    const send = (status: number, raw: string): void => {
+    const send = (status: number, raw: string, extra: Record<string, string> = {}): void => {
       this.calls.push({ url, auth, body, status, raw })
-      res.writeHead(status, { 'content-type': 'application/json' })
+      res.writeHead(status, { 'content-type': 'application/json', ...extra })
       res.end(raw)
     }
     if (auth !== `Bearer ${BEARER}`) return send(401, JSON.stringify({ ok: false, reason: 'unauthorized' }))
@@ -124,7 +126,9 @@ class LoopbackDashboard {
     }
     try {
       const out = await route('POST', url, body)
-      send(out.status, out.raw)
+      // Card 0c15f6f7 A1: pass the route's own MAC header on, as the real server does.
+      const mac = out.headers[RESPONSE_MAC_HEADER]
+      send(out.status, out.raw, mac === undefined || this.dropMac ? {} : { [RESPONSE_MAC_HEADER]: mac })
     } catch {
       send(500, JSON.stringify({ ok: false, reason: 'harness_error' }))
     }
@@ -232,6 +236,8 @@ beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'pbr-e2e-'))
   const bearerPath = join(dir, '.dashboard-token')
   writeFileSync(bearerPath, `${BEARER}\n`, { mode: 0o600 })
+  // Card 0c15f6f7 A1: the route and the relay resolve the response key from the same store dir.
+  setPermissionBotResponseKeyPath(responseKeyPath(dir))
 
   const log = captureLog()
   const paths = relayPaths(dir)
@@ -245,6 +251,7 @@ beforeEach(async () => {
     log,
     resolveOwner: () => OWNER,
     fetchImpl: realFetch,
+    responseKey: loadOrCreateResponseKey(responseKeyPath(dir)),
   })
   loop = new PollLoop({
     api, offsets, status: statusFile, log,
@@ -282,6 +289,7 @@ afterEach(async () => {
   } finally {
     await dash.stop()
     await bot.close()
+    setPermissionBotResponseKeyPath(null)
     rmSync(dir, { recursive: true, force: true })
     vi.useRealTimers()
     vi.unstubAllGlobals()
@@ -400,5 +408,71 @@ describe('permission-bot relay, end to end through the real approvals route', ()
     const text = relayLines.join('\n')
     expect(text).toContain('dashboard_unavailable')
     expect(text).toContain('"why":"network"')
+  })
+})
+
+// Card 0c15f6f7 A1: the route signs its answers, the relay trusts only signed ones.
+describe('signed answers of the permission-bot route (card 0c15f6f7 A1)', () => {
+  const forged = (): Record<string, unknown> => ({
+    decision: 'approved', nonce: newCallbackNonce(), from_id: OWNER, chat_id: OWNER, message_id: 1001, bot_id: PERM_BOT,
+  })
+
+  it('a route answer carries a header that verifies with the key; the key is not in the body', async () => {
+    const p = await postD()
+    const id32 = p.id.replace(/-/g, '')
+    const key = loadOrCreateResponseKey(responseKeyPath(dir))!
+    const body = forged()
+    const out = await route('POST', `/api/approvals/${id32}/permission-bot`, body)
+    expect([403, 409]).toContain(out.status)
+    expect(verifyResponseMac(key, out.headers[RESPONSE_MAC_HEADER], id32, body.nonce as string, out.status, out.raw)).toBe(true)
+    // Another nonce or another id does not verify.
+    expect(verifyResponseMac(key, out.headers[RESPONSE_MAC_HEADER], id32, newCallbackNonce(), out.status, out.raw)).toBe(false)
+    expect(verifyResponseMac(key, out.headers[RESPONSE_MAC_HEADER], '0'.repeat(32), body.nonce as string, out.status, out.raw)).toBe(false)
+    expect(out.raw).not.toContain(key.toString('hex'))
+    expect(out.raw).not.toContain(key.toString('base64'))
+    expect(JSON.stringify(out.headers)).not.toContain(key.toString('hex'))
+  })
+
+  it('an unreadable body is answered 400 with a header over the empty nonce', async () => {
+    const p = await postD()
+    const id32 = p.id.replace(/-/g, '')
+    const key = loadOrCreateResponseKey(responseKeyPath(dir))!
+    const out = await route('POST', `/api/approvals/${id32}/permission-bot`, {})
+    expect(out.status).toBe(400)
+    expect(verifyResponseMac(key, out.headers[RESPONSE_MAC_HEADER], id32, '', out.status, out.raw)).toBe(true)
+  })
+
+  it('a key file with mode 0644 is unusable: the route sends no header and does not rewrite it', async () => {
+    const p = await postD()
+    const keyFile = responseKeyPath(dir)
+    loadOrCreateResponseKey(keyFile)
+    chmodSync(keyFile, 0o644)
+    const out = await route('POST', `/api/approvals/${p.id.replace(/-/g, '')}/permission-bot`, forged())
+    expect([403, 409]).toContain(out.status)
+    expect(out.headers[RESPONSE_MAC_HEADER]).toBeUndefined()
+    expect(loadOrCreateResponseKey(keyFile)).toBeNull()
+  })
+
+  it('end to end: a signed answer gives the decision toast; the same answer without the header gives the unknown toast', async () => {
+    const p = await postD()
+    dash.dropMac = true
+    const { toast } = await relayPress(p, p.approveData)
+    expect(toast).toBe(TOAST_UNKNOWN)
+    // The route did decide the row, but the relay could not tell who answered.
+    expect(status(p.id)).toBe('approved')
+    expect(relayLines.join('\n')).toContain('unsigned_response')
+  })
+
+  it('end to end: a route that signs with another key than the relay holds gives the unknown toast', async () => {
+    const p = await postD()
+    unlinkSync(responseKeyPath(dir))
+    // The route now creates and uses a different key; the relay still holds the old one.
+    setPermissionBotResponseKeyPath(responseKeyPath(`${dir}-other`))
+    try {
+      const { toast } = await relayPress(p, p.approveData)
+      expect(toast).toBe(TOAST_UNKNOWN)
+    } finally {
+      rmSync(`${dir}-other`, { recursive: true, force: true })
+    }
   })
 })

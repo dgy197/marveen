@@ -24,13 +24,13 @@
 // and the HTTP status. Never the callback data, the nonce, the approval id, the
 // raw presser id, the Bearer or a response body.
 
-import { createHmac, randomBytes } from 'node:crypto'
-import { closeSync, constants as fsConstants, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { createHmac } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { parseCallbackData } from '../web/approval-callback-data.js'
 import { BotApiError, type BotApi, type TelegramCallbackQuery } from './bot-api.js'
 import { REASON_CODE_RE } from './offset-store.js'
 import type { HandlerOutcome, RelayLog, UpdateHandler } from './poll-loop.js'
+import { RESPONSE_MAC_HEADER, loadOrCreateKeyFile, verifyResponseMac } from './response-mac.js'
 import { TELEGRAM_USER_ID_RE, PINNED_BOT_ID_RE, strictOwnerUserId } from './startup.js'
 
 export const TOAST_INVALID = 'Ez a gomb nem érvényes.'
@@ -122,22 +122,6 @@ export function cutToast(text: string): string | null {
   return cut === '' ? null : cut
 }
 
-function readPresserKey(path: string): Buffer | null {
-  let fd: number | null = null
-  try {
-    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
-    const st = fstatSync(fd)
-    if (!st.isFile() || (st.mode & 0o777) !== 0o600 || st.size !== PRESSER_KEY_BYTES) return null
-    const buf = Buffer.alloc(PRESSER_KEY_BYTES)
-    if (readSync(fd, buf, 0, PRESSER_KEY_BYTES, 0) !== PRESSER_KEY_BYTES) return null
-    return buf
-  } catch {
-    return null
-  } finally {
-    if (fd !== null) { try { closeSync(fd) } catch { /* best effort */ } }
-  }
-}
-
 /**
  * The per-install secret that keys the presser tag: 32 random bytes, 0600, in the
  * relay's store directory. Created with exclusive create, read back on later runs.
@@ -145,19 +129,7 @@ function readPresserKey(path: string): Buffer | null {
  * throws and never reports the secret.
  */
 export function loadOrCreatePresserKey(path: string): Buffer | null {
-  try {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-    const fd = openSync(path, 'wx', 0o600)
-    try {
-      fchmodSync(fd, 0o600)
-      if (writeSync(fd, randomBytes(PRESSER_KEY_BYTES)) !== PRESSER_KEY_BYTES) return null
-    } finally {
-      closeSync(fd)
-    }
-  } catch {
-    // EEXIST (already created) or not creatable: fall through to the read-back.
-  }
-  return readPresserKey(path)
+  return loadOrCreateKeyFile(path)
 }
 
 /** A short HMAC-SHA256 tag of the presser for the log; null without a valid key. */
@@ -198,7 +170,8 @@ export async function answerToast(
 }
 
 export type ForwardResult =
-  | { kind: 'answered'; status: number; reason: string | null; ok: boolean; outcomeText: string | null }
+  // signed: the answer carried a valid MAC of the response key (card 0c15f6f7 A1).
+  | { kind: 'answered'; status: number; reason: string | null; ok: boolean; outcomeText: string | null; signed: boolean }
   | { kind: 'unavailable'; why: 'no_bearer' | 'timeout' | 'network' | 'aborted' }
 
 export interface ApvHandlerOptions {
@@ -209,6 +182,9 @@ export interface ApvHandlerOptions {
   resolveOwner?: () => string | null
   // Key of the presser log tag (loadOrCreatePresserKey); absent or invalid: no tag.
   presserKey?: Buffer | null
+  // Key that signs the dashboard's answers (loadOrCreateResponseKey); absent or
+  // invalid: no answer verifies, so a 200/409 only ever gets the "unknown" toast.
+  responseKey?: Buffer | null
   timeoutMs?: number
   fetchImpl?: typeof fetch
 }
@@ -220,6 +196,8 @@ function safeReason(v: unknown): string | null {
 /** F3.4: the toast for a dashboard answer. */
 export function toastFor(r: ForwardResult): string {
   if (r.kind === 'unavailable') return TOAST_UNAVAILABLE
+  // Card 0c15f6f7 A1: an unsigned 200/409 may come from a stranger on the port.
+  if ((r.status === 200 || r.status === 409) && !r.signed) return TOAST_UNKNOWN
   if (r.status === 200) {
     if (!r.ok) return TOAST_UNKNOWN
     return r.outcomeText ?? TOAST_DECIDED
@@ -259,7 +237,11 @@ export function createApvHandler(opts: ApvHandlerOptions): UpdateHandler {
         redirect: 'error',
         signal: controller.signal,
       })
-      const text = (await res.text()).slice(0, RESPONSE_BODY_MAX)
+      const full = await res.text()
+      // Card 0c15f6f7 A1: the MAC covers the whole body, so an over-long one is unsigned.
+      const text = full.slice(0, RESPONSE_BODY_MAX)
+      const signed = full.length <= RESPONSE_BODY_MAX
+        && verifyResponseMac(opts.responseKey, res.headers.get(RESPONSE_MAC_HEADER), pass.id32, pass.body.nonce, res.status, full)
       let parsed: Record<string, unknown> | null = null
       try {
         const j: unknown = JSON.parse(text)
@@ -267,7 +249,7 @@ export function createApvHandler(opts: ApvHandlerOptions): UpdateHandler {
       } catch { parsed = null }
       const rawOutcome = parsed?.['outcome_text']
       const outcome = typeof rawOutcome === 'string' ? cutToast(rawOutcome.trim()) : null
-      return { kind: 'answered', status: res.status, reason: safeReason(parsed?.['reason']), ok: parsed?.['ok'] === true, outcomeText: outcome }
+      return { kind: 'answered', status: res.status, reason: safeReason(parsed?.['reason']), ok: parsed?.['ok'] === true, outcomeText: outcome, signed }
     } catch {
       if (timedOut) return { kind: 'unavailable', why: 'timeout' }
       if (signal.aborted) return { kind: 'unavailable', why: 'aborted' }
@@ -294,10 +276,13 @@ export function createApvHandler(opts: ApvHandlerOptions): UpdateHandler {
     const toast = toastFor(r)
     if (r.kind === 'answered') {
       log.info({ update_id: updateId, presser: tag(cbq.from?.id), status: r.status, reason: r.reason }, 'permission-bot-relay: press forwarded, dashboard answered')
+      if ((r.status === 200 || r.status === 409) && !r.signed) {
+        log.warn({ update_id: updateId, presser: tag(cbq.from?.id), reason: 'unsigned_response', status: r.status }, 'permission-bot-relay: the answer carried no valid signature, treated as unknown')
+      }
     } else {
       log.warn({ update_id: updateId, presser: tag(cbq.from?.id), reason: 'dashboard_unavailable', why: r.why }, 'permission-bot-relay: press NOT decided, the dashboard was not reachable')
     }
     await answerToast(ctx.api, cbq, toast, log, updateId, ctx.signal)
-    return r.kind === 'answered' && r.status === 200 && r.ok ? 'processed' : 'rejected'
+    return r.kind === 'answered' && r.status === 200 && r.ok && r.signed ? 'processed' : 'rejected'
   }
 }
