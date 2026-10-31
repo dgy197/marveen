@@ -38,6 +38,8 @@ import { listScheduledTasks } from './scheduled-tasks-io.js'
 import { computeNextRun } from './cron.js'
 import { creditGateStatusLine } from './credit-gate/audit.js'
 import { getCreditGateRuntime } from './credit-gate/runtime.js'
+import { fleetTokenStatusLine } from './fleet-token-drift.js'
+import { liveFleetTokenDrift } from './fleet-token-drift-live.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -561,6 +563,11 @@ export function liveBlockSpecs(now = Date.now()): BlockSpec[] {
         {
           label: 'Kredit-kapu', source: 'credit-gate runtime, audit táblák',
           collect: () => creditGateStatusLine(getCreditGateRuntime()),
+        },
+        {
+          // Card acdb8045 K5: read-only drift report; names and counts only.
+          label: 'Flotta-token', source: 'store/fleet-token-launch.json, store/.claude-oauth-token (ujjlenyomat, nem jelenik meg)',
+          collect: () => fleetTokenStatusLine(liveFleetTokenDrift()),
         },
         {
           label: 'Tárhely', source: 'stat, statfs',

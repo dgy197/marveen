@@ -186,6 +186,7 @@ import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js'
 import { configDirFor } from '../main-transcript-root.js'
 import { kindAllowed, FORBIDDEN_KIND } from './auth.js'
+import { liveFleetTokenField } from '../fleet-token-drift-live.js'
 import { isValidModelId, InvalidModelIdError } from '../../model-id.js'
 
 const execFileAsync = promisify(execFile)
@@ -2591,7 +2592,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   if (statusMatch && method === 'GET') {
     const name = decodeURIComponent(statusMatch[1])
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
-    json(res, getAgentProcessInfo(name))
+    const info = getAgentProcessInfo(name)
+    // Card acdb8045 K5: state word only (current / stale / unknown / current-estimated / n/a).
+    json(res, { ...info, fleetToken: liveFleetTokenField(name, info.running) })
     return true
   }
 
