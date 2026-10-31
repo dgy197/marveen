@@ -281,6 +281,60 @@ r = subprocess.run(['bash', os.path.join(INST, 'scripts', 'marveen-api.sh'), 'me
 check('marveen-api.sh message: FROM=iroda under the feszek env sends the feszek key',
       r.returncode == 0 and r.stdout.startswith('OK id=7') and SEEN[0]['key'] == [KEY_FESZEK], r.stdout + r.stderr)
 
+# ------------------------------------------------ key file vetting (card ed5fc02c)
+# A key file that is a symlink, not a regular file, not ours, not exactly 0600 or over 256 bytes is
+# NOT read: the send goes out unsigned, with a one-line warning that carries no path and no key.
+WARN = 'WARN: send key file refused'
+VALID = f'X-Agent-Key: {KEY_FESZEK}\n'
+
+link = os.path.join(KEYS, 'link-to-feszek')
+os.symlink(FESZEK_FILE, link)
+loose644 = keyfile('mode644', VALID)
+os.chmod(loose644, 0o644)
+loose640 = keyfile('mode640', VALID)
+os.chmod(loose640, 0o640)
+tight400 = keyfile('mode400', VALID)
+os.chmod(tight400, 0o400)
+oversize = keyfile('oversize', VALID + '\n' * 300)  # one valid line, then padding: only the size check refuses it
+foreign_uid = {'MARVEEN_AGENT_KEY_EXPECT_UID': str(os.geteuid() + 4242)}  # test seam: "the file is owned by someone else"
+
+CASES = (
+    ('symlink to a valid key file', link, None),
+    ('mode 0644', loose644, None),
+    ('mode 0640', loose640, None),
+    ('mode 0400', tight400, None),
+    ('over 256 bytes', oversize, None),
+    ('foreign uid', FESZEK_FILE, foreign_uid),
+    ('directory', KEYS, None),
+)
+for label, kf, extra in CASES:
+    r = msg('feszek', kf, extra=extra)
+    out = r.stdout + r.stderr
+    check(f'msg: {label} -> unsigned send, OK id=7, one warning, no FAIL',
+          r.returncode == 0 and r.stdout.startswith('OK id=7') and SEEN[0]['key'] is None and r.stderr.count(WARN) == 1
+          and 'FAIL' not in out, repr(SEEN) + out)
+    check(f'msg: {label} -> no key, no key-file path in the output or the curl argv',
+          KEY_FESZEK not in out + argv_text() and kf not in out and 'mvak_' not in argv_text(), out)
+    r = api(['directive-verify', '5'], kf, extra=extra)
+    out = r.stdout + r.stderr
+    check(f'api: {label} -> unsigned, exit 0, one warning',
+          r.returncode == 0 and SEEN[0]['key'] is None and r.stderr.count(WARN) == 1, repr(SEEN) + out)
+    check(f'api: {label} -> no key and no key-file path in the output', KEY_FESZEK not in out and kf not in out, out)
+
+# a missing or unset file stays quiet (today's behaviour), and the good file is still accepted
+r = msg('feszek', os.path.join(KEYS, 'does-not-exist'))
+check('msg: a missing key file -> unsigned and NO warning', r.returncode == 0 and WARN not in r.stderr)
+r = msg('feszek', FESZEK_FILE)
+check('msg: the valid 0600 own file still signs, no warning',
+      r.returncode == 0 and SEEN[0]['key'] == [KEY_FESZEK] and WARN not in r.stderr, repr(SEEN) + r.stderr)
+r = api(['directive-verify', '5'], FESZEK_FILE)
+check('api: the valid 0600 own file still signs, no warning',
+      r.returncode == 0 and SEEN[0]['key'] == [KEY_FESZEK] and WARN not in r.stderr, repr(SEEN) + r.stderr)
+# the key passes by stdin: still no key in any curl argv for the signed send
+msg('feszek', FESZEK_FILE)
+check('msg: the stdin header passing is kept (key absent from argv, present at the server)',
+      SEEN[0]['key'] == [KEY_FESZEK] and KEY_FESZEK not in argv_text() and '-H\n@-' in argv_text(), argv_text())
+
 srv.shutdown()
 # cleanup via the tempdir module (the unreadable file is restored first so rmtree can walk it)
 os.chmod(unreadable, stat.S_IRUSR | stat.S_IWUSR)

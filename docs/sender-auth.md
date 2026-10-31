@@ -39,7 +39,7 @@ Decided (Gyuri, 2026-10-31, K2 = A): in enforce, a message with `from=OWNER_NAME
 
 Open decision (Gyuri): K5 - OS-user isolation (separate card) to close the gap below.
 
-Before enforce (review residual, 0d7e2c04 BE round 2): the key directory check and the write are not pinned to one directory handle (no openat), so a same-uid process can swap the directory between them, and the parent `store/` directory is not checked; the sender scripts read the key file without the same hardening.
+Before enforce (review residual, 0d7e2c04 BE round 2), closed in card ed5fc02c: Node has no openat, so provisioning keeps the keys-dir fd open and re-checks the dir path against it (same dev+ino, not a symlink, own uid, 0700) before and after the rename, then re-opens the final key file O_NOFOLLOW (regular, nlink 1, own uid, 0600, same device and inode as written); any mismatch unlinks the new file only if dev/ino still match, revokes the hash and refuses, so the agent starts unsigned. Every component from the install root down to `store/` must be a real directory, own uid, not group/other-writable. The sender scripts (`agent-msg.sh`, `marveen_api.py`) open the key file O_NOFOLLOW and judge the open descriptor: regular file, own uid, mode exactly 0600, at most 256 bytes; otherwise they send unsigned and print one warning without the path or key. A same-uid attacker can still read the file (K5), and a swap inside the remaining window leaves a revoked, useless key in the displaced directory.
 
 ## Rollback
 
