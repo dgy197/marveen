@@ -27,7 +27,10 @@ cleanup(){ [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null; rm -rf "$FIX"
 trap cleanup EXIT
 
 EXT="36301234567"
-APPROVAL="appr-ext-1"
+APPROVAL="11111111-1111-4111-8111-111111111111"
+APPROVAL2="22222222-2222-4222-8222-222222222222"
+APPROVAL3="33333333-3333-4333-8333-333333333333"
+GONE="00000000-0000-4000-8000-000000000404"
 ANCHOR="$(python3 -c 'import hashlib,json,sys; print(hashlib.sha256(json.dumps({"kind":"sms","number":sys.argv[1],"text":"teszt uzenet"},ensure_ascii=False,sort_keys=True,separators=(",",":")).encode()).hexdigest())' "$EXT")"
 REQLOG="$FIX/requests.log"
 : > "$REQLOG"
@@ -41,7 +44,8 @@ import hashlib, json, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 log_path, port_file, ext = sys.argv[1], sys.argv[2], sys.argv[3]
 consumed = set()
-ANCHOR = hashlib.sha256(json.dumps({"kind": "sms", "number": ext, "text": "teszt uzenet"}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+PAYLOAD = json.dumps({"kind": "sms", "number": ext, "text": "teszt uzenet"}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+ANCHOR = hashlib.sha256(PAYLOAD.encode("utf-8")).hexdigest()
 lock = threading.Lock()
 def note(line):
     with lock, open(log_path, "a") as fh:
@@ -63,12 +67,12 @@ class H(BaseHTTPRequestHandler):
         aid = self.path.rsplit("/", 1)[1]
         note("GET " + aid)
         return self.send_json(200, {"id": aid, "status": "approved", "category": "external_message",
-                                    "content_hash": ANCHOR, "resolved_at": int(time.time()) - 5, "timeout_at": int(time.time()) + 3000, "action_description": f"SMS a {ext} szamra"})
+                                    "content_hash": ANCHOR, "action_payload": PAYLOAD, "resolved_at": int(time.time()) - 5, "timeout_at": int(time.time()) + 3000, "action_description": f"SMS a {ext} szamra"})
     def do_POST(self):
         aid = self.path.split("/")[3]
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
         note(f"CONSUME {aid} category={body.get('category')} consumer={body.get('consumer')} hash={body.get('content_hash')}")
-        if aid == "gone-404":
+        if aid == "00000000-0000-4000-8000-000000000404":
             return self.send_json(404, {"ok": False, "reason": "not_found"})
         with lock:
             first = aid not in consumed
@@ -127,7 +131,7 @@ out="$(send "$SCRIPT" "$APPROVAL")"; rc=$?
 
 echo "--- consume 404: no send ---"
 : > "$REQLOG"
-out="$(send "$SCRIPT" "gone-404")"; rc=$?
+out="$(send "$SCRIPT" "$GONE")"; rc=$?
 [ $rc -ne 0 ] && [ "$(count '^GATEWAY')" -eq 0 ] \
   && pass "unknown approval at consume: exit $rc, nothing sent" \
   || fail "consume 404 must not send (rc=$rc): $(cat "$REQLOG") $out"
@@ -135,7 +139,7 @@ out="$(send "$SCRIPT" "gone-404")"; rc=$?
 echo "--- dashboard unreachable at consume: no send ---"
 : > "$REQLOG"
 DEAD="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
-out="$(SEEME_DASH_BASE="http://127.0.0.1:$DEAD" send "$SCRIPT" "appr-ext-2")"; rc=$?
+out="$(SEEME_DASH_BASE="http://127.0.0.1:$DEAD" send "$SCRIPT" "$APPROVAL2")"; rc=$?
 [ $rc -ne 0 ] && [ "$(count '^GATEWAY')" -eq 0 ] \
   && pass "no dashboard: exit $rc, nothing sent" \
   || fail "an unreachable dashboard must not send (rc=$rc): $out"
@@ -149,14 +153,41 @@ out="$(printf '%s' "teszt" | python3 "$SCRIPT" --to 36305552860 2>&1)"; rc=$?
 
 echo "--- the refusal without --approval prints a recipe that exists ---"
 out="$(printf '%s' "teszt" | python3 "$SCRIPT" --to "$EXT" --dry-run 2>&1)"
-json_line="$(echo "$out" | grep -E '^ *\{"agent_id"')"
 if echo "$out" | grep -q "approval-request.sh"; then
   fail "the refusal still names scripts/approval-request.sh, which does not exist"
-elif echo "$out" | grep -q "/api/approvals" && printf '%s' "$json_line" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["category"]=="external_message" and "'"$EXT"'" in d["action_description"]'; then
-  pass "the refusal prints POST /api/approvals with a valid external_message payload naming the number"
+elif echo "$out" | grep -q "/api/approvals" && echo "$out" | grep -q -- "--print-request"; then
+  pass "the refusal names POST /api/approvals and the --print-request builder"
 else
-  fail "the refusal recipe is missing or its payload is not valid JSON: $out"
+  fail "the refusal recipe is missing: $out"
 fi
+body="$(printf '%s' "teszt" | python3 "$SCRIPT" --to "$EXT" --print-request tesztagens 2>&1)"
+if printf '%s' "$body" | python3 -c '
+import hashlib, json, sys
+d = json.load(sys.stdin)
+ext = sys.argv[1]
+canon = json.dumps({"kind": "sms", "number": ext, "text": "teszt"}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+assert d["category"] == "external_message" and ext in d["action_description"]
+assert d["action_payload"] == canon
+assert d["content_hash"] == hashlib.sha256(canon.encode()).hexdigest()
+' "$EXT"; then
+  pass "--print-request builds a valid external_message request: canonical action_payload, content_hash = its sha256"
+else
+  fail "--print-request did not print a valid request body: $body"
+fi
+
+echo "--- a text other than the approved one: nothing consumed, nothing sent ---"
+: > "$REQLOG"
+out="$(printf '%s' "masik uzenet" | python3 "$SCRIPT" --to "$EXT" --approval "$APPROVAL2" 2>&1)"; rc=$?
+[ $rc -ne 0 ] && [ "$(count '^CONSUME')" -eq 0 ] && [ "$(count '^GATEWAY')" -eq 0 ] \
+  && pass "another text than the approved envelope: exit $rc, no consume, no send" \
+  || fail "a changed text must neither consume nor send (rc=$rc): $(cat "$REQLOG") $out"
+
+echo "--- a non-UUID --approval never reaches the dashboard ---"
+: > "$REQLOG"
+out="$(printf '%s' "teszt uzenet" | python3 "$SCRIPT" --to "$EXT" --approval "appr-ext-1" 2>&1)"; rc=$?
+[ $rc -ne 0 ] && [ ! -s "$REQLOG" ] && echo "$out" | grep -q "nem UUID" \
+  && pass "non-UUID --approval: exit $rc, no request at all" \
+  || fail "a non-UUID --approval must be refused before any request (rc=$rc): $(cat "$REQLOG") $out"
 
 echo "--- mutation control: without the consume call the replay sends twice ---"
 MUT="$FIX/seeme-send-mutated.py"
@@ -165,7 +196,7 @@ if diff -q "$SCRIPT" "$MUT" >/dev/null 2>&1; then
   fail "the sed pattern matched nothing: the mutation did not change the file"
 else
   : > "$REQLOG"
-  send "$MUT" "appr-ext-3" >/dev/null; send "$MUT" "appr-ext-3" >/dev/null
+  send "$MUT" "$APPROVAL3" >/dev/null; send "$MUT" "$APPROVAL3" >/dev/null
   [ "$(count '^GATEWAY')" -eq 2 ] \
     && pass "mutated copy sends twice for one approval: the replay case above can fail" \
     || fail "the mutation did not change the behaviour ($(count '^GATEWAY') sends): the replay case does not measure the consume"

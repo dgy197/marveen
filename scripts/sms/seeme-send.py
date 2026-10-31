@@ -62,14 +62,19 @@ HASZNALAT:
                  credentials -- de NEM kuld, credentials nelkul is lefut.
   --approval   : kulso cimzettnel KOTELEZO. A szkript lekerdezi, es CSAK akkor kuld, ha
                  (1) `approved` az allapot, (2) a content_hash EGYEZIK a kuldendo
-                 {szam, szoveg} boritek hash-evel (lasd content_anchor), (3) a
-                 jovahagyas az idoablakon belul van, (4) a cimzett szama PONTOSAN
-                 (normalizalva, nem elo-/utotag) szerepel a leirasban. Kuldes elott
+                 {szam, szoveg} boritek hash-evel (lasd content_anchor), (2) az
+                 action_payload BAJTRA EGYEZIK a kanonikus boritek JSON-javal (a
+                 jovahagyo ezt latja), (3) a jovahagyas az idoablakon belul van (fix
+                 1800 s, az env csak szukitheti), (4) a leiras PONTOSAN EGY telefonszamot
+                 nevez, a cimzettet (normalizalva, nem elo-/utotag). Kuldes elott
                  FELHASZNALJA (POST .../consume, a sajat hash-sel es max_age_seconds-szal):
                  egy jovahagyas EGY kuldesre szol, a masodik kiserlet 409-et kap, es
                  nem kuld (APPROVALCONSUME1022). A dry-run nem fogyaszt.
   --print-anchor: kiirja a content_hash-t, amivel a jovahagyast KERNI kell (a STDIN-szoveg
                  es a --to szam alapjan); nem hiv halozatot, nem kell credentials.
+  --print-request AGENT: kiirja a jovahagyas-keres teljes JSON torzset (action_payload =
+                 kanonikus boritek, content_hash = annak sha256-ja); pipe-olhato a
+                 curl --data-binary @- -be. Nem hiv halozatot.
   --reference  : sajat azonosito a SeeMe fele (opcionalis, alapertelmezetten
                  `fleet-adhoc-<unix-ido>`).
 
@@ -122,16 +127,21 @@ SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 # Phone-looking runs inside a free-text description (for the exact-number check).
 PHONE_RUN = re.compile(r"(?<![\d+])\+?\d[\d \-]{6,}\d(?!\d)")
 # How long after the owner's decision (resolved_at) the approval may still be consumed.
-# Same default as the e-mail path (EMAIL_APPROVAL_WINDOW_S, 1800 s); the server caps it at 24 h.
-MAX_WINDOW_S = 24 * 3600
+# Same value as the e-mail path (EMAIL_APPROVAL_WINDOW_S, 1800 s). Card e487f46c B5: the
+# window is FIXED; the env variable (used by the hermetic tests) may only NARROW it, so a
+# caller can never widen the owner's approval to hours.
+APPROVAL_WINDOW_S = 1800
+# Card e487f46c B4: the approval id goes into a URL path, so it must be a UUID (the server
+# makes them with randomUUID(): lower-case hex 8-4-4-4-12) before it is used anywhere.
+APPROVAL_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
 def approval_window_s():
     try:
         v = int(os.environ.get("SEEME_APPROVAL_WINDOW_S", ""))
     except ValueError:
-        return 1800
-    return min(v, MAX_WINDOW_S) if v > 0 else 1800
+        return APPROVAL_WINDOW_S
+    return min(v, APPROVAL_WINDOW_S) if v > 0 else APPROVAL_WINDOW_S
 
 
 def die(msg, code=1):
@@ -145,12 +155,17 @@ def mask_number(raw):
     return "*" * (len(d) - 2) + d[-2:] if len(d) > 2 else "**"
 
 
+def canonical_envelope(number, text):
+    """The exact canonical JSON text of the {kind, number, text} envelope: it is what the
+    approval request carries as action_payload AND what content_hash is the sha256 of."""
+    return json.dumps({"kind": ENVELOPE_KIND, "number": number, "text": text},
+                      ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def content_anchor(number, text):
     """sha256 hex of the canonical {kind, number, text} envelope, or None if unhashable."""
-    canon = json.dumps({"kind": ENVELOPE_KIND, "number": number, "text": text},
-                       ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     try:
-        raw = canon.encode("utf-8")
+        raw = canonical_envelope(number, text).encode("utf-8")
     except UnicodeEncodeError:
         return None
     return hashlib.sha256(raw).hexdigest()
@@ -212,7 +227,7 @@ def load_internal():
     return nums, f"{len(nums)} belso szam betoltve"
 
 
-def check_approval(approval_id, to_number, anchor):
+def check_approval(approval_id, to_number, anchor, payload):
     """Fail-closed: every refusal is ONE line with neither the text nor the full number."""
     if not os.path.exists(DASH_TOKEN_FILE):
         die("nincs dashboard-token, az approval nem ellenorizheto -- NEM kuldok")
@@ -250,6 +265,13 @@ def check_approval(approval_id, to_number, anchor):
         die("az approval nem kotott tartalomhoz (nincs content_hash) -- NEM kuldok; kerj ujat a --print-anchor hash-sel")
     if ch != anchor:
         die("az approval content_hash-e nem egyezik a kuldendo szoveg+szam boritekkel -- NEM kuldok")
+    # (2) the owner must have SEEN this message: the request carries the canonical envelope as
+    # action_payload (the dashboard and the Telegram text show its number and text), and it
+    # must be byte-identical to the one this script would send. Otherwise the hash could be
+    # of a text the owner never saw (card e487f46c B1).
+    if rec.get("action_payload") != payload:
+        die("az approval action_payload-ja nem a kuldendo szam+szoveg kanonikus boritekja -- NEM kuldok; "
+            "kerj ujat a --print-request kimenetevel")
     # (3) time window: the owner's decision must be recent, and the approval's own timeout must not have passed
     now = int(time.time())
     window = approval_window_s()
@@ -262,9 +284,12 @@ def check_approval(approval_id, to_number, anchor):
     if isinstance(timeout_at, (int, float)) and not isinstance(timeout_at, bool) and timeout_at > 0:
         if resolved > timeout_at or now > timeout_at:
             die("az approval sajat idokorlatja lejart (timeout_at) -- NEM kuldok; kerj ujat")
-    # (4) exact number match after normalisation: no prefix/suffix hit inside a longer digit run
-    if to_number not in numbers_in(str(rec.get("action_description") or "")):
-        die(f"az approval leirasaban nem szerepel pontosan a cimzett szama ({mask_number(to_number)}) -- NEM kuldok")
+    # (4) the description names EXACTLY ONE phone number and it is the recipient (card
+    # e487f46c B2): zero or two or more distinct numbers -> fail-closed.
+    named = numbers_in(str(rec.get("action_description") or ""))
+    if named != {to_number}:
+        die(f"az approval leirasaban pontosan egy telefonszam kell legyen, a cimzette ({mask_number(to_number)}); "
+            f"talalt szamok: {len(named)} -- NEM kuldok")
     return rec
 
 
@@ -312,6 +337,23 @@ def consume_approval(approval_id, anchor, reference):
         die("az approval felhasznalasanak valasza nem ok:true -- NEM kuldok")
 
 
+def build_request_body(agent_id, to, text, anchor, extra):
+    """The JSON body of the external_message approval request for this exact SMS."""
+    description = f"SMS-t kuldenek a {to} szamra (SeeMe)."
+    if extra:
+        description += f" {extra}"
+    if numbers_in(description) != {to}:
+        die("a --description nem emlithet mas telefonszamot (pontosan egy szam lehet: a cimzette)")
+    return json.dumps({
+        "agent_id": agent_id,
+        "category": "external_message",
+        "action_description": description,
+        "action_payload": canonical_envelope(to, text),
+        "content_hash": anchor,
+        "timeout_seconds": 3600,
+    }, ensure_ascii=False)
+
+
 def log(line):
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as fh:
@@ -328,7 +370,17 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="mindent ellenoriz, de nem kuld")
     ap.add_argument("--print-anchor", action="store_true",
                     help="kiirja az approval-keres content_hash-et (STDIN-szoveg + --to), nem kuld")
+    ap.add_argument("--print-request", metavar="AGENT_ID", default=None,
+                    help="kiirja a jovahagyas-keres teljes JSON torzset (action_payload = a kanonikus "
+                         "{kind,number,text} boritek, content_hash = annak sha256-ja), nem kuld")
+    ap.add_argument("--description", default=None,
+                    help="--print-request: a leiras kiegeszitese (indok); nem emlithet telefonszamot")
     args = ap.parse_args()
+
+    # B4: before anything else, an --approval that is not a UUID is refused (it is only ever
+    # a URL path segment and a log field; nothing else may reach either).
+    if args.approval is not None and not APPROVAL_ID_RE.match(args.approval):
+        die("az --approval nem UUID (csak a dashboard altal adott azonosito fogadhato el) -- NEM kuldok")
 
     to = normalize_number(args.to)
     if not to:
@@ -350,6 +402,9 @@ def main():
     if args.print_anchor:
         print(anchor)
         return
+    if args.print_request is not None:
+        print(build_request_body(args.print_request, to, text, anchor, args.description))
+        return
 
     # A KAPU ELoBB FUT, MINT A TITOK BETOLTESE -- ugyanaz a ket ok, mint az sms-send.py-ban:
     # (1) default-deny: egy tiltott kuldes ne is erjen hozza a credentialshoz;
@@ -366,16 +421,16 @@ def main():
             die("KULSO cimzett, es nincs --approval.\n"
                 "      Az `external_message` level=1 ES maxLevel=1 (locked), tehat ez SOHA nem\n"
                 "      autonom. Elobb kerj jovahagyast, a cimzett szamaval a leirasban, es a\n"
-                "      content_hash-sel (ugyanazzal a szoveggel: ... | python3 scripts/sms/seeme-send.py --to <szam> --print-anchor):\n"
-                "      (idezett heredoc: a szovegben levo backtick vagy $(...) igy nem fut le):\n"
-                f"        curl -s -X POST {DASH_BASE}/api/approvals -H \"Content-Type: application/json\" \\\n"
-                "          -H \"Authorization: Bearer $(cat store/.dashboard-token)\" --data-binary @- <<'JSON'\n"
-                "        {\"agent_id\":\"<a neved>\",\"category\":\"external_message\",\"action_description\":"
-                f"\"SMS-t kuldenek a {to} szamra (SeeMe). A szoveg: ... Indok: ...\","
-                f"\"content_hash\":\"<a --print-anchor kimenete>\",\"timeout_seconds\":3600}}\n"
-                "        JSON\n"
+                "      a kanonikus boritekkal (action_payload: a jovahagyo EZT a szamot es szoveget latja,\n"
+                "      a szerver ellenorzi, hogy a content_hash az action_payload sha256-ja). A teljes\n"
+                "      kerest a szkript maga allitja ossze, ugyanabbol a szovegbol (a szoveg STDIN-rol jon,\n"
+                "      igy a backtick vagy $(...) nem fut le):\n"
+                "        ... | python3 scripts/sms/seeme-send.py --to <szam> --print-request <a neved> \\\n"
+                f"          | curl -s -X POST {DASH_BASE}/api/approvals -H \"Content-Type: application/json\" \\\n"
+                "          -H \"Authorization: Bearer $(cat store/.dashboard-token)\" --data-binary @-\n"
+                "      A leiras csak a cimzett szamat emlitheti (pontosan egy telefonszam).\n"
                 "      A valaszban kapott id-vel futtasd ujra: --approval <id>.")
-        rec = check_approval(args.approval, to, anchor)
+        rec = check_approval(args.approval, to, anchor, canonical_envelope(to, text))
         print(f"approval    : {args.approval} -> approved, hash egyezik "
               f"(kert: {rec.get('requested_at')}, dontott: {rec.get('resolved_at')})")
     elif args.approval:
