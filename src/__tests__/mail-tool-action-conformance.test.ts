@@ -305,7 +305,7 @@ describe('mail-tool fallback narrowing (card 6151bb4d)', () => {
     ['mcp__gmail__create_draft', 'unverified-recipient'], ['mcp__gmail__createDraft', 'unverified-recipient'],
     ['mcp__gmail__create_message', 'unverified-recipient'], ['mcp__gmail__create_mail', 'unverified-recipient'],
     ['mcp__ms365__create-reply-all-draft', 'unverified-recipient'],
-    ['mcp__harder-mail__send_mail', 'mail-tool-send'], ['mcp__ms365__send-mail', 'mail-tool-send'],
+    ['mcp__harder-mail__send_mail', 'connector-send'], ['mcp__ms365__send-mail', 'mail-tool-send'],
     ['mcp__slack__send_email', 'mail-tool-send'], ['mcp__slack-mail__sendMail', 'mail-tool-send'],
     ['mcp__ms365_mail__send-chat-message', 'mail-tool-send'],
     ['mcp__gmail-v2__v2_send_draft', 'mail-tool-send'], ['mcp__gmail__v2get_send_as', 'mail-tool-send'],
