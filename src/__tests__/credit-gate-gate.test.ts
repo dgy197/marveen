@@ -172,6 +172,26 @@ describe('K2: missing or doubtful measurement closes the gate (A-02)', () => {
     expect(h.gate.tick().state).toBe('HOLD')
   })
 
+  it('a source file that goes missing holds the gate; when it is back the ledger heals, the HOLD latch lifts only with a newer calibration', () => {
+    harness({ cal: simpleCal(1, '100.00') })
+    expect(h.gate.tick().state).toBe('OPEN')
+    unlinkSync(h.usagePath)
+    h.now += 30_000
+    expect(h.gate.tick()).toMatchObject({ state: 'HOLD', reason: 'ledger_broken:anthropic-batch' })
+    // Still missing: the next polls change nothing, the gate never opens by itself.
+    h.now += 30_000
+    expect(h.gate.tick().state).toBe('HOLD')
+    expect(h.gate.reserve(headless(1))).toMatchObject({ ok: false, reason: 'gate_closed' })
+    // The file is back: the source reads ok again, but the latched HOLD stays.
+    writeFileSync(h.usagePath, '')
+    h.now += 30_000
+    expect(h.gate.tick().state).toBe('HOLD')
+    // The latch follows the normal rule: a newer calibration lifts it.
+    h.cal = simpleCal(2, '100.00')
+    h.now += 30_000
+    expect(h.gate.tick().state).toBe('OPEN')
+  })
+
   it('a row that cannot be priced (est NULL) closes the gate', () => {
     harness({ cal: simpleCal(1, '100.00') })
     expect(h.gate.tick().state).toBe('OPEN')

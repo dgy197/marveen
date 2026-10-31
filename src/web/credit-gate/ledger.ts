@@ -6,7 +6,9 @@
 //    cursors (ledger-usage-jsonl.ts). A damaged source -- truncated, replaced,
 //    rewritten, a symlink, an unreadable line, a line half-written for more
 //    than 120 s -- turns `broken` and STAYS broken (the gate goes to HOLD)
-//    until resetSource() is called; nothing after the damage is read.
+//    until resetSource() is called; nothing after the damage is read. The one
+//    exception is `missing` (no such file): it is retried on every refresh and
+//    heals by itself when the file is back, read again from its first byte.
 //  - recordHeadless(run) books a headless run as ONE row: the estimate from
 //    its JSON usage and the CLI's own total_cost_usd side by side; without
 //    JSON, the estimate from its transcript (ledger-transcript.ts); without a
@@ -65,6 +67,9 @@ export interface LedgerOptions {
   readonly partialMaxMs?: number
   readonly maxFileBytes?: number
 }
+
+/** The one broken reason that heals by itself: the source file was not there. */
+const MISSING_REASON = 'missing'
 
 export type CursorStatus = 'ok' | 'partial' | 'broken'
 export type LedgerBasis = 'usage' | 'headless_json' | 'headless_transcript' | 'headless_reservation'
@@ -407,14 +412,26 @@ export class CreditLedger {
 
   private refreshSource(src: LedgerSource, nowMs: number, table: PricingTable | null, unpriced: Set<string>): SourceRefresh {
     const cur = this.getCursor(src.id)
-    // Broken is sticky: nothing is read until the source is reset.
-    if (cur?.status === 'broken') return { id: src.id, status: 'broken', reason: cur.reason, ingested: 0, duplicates: 0 }
+    // Broken is sticky: nothing is read until the source is reset -- except
+    // `missing`, a file that was simply not there. That one is retried on every
+    // refresh (the gate's own poll cadence) and, once the file exists again, is
+    // read from the first byte as after resetSource (the old cursor describes a
+    // file that is gone). Every other reason stays broken.
+    const retryMissing = cur?.status === 'broken' && cur.reason === MISSING_REASON
+    if (cur?.status === 'broken' && !retryMissing) {
+      return { id: src.id, status: 'broken', reason: cur.reason, ingested: 0, duplicates: 0 }
+    }
 
-    const from: FileCursor | null = cur && cur.dev !== null && cur.ino !== null
+    const from: FileCursor | null = !retryMissing && cur && cur.dev !== null && cur.ino !== null
       ? { dev: cur.dev, ino: cur.ino, offset: cur.offset, tail_sha256: cur.tail_sha256 }
       : null
     const scan = scanUsageFile(src.path, from, this.maxFileBytes)
-    if (!scan.ok) return this.markBroken(src.id, cur, scan.reason, nowMs)
+    if (!scan.ok) {
+      // Still missing: nothing is written (the cursor row keeps its checked_at,
+      // so the age keeps growing and the gate stays in HOLD).
+      if (retryMissing && scan.reason === MISSING_REASON) return { id: src.id, status: 'broken', reason: MISSING_REASON, ingested: 0, duplicates: 0 }
+      return this.markBroken(src.id, cur, scan.reason, nowMs)
+    }
 
     return this.db.transaction((): SourceRefresh => {
       let offset = from?.offset ?? 0

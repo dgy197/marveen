@@ -417,14 +417,92 @@ describe('refresh: reading usage.jsonl', () => {
     expect(l.refresh(T0 + 180_000, table).sources[0]).toMatchObject({ status: 'ok', ingested: 1, duplicates: 1 })
   })
 
-  it('a missing file that appears later stays broken until reset', () => {
-    const l = ledger()
-    expect(l.refresh(T0, table).sources[0].reason).toBe('missing')
-    writeFileSync(usagePath, pyLine(syncRow()))
-    expect(l.refresh(T0 + 30_000, table).sources[0]).toMatchObject({ status: 'broken', reason: 'missing', ingested: 0 })
-    expect(l.ageS(T0 + 30_000)).toBeNull()
-    l.resetSource('anthropic-batch')
-    expect(l.refresh(T0 + 60_000, table).sources[0]).toMatchObject({ status: 'ok', ingested: 1 })
+  describe('a missing file heals by itself (card fec6335f, option B)', () => {
+    it('a missing file that appears later is read again from the start on the next refresh', () => {
+      const l = ledger()
+      expect(l.refresh(T0, table).sources[0].reason).toBe('missing')
+      expect(l.ageS(T0 + 30_000)).toBeNull()
+      writeFileSync(usagePath, pyLine(syncRow()) + pyLine(syncRow({ ts: TS + 1 })))
+      expect(l.refresh(T0 + 30_000, table).sources[0]).toMatchObject({ status: 'ok', reason: null, ingested: 2 })
+      expect(entries()).toHaveLength(2)
+      expect(cursor()).toMatchObject({ status: 'ok', reason: null, offset: statSync(usagePath).size })
+      expect(l.ageS(T0 + 40_000)).toBe(10)
+    })
+
+    it('while the file stays missing nothing is written and the age keeps growing (no busy loop)', () => {
+      const l = ledger()
+      writeFileSync(usagePath, pyLine(syncRow()))
+      l.refresh(T0, table)
+      rmSync(usagePath)
+      expect(l.refresh(T0 + 30_000, table).sources[0]).toMatchObject({ status: 'broken', reason: 'missing' })
+      const after = cursor()
+      // One refresh = one read attempt, no loop, no cursor write while the file is absent.
+      for (let i = 1; i <= 10; i++) {
+        const r = l.refresh(T0 + 30_000 + i * 30_000, table)
+        expect(r.sources[0]).toMatchObject({ status: 'broken', reason: 'missing', ingested: 0 })
+        expect(r.broken).toEqual(['anthropic-batch'])
+      }
+      expect(cursor()).toEqual(after)
+      expect(l.ageS(T0 + 330_000)).toBe(330)
+      expect(entries()).toHaveLength(1)
+    })
+
+    it('a file that was read before, vanished and came back (new inode) is read from the first byte', () => {
+      const l = ledger()
+      writeFileSync(usagePath, pyLine(syncRow()))
+      expect(l.refresh(T0, table).ingested).toBe(1)
+      rmSync(usagePath)
+      expect(l.refresh(T0 + 30_000, table).sources[0].reason).toBe('missing')
+      writeFileSync(usagePath, pyLine(syncRow({ ts: TS + 5, in: 7 })) + pyLine(syncRow({ ts: TS + 6, in: 8 })))
+      expect(l.refresh(T0 + 60_000, table).sources[0]).toMatchObject({ status: 'ok', ingested: 2 })
+      expect(entries().map((e) => e.input_tokens)).toEqual([1000, 7, 8])
+      expect(l.ageS(T0 + 60_000)).toBe(0)
+    })
+
+    it('missing, then back but corrupt: broken with the corrupt reason, and that one is sticky', () => {
+      const l = ledger()
+      expect(l.refresh(T0, table).sources[0].reason).toBe('missing')
+      writeFileSync(usagePath, pyLine(syncRow()) + '{"ts": not json}\n')
+      expect(l.refresh(T0 + 30_000, table).sources[0]).toMatchObject({ status: 'broken', reason: 'invalid_json', ingested: 1 })
+      // The damage is repaired: still broken, nothing more is read.
+      writeFileSync(usagePath, pyLine(syncRow()) + pyLine(syncRow({ ts: TS + 1 })))
+      expect(l.refresh(T0 + 60_000, table).sources[0]).toMatchObject({ status: 'broken', reason: 'invalid_json', ingested: 0 })
+      expect(entries()).toHaveLength(1)
+    })
+
+    it('missing, then back as a symlink or a directory: broken with that reason, sticky', () => {
+      const l = ledger()
+      expect(l.refresh(T0, table).sources[0].reason).toBe('missing')
+      const real = join(dir, 'real.jsonl')
+      writeFileSync(real, pyLine(syncRow()))
+      symlinkSync(real, usagePath)
+      expect(l.refresh(T0 + 30_000, table).sources[0]).toMatchObject({ status: 'broken', reason: 'symlink' })
+      rmSync(usagePath)
+      writeFileSync(usagePath, pyLine(syncRow()))
+      expect(l.refresh(T0 + 60_000, table).sources[0]).toMatchObject({ status: 'broken', reason: 'symlink', ingested: 0 })
+      expect(entries()).toHaveLength(0)
+    })
+
+    it('the other reasons stay sticky when the file is deleted and comes back (truncated, replaced, rewritten, partial_timeout)', () => {
+      const l = ledger()
+      writeFileSync(usagePath, pyLine(syncRow()) + pyLine(syncRow({ ts: TS + 1 })))
+      l.refresh(T0, table)
+      truncateSync(usagePath, 10)
+      expect(l.refresh(T0 + 30_000, table).sources[0].reason).toBe('truncated')
+      rmSync(usagePath)
+      expect(l.refresh(T0 + 60_000, table).sources[0]).toMatchObject({ status: 'broken', reason: 'truncated' })
+      writeFileSync(usagePath, pyLine(syncRow()))
+      expect(l.refresh(T0 + 90_000, table).sources[0]).toMatchObject({ status: 'broken', reason: 'truncated', ingested: 0 })
+      expect(entries()).toHaveLength(2)
+    })
+
+    it('resetSource still works on a missing source', () => {
+      const l = ledger()
+      l.refresh(T0, table)
+      expect(l.resetSource('anthropic-batch')).toBe(true)
+      writeFileSync(usagePath, pyLine(syncRow()))
+      expect(l.refresh(T0 + 30_000, table).sources[0]).toMatchObject({ status: 'ok', ingested: 1 })
+    })
   })
 
   it('the partial clock restarts when the cursor moves on', () => {
