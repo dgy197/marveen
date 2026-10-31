@@ -42,6 +42,12 @@ export type CodeExecAction =
   | 'schedules.exec_fields'
   | 'agents.mcp_json'
   | 'agents.import'
+  // Card 24e137ef: privilege widening that outlives a token rotation.
+  | 'agents.security'
+  | 'agents.capabilities'
+  | 'skills.assign'
+  | 'fleet.import'
+  | 'vault.bindings.add'
 
 export const BEARER_CODE_EXEC_ADMIN_OFF = 'bearer_code_exec_admin_off'
 
