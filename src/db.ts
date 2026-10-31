@@ -4848,9 +4848,13 @@ export function createAgentMessage(
   content: string,
   originNote?: string | null,
   traceCtx?: { trace_id: string; span_id: string; parent_span_id: string | null } | null,
-  opts?: { urgent?: boolean; stopAuthorized?: boolean; priority?: 0 | 1 },
+  opts?: { urgent?: boolean; stopAuthorized?: boolean; priority?: 0 | 1; senderAuth?: string | null },
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
+  // Card 0d7e2c04 (N3): how the sender was authenticated. A caller that does not say (every in-process writer) is
+  // 'internal'; POST /api/messages passes its own verdict, or null (MESSAGE_SENDER_AUTH=off) to leave the column empty.
+  // Deliberately NOT part of the returned object: the route spreads that into its response, which must not change.
+  const senderAuth = opts?.senderAuth === undefined ? 'internal' : opts.senderAuth
   // Card 795d1f48 (a): urgent only when a caller asks for it; the callers that may are the in-process writers and the
   // listed device keys of POST /api/messages.
   const urgent = opts?.urgent === true ? 1 : 0
@@ -4861,8 +4865,8 @@ export function createAgentMessage(
   // per-pair budget, decidePriority). An urgent row is above high by its own column; the route stores it 0.
   const priority: 0 | 1 = opts?.priority === 1 ? 1 : 0
   const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized, priority)
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized, priority, sender_auth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized, priority, senderAuth)
   return {
     id: Number(info.lastInsertRowid),
     from_agent: from, to_agent: to, content, status: 'pending',

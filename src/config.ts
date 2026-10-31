@@ -234,6 +234,24 @@ export function parseDeviceKeyIds(raw: string | undefined): Set<number> {
   )
 }
 
+// Card 0d7e2c04 (N3): how POST /api/messages treats the per-agent send key. Phase 1 ships SHADOW only: the route
+// accepts every row exactly as before and merely records how the sender was authenticated (sender_auth) and logs
+// it. 'off' skips the computation (the rollback). Any other value -- unset, a typo, and also 'mark' / 'enforce',
+// which do not exist in this phase -- resolves to 'shadow', never to a blocking mode: a stray .env line must not
+// be able to stop the fleet's messaging. `downgraded` is true for a non-empty value that was not usable, so the
+// route can warn about it (config.ts cannot log).
+export type MessageSenderAuthMode = 'off' | 'shadow'
+export function resolveMessageSenderAuthMode(raw: string | undefined): { mode: MessageSenderAuthMode; downgraded: boolean; requested: string } {
+  const requested = (raw ?? '').trim().toLowerCase()
+  if (requested === 'off') return { mode: 'off', downgraded: false, requested }
+  if (requested === '' || requested === 'shadow') return { mode: 'shadow', downgraded: false, requested }
+  return { mode: 'shadow', downgraded: true, requested: requested.slice(0, 32) }
+}
+const messageSenderAuth = resolveMessageSenderAuthMode(env['MESSAGE_SENDER_AUTH'])
+export const MESSAGE_SENDER_AUTH: MessageSenderAuthMode = messageSenderAuth.mode
+export const MESSAGE_SENDER_AUTH_DOWNGRADED: { requested: string } | undefined =
+  messageSenderAuth.downgraded ? { requested: messageSenderAuth.requested } : undefined
+
 // Pure resolution rule for BRAND_NAME, so the default (brandEnv unset =>
 // botName) is provable without a live .env. brandEnv is the raw env value
 // (undefined / empty when unset). Mirrors the `env['BRAND_NAME'] ?? BOT_NAME`

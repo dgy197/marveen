@@ -17,7 +17,8 @@ import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
 import { OWNER_UI_SENDER } from '../reserved-senders.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent, readAgentPullDelivery } from '../agent-config.js'
-import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, VOICE_CHANNEL_ID_INVALID, VOICE_CHANNEL_DISABLED_BY, DEFAULT_VOICE_CHANNEL_ID, SYSTEM_SENDER_IDS, parseSystemSenderIds, MESSAGE_URGENT_DEVICE_IDS, parseDeviceKeyIds } from '../../config.js'
+import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, VOICE_CHANNEL_ID_INVALID, VOICE_CHANNEL_DISABLED_BY, DEFAULT_VOICE_CHANNEL_ID, SYSTEM_SENDER_IDS, parseSystemSenderIds, MESSAGE_URGENT_DEVICE_IDS, parseDeviceKeyIds, MESSAGE_SENDER_AUTH, MESSAGE_SENDER_AUTH_DOWNGRADED } from '../../config.js'
+import { resolveAgentSendKey, AGENT_SEND_KEY_MAX_LEN } from '../agent-send-keys.js'
 import { isAgentRunning } from '../agent-process.js'
 import { MESSAGE_ABANDON_WINDOW_MS } from '../message-abandon.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
@@ -78,6 +79,82 @@ export const VOICE_MAILBOX_RESULT = 'voice-channel mailbox: no session delivery;
 const SYSTEM_SENDERS = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent)
 // Card 795d1f48 (a): the device keys the install lists for urgent rows (config.ts), frozen the same way.
 const URGENT_DEVICE_KEY_IDS = parseDeviceKeyIds(MESSAGE_URGENT_DEVICE_IDS)
+
+// Card 0d7e2c04 (N3, shadow): MESSAGE_SENDER_AUTH is frozen at load. 'mark' / 'enforce' do not exist in this phase,
+// so they resolve to shadow in config.ts; say so once, naming the requested value (never any key).
+if (MESSAGE_SENDER_AUTH_DOWNGRADED !== undefined) {
+  logger.warn({ requested: MESSAGE_SENDER_AUTH_DOWNGRADED.requested, using: MESSAGE_SENDER_AUTH }, `MESSAGE_SENDER_AUTH=${JSON.stringify(MESSAGE_SENDER_AUTH_DOWNGRADED.requested)} is not a mode of this build (shadow, off); running in ${MESSAGE_SENDER_AUTH}`)
+}
+
+/** What the sender-key check concluded about one POST /api/messages row (stored in agent_messages.sender_auth). */
+export type SenderAuth = 'verified' | 'verified_prev' | 'mismatch' | 'invalid' | 'unsigned' | 'session' | 'device'
+
+const SENDER_KEY_HEADER = 'x-agent-key'
+const senderAuthCounters = new Map<SenderAuth, number>()
+/** Per-process tally of the verdicts since the dashboard started (the shadow-mode meter; `unsigned` is the one to watch). */
+export function getSenderAuthCounters(): Record<string, number> {
+  return Object.fromEntries(senderAuthCounters)
+}
+
+/**
+ * Shadow-mode verdict on how the sender of a POST /api/messages row authenticated. It never decides anything: the
+ * route accepts the row either way. The raw key header is read here and goes nowhere but resolveAgentSendKey, which
+ * hashes it; no log line, return value or error below carries it.
+ *
+ * - owner session / device key keep their own lane label (their identity is already stronger than a send key);
+ * - no X-Agent-Key header: 'unsigned';
+ * - a header that is repeated (Node joins repeats with ", " and the raw list shows each), empty, non-string or longer
+ *   than the key cap: 'invalid', without any hashing or DB lookup;
+ * - otherwise the key is resolved: unknown/expired -> 'invalid'; another agent's key -> 'mismatch'; the sender's own
+ *   -> 'verified' (current) or 'verified_prev' (inside the rotation grace window).
+ */
+export function classifySenderAuth(
+  req: RouteContext['req'],
+  auth: RouteContext['auth'],
+  from: string,
+  to: string,
+): SenderAuth {
+  let verdict: SenderAuth
+  let keyAgent: string | undefined
+  if (auth?.kind === 'session') {
+    verdict = 'session'
+  } else if (auth?.kind === 'device') {
+    verdict = 'device'
+  } else {
+    const headers = req.headers as Record<string, string | string[] | undefined> | undefined
+    const value = headers?.[SENDER_KEY_HEADER]
+    const rawHeaders: unknown = (req as { rawHeaders?: unknown }).rawHeaders
+    const repeated = Array.isArray(rawHeaders)
+      ? rawHeaders.reduce<number>((n, h, i) => (i % 2 === 0 && typeof h === 'string' && h.toLowerCase() === SENDER_KEY_HEADER ? n + 1 : n), 0) > 1
+      : false
+    if (value === undefined && !repeated) {
+      verdict = 'unsigned'
+    } else if (repeated || typeof value !== 'string' || value.length === 0 || value.length > AGENT_SEND_KEY_MAX_LEN) {
+      verdict = 'invalid'
+    } else {
+      try {
+        const resolved = resolveAgentSendKey(value)
+        if (!resolved) {
+          verdict = 'invalid'
+        } else if (resolved.agentId !== from) {
+          verdict = 'mismatch'
+          keyAgent = resolved.agentId
+        } else {
+          verdict = resolved.which === 'prev' ? 'verified_prev' : 'verified'
+        }
+      } catch (err) {
+        // The shadow check must never cost a message. The error text of the key store carries no key material.
+        logger.warn({ err: err instanceof Error ? err.message : 'unknown' }, 'sender-key lookup failed; row recorded as invalid')
+        verdict = 'invalid'
+      }
+    }
+  }
+  senderAuthCounters.set(verdict, (senderAuthCounters.get(verdict) ?? 0) + 1)
+  if (verdict === 'mismatch' || verdict === 'invalid') {
+    logger.warn({ from, to, senderAuth: verdict, keyAgent }, `Shadow sender check: ${verdict} send key on /api/messages POST (accepted, shadow mode)`)
+  }
+  return verdict
+}
 
 /**
  * Card 795d1f48 (a): may this request mark a row urgent? Only a FULL device key whose id the install lists. A device
@@ -461,11 +538,17 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       : rankedSenders().includes(from.trim())
         ? { priority: parsedPriority.level === 'high' ? 1 as const : 0 as const, downgraded: false }
         : decidePriority(parsedPriority.level, from.trim(), storedTo, Math.floor(Date.now() / 1000))
-    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, { urgent: urgent === true, priority: decided.priority })
+    // Card 0d7e2c04 (N3, shadow): record how the sender authenticated. It runs after EVERY guard above, so a
+    // refused request does no key work and keeps its answer; it never refuses, and it is not part of any response.
+    // 'off' skips it (null = the column stays empty, as before the card).
+    const senderAuth = MESSAGE_SENDER_AUTH === 'off' ? null : classifySenderAuth(req, ctx.auth, from.trim(), storedTo)
+    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, { urgent: urgent === true, priority: decided.priority, senderAuth })
     if (isVoiceMailbox) {
       markMessageDone(msg.id, VOICE_MAILBOX_RESULT)
       logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Voice-channel answer stored in the mailbox (no session delivery)')
-      json(res, { ...(getAgentMessage(msg.id) ?? msg), mailbox: true })
+      // sender_auth is stored, not served: the answer keeps the shape it had before the column existed.
+      const { sender_auth: _senderAuth, ...mailboxRow } = getAgentMessage(msg.id) ?? msg
+      json(res, { ...mailboxRow, mailbox: true })
       return true
     }
     // Backpressure, returned WITH the id rather than behind a second call:
