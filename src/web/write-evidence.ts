@@ -32,7 +32,7 @@ export const EVIDENCE_FILE = 'inbound-evidence.jsonl'
 // instruction.
 export const EVIDENCE_WINDOW_MS = 10 * 60 * 1000
 
-export type EvidenceRefusal = 'no-message-id' | 'not-found' | 'text-mismatch' | 'too-old' | 'already-used'
+export type EvidenceRefusal = 'no-message-id' | 'bad-message-id' | 'not-found' | 'text-mismatch' | 'too-old' | 'already-used'
 export type EvidenceVerdict = { ok: true } | { ok: false; reason: EvidenceRefusal }
 
 export interface EvidenceRequest {
@@ -57,6 +57,14 @@ function normalizeText(s: string): string {
     .trim()
 }
 
+// A Telegram message id is a positive integer. Anything else (e.g. the string
+// "null" a caller can send) must never match a log record.
+export function isTelegramMessageId(v: unknown): v is string {
+  return typeof v === 'string' && /^[1-9][0-9]{0,15}$/.test(v)
+}
+
+// A record whose message_id is null or not a positive integer is skipped: String(null)
+// is "null", which would otherwise match a caller that sends that text.
 /** The newest record for (chat, message) in the plugin's log lines, or null. */
 export function findEvidence(lines: string[], chatId: string, messageId: string): EvidenceRecord | null {
   let found: EvidenceRecord | null = null
@@ -64,7 +72,10 @@ export function findEvidence(lines: string[], chatId: string, messageId: string)
     if (!line.includes(messageId)) continue
     let r: Partial<EvidenceRecord>
     try { r = JSON.parse(line) as Partial<EvidenceRecord> } catch { continue }
-    if (String(r.chat_id) !== chatId || String(r.message_id) !== messageId) continue
+    const rid: unknown = r.message_id
+    const ridOk = typeof rid === 'number' ? Number.isSafeInteger(rid) && rid > 0 : isTelegramMessageId(rid)
+    if (!ridOk) continue
+    if (String(r.chat_id) !== chatId || String(rid) !== messageId) continue
     if (typeof r.text !== 'string' || typeof r.at !== 'number') continue
     found = { chat_id: chatId, message_id: messageId, text: r.text, at: r.at }
   }
@@ -86,6 +97,7 @@ export function checkWriteEvidence(
   claim: (chatId: string, messageId: string, now: number) => boolean = claimCommandWriteEvidence,
 ): EvidenceVerdict {
   if (!req.messageId) return { ok: false, reason: 'no-message-id' }
+  if (!isTelegramMessageId(req.messageId)) return { ok: false, reason: 'bad-message-id' }
   const rec = findEvidence(readLines(), req.chatId, req.messageId)
   if (!rec) return { ok: false, reason: 'not-found' }
   if (normalizeText(rec.text) !== normalizeText(req.text)) return { ok: false, reason: 'text-mismatch' }
