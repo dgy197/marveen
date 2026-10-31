@@ -172,6 +172,24 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     check("walk: a non-container input cannot be read: forward key", ee._has_forward_key("forward") is True and ee._has_forward_key(None) is True)
     check("walk: key case-insensitive, any value", ee._has_forward_key({"A": [{"ForwardTo": None}]}) is True)
     check("create_rule: no input argument = name only = draft", ee.mail_tool_action("mcp__gmail__create_rule") == "draft")
+    # card 6151bb4d r2 B3: the five forwarding shapes, in the walk and in the classifier
+    for label, inp in (
+            ("stringified JSON with a forward key", {"body": json.dumps({"forwardTo": "x"})}),
+            ("stringified JSON, key hidden by a unicode escape", {"body": '{"\\u0066orwardTo": 1}'}),
+            ("double-encoded JSON", {"body": json.dumps(json.dumps({"redirectTo": 1}))}),
+            ("Sieve redirect text", {"script": 'require ["copy"]; redirect :copy "x@y.hu";'}),
+            ("actions list with type forward", {"actions": [{"type": "forward", "address": "x@y.hu"}]}),
+            ("autoForward key", {"actions": {"autoForward": "x@y.hu"}}),
+            ("dotted action.forward key", {"action.forward": "x@y.hu"})):
+        check(f"walk: {label} is forwarding", ee._has_forward_key(inp) is True)
+        check(f"create_filter + {label} is a send", ee.mail_tool_action("mcp__gmail__create_filter", inp) == "send")
+    check("walk: label-only filter is clean", ee._has_forward_key({"criteria": {"subject": "invoice"}, "action": {"addLabelIds": ["L1"]}}) is False)
+    check("walk: unparseable JSON-looking string is just a string", ee._has_forward_key({"b": "{not json"}) is False)
+    check("walk: over-long JSON-looking string is forwarding", ee._has_forward_key({"b": "{" + "a" * 100001}) is True)
+    check("walk: parse that blows the stack is forwarding", ee._has_forward_key({"b": "[" * 200000 + "]" * 200000}) is True)
+    check("mail_rule_forward: name only is False", ee.mail_rule_forward("mcp__gmail__create_rule") is False)
+    check("mail_rule_forward: create_label with forwardTo is False (no rule noun)", ee.mail_rule_forward("mcp__gmail__create_label", {"forwardTo": "x"}) is False)
+    check("mail_rule_forward: slack server is no mail", ee.mail_rule_forward("mcp__slack__create_rule", {"forwardTo": "x"}) is False)
     check("the case list holds every G7 class", {c["expected"] for c in CASES} == {"send", "draft", "nonsend"})
 
     # --- 2. the call forms the pinned helper and the golden use (G6) ----------
@@ -228,7 +246,7 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     # still rides the draft path.
     for tool, ti, draft in (("mcp__gmail__create_label", {"name": "Ügyfél — fontos"}, False),
                             ("mcp__gmail-v2__v2_update_label", {"id": "L1", "name": "Ajánlat"}, True),
-                            ("mcp__gmail__create_filter", {"criteria": {"from": "x@y.hu"}, "action": {"addLabelIds": ["L1"]}}, False)):
+                            ("mcp__gmail__create_filter", {"criteria": {"subject": "invoice"}, "action": {"addLabelIds": ["L1"]}}, False)):
         got = ee.mail_tool_action(tool, ti)
         check(f"{tool} is {'on the draft path' if draft else 'not a draft (card 6151bb4d)'}",
               got == ("draft" if draft else None), f"got {got!r}")
@@ -236,6 +254,13 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
         check(f"approval gate L1: {tool} passes", code == 0, f"exit={code} err={err[:160]!r}")
         code, _, err = run(COPY, s1, tool, ti)
         check(f"copy gate: {tool} with no text of ours passes untouched", code == 0, f"exit={code} err={err[:160]!r}")
+
+    # card 6151bb4d r2 B2: a forwarding rule is a send for the approval gate (no approval -> exit 2)
+    for tool in ("mcp__gmail__create_filter", "mcp__ms365__create-rule", "mcp__gmail__set_rule"):
+        code, _, err = run(GATE, s1, tool, {"actions": {"forwardTo": "x@y.hu"}})
+        check(f"approval gate: {tool} with forwarding input needs an approval (exit 2)", code == 2, f"exit={code} err={err[:160]!r}")
+        code, _, err = run(GATE, s1, tool, {"actions": {"markAsRead": True}})
+        check(f"approval gate: {tool} with a clean input passes (exit 0)", code == 0, f"exit={code} err={err[:160]!r}")
 
     # --- 3b. manage_email operations (card 2f835ee4 r5, AC1-AC7) ---------------
     print("manage_email operations")
@@ -415,7 +440,7 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
         src = fh.read()
     # An email_extract.py from before N1b: no classifier, and no branch that calls it.
     src2 = (src.replace("def mail_tool_action(", "def _gone_mail_tool_action(")
-               .replace('elif mail_tool_action(tool_name) == "send":', "elif False:"))
+               .replace('elif mail_tool_action(tool_name, tool_input) == "send":', "elif False:"))
     with open(x_old, "w", encoding="utf-8") as fh:
         fh.write(src2)
     check("old-module copy really lacks mail_tool_action",

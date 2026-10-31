@@ -1610,29 +1610,44 @@ const CHANNEL_PLUGIN_RE = /^mcp__plugin_(?:telegram|discord|slack)[-_]/
 // Applied to what follows "mcp__". A chat reply is the owner's channel, not a
 // letter. Twin: _NON_MAIL_SERVER_RE in scripts/hooks/email_extract.py.
 const NON_MAIL_SERVER_RE = /^(?:slack__(?![\s\S]*mail)|ms365[^_]*__(?![\s\S]*mail)[^\n\r]*(?:chat|channel|activity))/i
-// One invariant for "create" (card 6151bb4d, direction of msg 6348): create is a
-// DRAFT (ledger-checked) by default, whatever follows it (create_draft,
+// One invariant for "create" (card 6151bb4d, direction of msg 6348, r1 B1): create
+// is a DRAFT (ledger-checked) by default, whatever follows it (create_draft,
 // create_reply, create_event, create_appointment, create_rsvp ...). It is not mail
-// only when the LAST word, the head noun of the name, is on a CLOSED non-mail list
-// (create_label, createGoogleDoc, create_contact ...). Anything not on the list,
-// or a list noun that is not the head (create_contact_invite), stays draft:
-// fail-closed, no synonym list of mail words to grow. rule / filter join the list
-// only when the tool INPUT is clean of forward / redirect keys (hasForwardKey).
-// Twin: _CREATE_NONMAIL_NOUNS in scripts/hooks/email_extract.py.
+// only when EVERY word after `create` is on the closed noun list or on the closed
+// modifier list, and at least one is a noun (create_label, createGoogleDoc,
+// create_shared_folder ...). Any other word (reply, forward, message, mail, email,
+// invite, event, to, for, send ...) keeps it a draft: fail-closed, no synonym list
+// of mail words to grow. rule / filter are nouns only when the tool INPUT is clean
+// of forwarding (hasForwardKey); with forwarding input the call is denied outright
+// (mailRuleForward).
+// Twin: _CREATE_NONMAIL_NOUNS / _CREATE_MODIFIERS in scripts/hooks/email_extract.py.
 const MAIL_CREATE_NOUNS = ['draft', 'drafts', 'message', 'messages', 'msg', 'mail', 'email', 'emails']
 const CREATE_NONMAIL_NOUNS = new Set(['label', 'labels', 'folder', 'folders', 'doc', 'docs',
   'document', 'documents', 'googledoc', 'googledocs', 'contact', 'contacts', 'task', 'tasks',
   'note', 'notes', 'tag', 'tags', 'category', 'categories'])
 const CREATE_RULE_NOUNS = new Set(['rule', 'rules', 'filter', 'filters'])
+const CREATE_MODIFIERS = new Set(['google', 'new', 'shared', 'smart', 'custom', 'user', 'personal'])
+// A tool that writes a rule / filter (create_rule, updateFilter, set_inbox_rules,
+// createrule ...): a rule noun plus a write verb, apart or glued.
+const RULE_WRITE_VERBS = new Set(['create', 'update', 'set', 'add', 'save', 'edit', 'modify', 'put',
+  'patch', 'upsert', 'replace', 'new', 'insert', 'import', 'enable', 'apply'])
 
-// Does the tool input carry a forward / redirect-like key anywhere (forwardTo,
-// redirectTo, forwardAsAttachmentTo, forwarding_address ...)? Keys are compared
-// case-insensitively, objects and arrays are walked recursively, the values do not
-// matter. The walk is bounded; running over the bound, or an input that is not an
-// object / array at all, counts as "has one" (fail-closed).
+// Does the tool input carry forwarding anywhere (card 6151bb4d r2, B3)? Forwarding is:
+//   - a KEY containing forward / redirect (forwardTo, autoForward, action.forward,
+//     redirectTo, forwarding_address ...), case-insensitive;
+//   - a STRING VALUE containing forward / redirect (type:"forward", a Sieve
+//     `redirect :copy "x@y"`), case-insensitive, or an address (an "@" with a
+//     character on both sides);
+//   - a string value that parses as JSON is walked too (a stringified rule body,
+//     also escape-hidden keys such as "forward"), double encoding included.
+// Objects and arrays are walked iteratively, bounded: too deep, too many nodes, a
+// string that is too long to parse, or a parse that blows the stack counts as
+// forwarding (fail-closed), and so does an input that is not an object / array.
 // Twin: _has_forward_key in scripts/hooks/email_extract.py.
 const FORWARD_WALK_MAX_DEPTH = 12
 const FORWARD_WALK_MAX_NODES = 5000
+const FORWARD_JSON_MAX_CHARS = 100000
+const FORWARD_JSON_START = /^[ \t\n\r]*[{["]/
 export function hasForwardKey(input) {
   if (typeof input !== 'object' || input === null) return true
   let nodes = 0
@@ -1640,14 +1655,25 @@ export function hasForwardKey(input) {
   while (stack.length) {
     const [v, depth] = stack.pop()
     if (depth > FORWARD_WALK_MAX_DEPTH) return true
+    if (typeof v === 'string') {
+      const low = v.toLowerCase()
+      if (low.includes('forward') || low.includes('redirect') || /[^@]@[^@]/.test(v)) return true
+      if (FORWARD_JSON_START.test(v)) {
+        if (v.length > FORWARD_JSON_MAX_CHARS) return true
+        let parsed
+        try { parsed = JSON.parse(v) } catch (err) { if (err instanceof SyntaxError) continue; return true }
+        if ((typeof parsed === 'object' && parsed !== null) || typeof parsed === 'string') stack.push([parsed, depth + 1])
+      }
+      continue
+    }
     const items = Array.isArray(v) ? v.map((x) => [null, x]) : Object.entries(v)
     for (const [k, x] of items) {
       if (++nodes > FORWARD_WALK_MAX_NODES) return true
       if (k !== null) {
         const key = k.toLowerCase()
-        if (key.startsWith('forward') || key.startsWith('redirect')) return true
+        if (key.includes('forward') || key.includes('redirect')) return true
       }
-      if (typeof x === 'object' && x !== null) stack.push([x, depth + 1])
+      if (typeof x === 'string' || (typeof x === 'object' && x !== null)) stack.push([x, depth + 1])
     }
   }
   return false
@@ -1667,11 +1693,20 @@ function mailVerb(word) {
   return null
 }
 
-// The create verb, with a head noun on the closed list (see above), is no letter.
+// The create verb is no letter only when every word after it is a closed noun or a
+// closed modifier, with at least one noun (see above). rule / filter count as nouns
+// only with a clean input (ruleOk); a glued mail noun (createmessage) is a letter.
 function createNotMail(entry, words, ruleOk) {
-  if (entry.noun || entry.index >= words.length - 1) return false
-  const head = words[words.length - 1]
-  return CREATE_NONMAIL_NOUNS.has(head) || (ruleOk && CREATE_RULE_NOUNS.has(head))
+  if (entry.noun) return false
+  const after = words.slice(entry.index + 1)
+  if (!after.length) return false
+  let nouns = 0
+  for (const w of after) {
+    if (CREATE_NONMAIL_NOUNS.has(w)) nouns++
+    else if (CREATE_RULE_NOUNS.has(w)) { if (!ruleOk) return false; nouns++ }
+    else if (!CREATE_MODIFIERS.has(w)) return false
+  }
+  return nouns > 0
 }
 
 // "new" + a mail noun (new_email, newEmail, new-mail, new_message, new_draft,
@@ -1686,13 +1721,18 @@ function newMail(words) {
     (w.startsWith('new') && MAIL_CREATE_NOUNS.includes(w.slice(3))))
 }
 
-function segmentAction(segment, ruleOk = false) {
+function segmentWords(segment) {
   const s = segment
     .replace(/[^\x00-\x7f]/g, '_')
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
   const words = s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
   while (words.length && /^v[0-9]+$/.test(words[0])) words.shift()
+  return words
+}
+
+function segmentAction(segment, ruleOk = false) {
+  const words = segmentWords(segment)
   const entries = []
   words.forEach((w, index) => {
     const v = mailVerb(w)
@@ -1707,15 +1747,47 @@ function segmentAction(segment, ruleOk = false) {
   return entries.length === 0 && newMail(words) ? 'draft' : null
 }
 
+// Is this action segment a rule / filter WRITE (create_rule, update_filter,
+// set_inbox_rules, createRule, createrule ...)? Twin: _segment_writes_rule.
+function segmentWritesRule(segment) {
+  const words = segmentWords(segment)
+  let noun = false
+  let write = false
+  for (const w of words) {
+    if (CREATE_RULE_NOUNS.has(w)) noun = true
+    if (RULE_WRITE_VERBS.has(w)) write = true
+    for (const n of CREATE_RULE_NOUNS) {
+      if (w.length > n.length && w.endsWith(n) && RULE_WRITE_VERBS.has(w.slice(0, -n.length))) { noun = true; write = true }
+    }
+  }
+  return noun && write
+}
+
+// A rule / filter write whose input forwards (hasForwardKey): a standing rule that
+// sends every matching mail out. It is not a draft the ledger could vouch for: the
+// gate denies it outright (kind mail-rule-forward; card 6151bb4d r2 B2). Needs the
+// input: name only, there is nothing to classify. Pure, never throws.
+// Twin: mail_rule_forward in scripts/hooks/email_extract.py.
+export function mailRuleForward(toolName, toolInput = undefined) {
+  if (toolInput === undefined) return false
+  const name = typeof toolName === 'string' ? toolName : ''
+  const parts = name.split('__')
+  if (parts.length < 3 || parts[0].toLowerCase() !== 'mcp' || CHANNEL_PLUGIN_RE.test(name)) return false
+  if (NON_MAIL_SERVER_RE.test(name.slice(5))) return false
+  return parts.slice(2).some(segmentWritesRule) && hasForwardKey(toolInput)
+}
+
 // 'send', 'draft' or null. Pure, never throws. Name only: create + rule / filter is
 // a draft (fail-closed). With the tool INPUT as the second argument the input-aware
-// layer lowers create_rule / create_filter to null when the input has no
-// forward / redirect key anywhere (hasForwardKey).
+// layer lowers create_rule / create_filter to null when the input carries no
+// forwarding (hasForwardKey), and classifies a rule / filter write that forwards as
+// a send (mailRuleForward).
 export function mailToolAction(toolName, toolInput = undefined) {
   const name = typeof toolName === 'string' ? toolName : ''
   const parts = name.split('__')
   if (parts.length < 3 || parts[0].toLowerCase() !== 'mcp' || CHANNEL_PLUGIN_RE.test(name)) return null
   if (NON_MAIL_SERVER_RE.test(name.slice(5))) return null
+  if (mailRuleForward(name, toolInput)) return 'send'
   const ruleOk = toolInput !== undefined && !hasForwardKey(toolInput)
   const found = new Set(parts.slice(2).map((p) => segmentAction(p, ruleOk)))
   if (found.has('send')) return 'send'
@@ -1786,6 +1858,10 @@ function ledgerLookup() {
 // source, and everything else is the sub-agent governance block.
 export function gateDecision(toolName, toolInput, isVerified = null, cwd = process.cwd()) {
   const name = String(toolName ?? '')
+  // A rule / filter write that forwards (card 6151bb4d r2 B2): a standing rule that
+  // sends mail out is denied outright, before any name branch, whatever the ledger
+  // says about an address in it (mailRuleForward).
+  if (mailRuleForward(name, toolInput)) return { deny: true, kind: 'mail-rule-forward' }
   // Lazy: only build the ledger lookup when a call actually carries addresses,
   // so a read-shaped tool call never pays a file read.
   const verify = isVerified ?? (() => {
@@ -1919,6 +1995,16 @@ export function buildUnverifiedRecipientMsg(addresses) {
     `  node ${LEDGER_CLI} add ${first} --source <forras> --note "<honnan>"\n` +
     `  --source: ${SOURCE_HELP}\n` +
     'Ha nem talalsz forrast, a cim NINCS meg: mondd meg a gazdanak, ne kuldj levelet.'
+  )
+}
+
+// Deny wording for a rule / filter that forwards or redirects mail. No ledger entry
+// helps: the rule would send every matching mail out for good, unseen.
+export function buildRuleForwardMsg() {
+  return (
+    'Tovabbito szabaly / szuro tiltott (mail-rule-forward): a szabaly a beerkezo leveleket ' +
+    'tartosan kifele kuldene. Hozz letre szabalyt tovabbitas / atiranyitas nelkul ' +
+    '(csak cimke, mappa, olvasottnak jeloles), a tovabbitast a gazda allitja be.'
   )
 }
 
@@ -2187,6 +2273,7 @@ if (isInvokedDirectly()) {
     if (kind === 'unverified-recipient') deny(buildUnverifiedRecipientMsg(addresses ?? []))
     if (kind === 'draft-required') deny(buildDraftOnlyMsg(ownerName))
     if (kind === 'wrapper-depth') deny(buildWrapperDepthMsg())
+    if (kind === 'mail-rule-forward') deny(buildRuleForwardMsg())
     // Thread-scoped narrowing: only when the scaffold wired this agent's hook
     // command with the flag (capability-driven, regenerated on every spawn),
     // and only for the direct send_email tool. Bash send routes and

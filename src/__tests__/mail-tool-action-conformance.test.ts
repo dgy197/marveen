@@ -251,16 +251,16 @@ describe('sub-agent hard gate (gateDecision) on every case', () => {
 
   it('a label / filter creation (not a draft since card 6151bb4d) with no recipient is not blocked', () => {
     expect(gateDecision('mcp__gmail__create_label', { name: 'Ugyfel' }, () => false)).toEqual({ deny: false })
-    expect(gateDecision('mcp__gmail__create_filter', { criteria: { from: 'x@y.hu' } }, () => false)).toEqual({ deny: false })
+    expect(gateDecision('mcp__gmail__create_filter', { criteria: { subject: 'invoice' }, action: { addLabelIds: ['L1'] } }, () => false)).toEqual({ deny: false })
     expect(mailToolAction('mcp__gmail__create_label')).toBe(null)
     // rule / filter: name only is a draft (fail-closed), the clean input lowers it to null
     expect(mailToolAction('mcp__gmail__create_filter')).toBe('draft')
-    expect(mailToolAction('mcp__gmail__create_filter', { criteria: { from: 'x@y.hu' } })).toBe(null)
-    // a forward / redirect key anywhere (case-insensitive, nested, any value) keeps it a draft
-    expect(mailToolAction('mcp__gmail__create_filter', { action: { Forward: '' } })).toBe('draft')
-    expect(mailToolAction('mcp__ms365__create-rule', { actions: { redirectTo: [] } })).toBe('draft')
+    expect(mailToolAction('mcp__gmail__create_filter', { criteria: { subject: 'invoice' } })).toBe(null)
+    // forwarding anywhere (case-insensitive key, nested, any value) makes it a send (card 6151bb4d r2)
+    expect(mailToolAction('mcp__gmail__create_filter', { action: { Forward: '' } })).toBe('send')
+    expect(mailToolAction('mcp__ms365__create-rule', { actions: { redirectTo: [] } })).toBe('send')
     expect(gateDecision('mcp__ms365__create-rule', { to: ['nincs@x.hu'], actions: { forwardTo: ['nincs@x.hu'] } },
-      () => false).deny).toBe(true)
+      () => false)).toEqual({ deny: true, kind: 'mail-rule-forward' })
     // the walk is bounded: too deep or too wide is "has a forward key" (fail-closed)
     let deep: Record<string, unknown> = { a: 1 }
     for (let i = 0; i < 40; i++) deep = { n: deep }
@@ -320,7 +320,7 @@ describe('mail-tool fallback narrowing (card 6151bb4d)', () => {
     'mcp__plugin_telegram_telegram__send_message', 'mcp__plugin_telegram_telegram__reply',
   ]
   const nonDraftCreate = [
-    'mcp__gmail__create_filter', 'mcp__gmail__create_label', 'mcp__gmail__create_folder',
+    'mcp__gmail__create_label', 'mcp__gmail__create_folder',
     'mcp__gmail__create_contact', 'mcp__gmail__create_task', 'mcp__gmail__list_new_emails',
     'mcp__gmail__get_new_messages', 'mcp__google-drive__createGoogleDoc', 'mcp__gmail__v2get_draft', 'mcp__gmail__xdelete_draft',
   ]
@@ -357,15 +357,60 @@ describe('mail-tool fallback narrowing (card 6151bb4d)', () => {
     }
   })
 
-  it('create_rule / create_filter with a forward / redirect key anywhere in the input are drafts', () => {
-    for (const ti of [{ forwardTo: ['a@b.hu'] }, { actions: { redirectTo: [{ emailAddress: { address: 'a@b.hu' } }] } },
-      { action: { forward: 'a@b.hu' } }, { actions: { forwardAsAttachmentTo: [] } }]) {
-      for (const t of ['mcp__ms365__create_rule', 'mcp__gmail__create_filter']) {
-        expect(mailToolAction(t, ti), `${t} ${JSON.stringify(ti)}`).toBe('draft')
-        expect(gateDecision(t, { ...ti, to: ['invented@example.com'] }, verified).deny, t).toBe(true)
+  // card 6151bb4d r2 (B2, B3): a rule / filter write whose input forwards is DENIED outright
+  // (kind mail-rule-forward), the five shapes the review found plus the key / value / JSON rules.
+  const forwardShapes: Array<[string, Record<string, unknown>]> = [
+    ['stringified JSON with a forward key', { body: JSON.stringify({ forwardTo: 'x' }) }],
+    ['stringified JSON, key hidden by a unicode escape', { body: '{"\\u0066orwardTo": 1}' }],
+    ['double-encoded JSON', { body: JSON.stringify(JSON.stringify({ redirectTo: 1 })) }],
+    ['Sieve redirect', { script: 'require ["copy"]; redirect :copy "x@y.hu";' }],
+    ['actions list, type forward', { actions: [{ type: 'forward', address: 'x@y.hu' }] }],
+    ['autoForward key', { actions: { autoForward: 'x@y.hu' } }],
+    ['dotted action.forward key', { 'action.forward': 'x@y.hu' }],
+    ['forwardTo', { forwardTo: ['a@b.hu'] }],
+    ['redirectTo nested', { actions: { redirectTo: [{ emailAddress: { address: 'a@b.hu' } }] } }],
+    ['forwardAsAttachmentTo, empty', { actions: { forwardAsAttachmentTo: [] } }],
+    ['an address in a string value', { criteria: { from: 'x@y.hu' }, action: { addLabelIds: ['L1'] } }],
+  ]
+  it('a forwarding rule / filter write is a send and a gate-level DENY, whatever the ledger knows', () => {
+    for (const t of ['mcp__ms365__create_rule', 'mcp__gmail__create_filter', 'mcp__gmail__createRule',
+      'mcp__outlook__update_filter', 'mcp__gmail__set_rule', 'mcp__gmail__create_inbox_rules']) {
+      for (const [label, ti] of forwardShapes) {
+        expect(mailToolAction(t, ti), `${t} ${label}`).toBe('send')
+        expect(gateDecision(t, ti, () => true), `${t} ${label}`).toEqual({ deny: true, kind: 'mail-rule-forward' })
       }
     }
-    expect(mailToolAction('mcp__gmail__create_filter', { action: { addLabelIds: ['L1'] } })).toBe(null)
+  })
+
+  it('a label-only rule / filter and non-write names are not caught by the forwarding rule', () => {
+    const clean = { criteria: { subject: 'invoice' }, action: { addLabelIds: ['L1'] } }
+    for (const t of ['mcp__gmail__create_filter', 'mcp__ms365__create_rule', 'mcp__gmail__createRule', 'mcp__gmail__set_rule']) {
+      expect(mailToolAction(t, clean), t).toBe(null)
+      expect(gateDecision(t, clean, () => false), t).toEqual({ deny: false })
+    }
+    expect(mailToolAction('mcp__gmail__create_filter')).toBe('draft') // name only
+    expect(mailToolAction('mcp__gmail__delete_filter', { forwardTo: 'x' })).toBe(null)
+    expect(mailToolAction('mcp__gmail__get_filter', { forwardTo: 'x' })).toBe(null)
+    expect(mailToolAction('mcp__gmail__create_label', { forwardTo: 'x' })).toBe(null)
+    expect(mailToolAction('mcp__slack__create_rule', { forwardTo: 'x' })).toBe(null)
+    // an input that is not an object cannot be read: forwarding, fail-closed
+    expect(mailToolAction('mcp__gmail__create_rule', 'x')).toBe('send')
+  })
+
+  it('create is a draft unless EVERY word after it is a closed noun or modifier (B1)', () => {
+    for (const n of ['create_reply_to_contact', 'createReplyToContact', 'create_forward_to_contact',
+      'create_message_for_contact', 'create_email_to_contacts', 'create_mail_for_task', 'create_invite_for_task',
+      'create_event_task']) {
+      const t = `mcp__gmail__${n}`
+      expect(mailToolAction(t), t).toBe('draft')
+      expect(mailToolAction(t, input), t).toBe('draft')
+      expect(gateDecision(t, input, verified), t).toEqual({ deny: true, kind: 'unverified-recipient', addresses: ['invented@example.com'] })
+    }
+    for (const n of ['create_label', 'create_folder', 'createGoogleDoc', 'create_shared_folder', 'create_contact', 'create_task']) {
+      const t = `mcp__gmail__${n}`
+      expect(mailToolAction(t, input), t).toBe(null)
+      expect(gateDecision(t, input, verified), t).toEqual({ deny: false })
+    }
   })
 
   it('real mail sends and drafts still close', () => {

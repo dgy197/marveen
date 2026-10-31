@@ -175,7 +175,7 @@ WINDOW_S, _WINDOW_ERR = _window_from_env()
 # one of these words, so this is a superset of it, and a read-only call never
 # needs the module (classify_tool below).
 _MAYBE_MAIL_TOOL = re.compile(
-    r"send|reply|forward|fwd|draft|manage_email|update[-_]mail[-_]message|update[-_]shared[-_]mailbox[-_]message",
+    r"send|reply|forward|fwd|draft|rule|filter|manage_email|update[-_]mail[-_]message|update[-_]shared[-_]mailbox[-_]message",
     re.I)
 
 # Compat shim, NOT used by main() any more (the scope test above is the shared
@@ -1649,7 +1649,7 @@ def main():
             # a failure of this extra reading is a send (fail-closed).
             try:
                 from email_extract import mail_tool_action
-                if mail_tool_action(tool) == "send":
+                if mail_tool_action(tool, tool_input) == "send":
                     kind = "send_email"
             except Exception:  # noqa: BLE001 -- cannot classify = send
                 kind = "send_email"

@@ -2618,7 +2618,7 @@ def main():
                  or classify_mail_tool(tool) is not None
                  or re.search(r"(^|__)manage_email$", tool, re.I)
                  or tool == "Bash"
-                 or mail_tool_action(tool))
+                 or mail_tool_action(tool, tool_input))
         if not gated:
             sys.exit(0)  # not a send: the net must never widen the gate
         _gate_log(f"outgoing-copy-gate: a tool_input nem szotar, hanem {shape} "
