@@ -20,9 +20,11 @@ Entry point: scripts/marveen-api.sh (the allow-listed command), which runs this 
 Exit codes: 0 = HTTP 2xx; 1 = the server answered with a non-2xx status (the body is printed to
 stderr); 2 = usage error or no token, nothing was sent; 3 = the dashboard could not be reached or did not answer.
 """
+import errno
 import json
 import os
 import re
+import stat
 import sys
 import urllib.error
 import urllib.parse
@@ -135,22 +137,67 @@ def read_token():
 KEY_LINE_RE = re.compile(r'^X-Agent-Key: ([A-Za-z0-9_.~-]{1,128})$')
 
 
+KEY_FILE_MAX_BYTES = 256
+KEY_FILE_WARN_PREFIX = 'WARN: send key file refused'
+
+
+def _key_file_warn(reason):
+    # Names the failed check only: never the path, never any file content.
+    print(f'{KEY_FILE_WARN_PREFIX} ({reason}); sending unsigned.', file=sys.stderr)
+
+
+def load_key_file(path):
+    """The raw text of the send key file, or None (sent unsigned, as before) when the file is unusable.
+
+    Card ed5fc02c: the file is opened O_NOFOLLOW and judged on the OPEN descriptor (fstat), so the
+    check and the read see the same inode. It must be a regular file owned by the current uid, mode
+    exactly 0600 (no group/other bit, nothing extra), at most 256 bytes. Absent or unreadable stays
+    quiet (today's behaviour); a file that exists but fails a check prints a one-line warning that
+    carries no path and no content. MARVEEN_AGENT_KEY_EXPECT_UID is a TEST SEAM for the foreign-uid
+    case (a test cannot chown without root); it only changes which uid is expected.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            _key_file_warn('symlink')
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            _key_file_warn('not a regular file')
+            return None
+        expect = os.environ.get('MARVEEN_AGENT_KEY_EXPECT_UID')
+        expect_uid = int(expect) if expect and expect.isdigit() else os.geteuid()
+        if st.st_uid != expect_uid:
+            _key_file_warn('owner')
+            return None
+        if (st.st_mode & 0o7777) != 0o600:
+            _key_file_warn('mode is not 0600')
+            return None
+        if st.st_size > KEY_FILE_MAX_BYTES:
+            _key_file_warn('too large')
+            return None
+        with os.fdopen(fd, 'rb', closefd=False) as f:
+            return f.read(KEY_FILE_MAX_BYTES + 1).decode('ascii')
+    except (OSError, UnicodeDecodeError):
+        return None
+    finally:
+        os.close(fd)
+
+
 def read_agent_key():
     """This agent's send key (card 0d7e2c04), or None to send unsigned as before.
 
     The path comes ONLY from MARVEEN_AGENT_KEY_FILE, never from an argument or an agent name, so a
-    sender cannot pick another agent's file. The file must be a regular file holding exactly one
+    sender cannot pick another agent's file. The file must pass load_key_file and hold exactly one
     "X-Agent-Key: <key>" line; unset, missing, unreadable or malformed all give None, never an
     error. The key is sent as a request header by urllib: it is in no argv."""
     path = os.environ.get('MARVEEN_AGENT_KEY_FILE')
     if not path:
         return None
-    try:
-        if not os.path.isfile(path):
-            return None
-        with open(path, 'rb') as f:
-            raw = f.read(300).decode('ascii')
-    except (OSError, UnicodeDecodeError):
+    raw = load_key_file(path)
+    if raw is None:
         return None
     if raw.endswith('\n'):
         raw = raw[:-1]
@@ -318,6 +365,13 @@ def main(argv):
     if not argv or argv[0] in ('-h', '--help'):
         print(USAGE)
         return 0 if argv else 2
+    if argv[0] == '--read-key-line':
+        # agent-msg.sh reads its key file through the same checks (card ed5fc02c); stdout is the raw
+        # file text, a refusal prints nothing there and one warning line on stderr.
+        raw = load_key_file(os.environ.get('MARVEEN_AGENT_KEY_FILE') or '')
+        if raw is not None:
+            sys.stdout.write(raw)
+        return 0
     refused = check_env()
     if refused:
         print(f'FAIL: {refused}', file=sys.stderr)

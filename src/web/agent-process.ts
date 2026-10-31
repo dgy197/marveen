@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, openSync, closeSync, fstatSync, fchmodSync, writeSync, constants as fsConstants } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
-import { join } from 'node:path'
+import { join, dirname, relative, isAbsolute, sep } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { AGENT_LOCAL_BASE_URL } from '../config.js'
@@ -351,12 +351,27 @@ export function agentKeyFilePath(agentId: string, dir: string = AGENT_KEYS_DIR):
 }
 
 /**
+ * TEST SEAM (card ed5fc02c). Production leaves it empty. `uid` replaces the expected owner (a test cannot chown to a
+ * foreign uid without root); `beforeRename` / `afterRename` run inside writeKeyFileSafely so a test can swap the keys
+ * dir exactly in the window Node cannot close (it has no openat).
+ */
+export const agentKeyFsSeam: { uid?: () => number; beforeRename?: () => void; afterRename?: () => void } = {}
+
+function currentUid(): number | undefined {
+  if (agentKeyFsSeam.uid) return agentKeyFsSeam.uid()
+  return typeof process.getuid === 'function' ? process.getuid() : undefined
+}
+
+type KeysDirHandle = { fd: number; dev: number; ino: number }
+
+/**
  * Residual Q6 hardening (card 0d7e2c04 r1): the keys dir must be a REAL directory (not a symlink), owned by this uid,
  * mode 0700. Checked with lstat on the path and fstat on an O_NOFOLLOW|O_DIRECTORY fd, which is also the handle the
  * 0700 tightening goes through (a pre-existing looser dir owned by us is tightened, as before). Throws on any mismatch;
- * the shadow-phase callers treat a throw as "start unsigned". With create=false an absent dir returns false.
+ * the shadow-phase callers treat a throw as "start unsigned". With create=false an absent dir returns null.
+ * The returned fd stays OPEN (card ed5fc02c): the writer re-checks the path against it after the rename. The caller closes it.
  */
-function verifyKeysDir(dir: string, create: boolean): boolean {
+function openKeysDir(dir: string, create: boolean): KeysDirHandle | null {
   let st: ReturnType<typeof lstatSync> | null = null
   try {
     st = lstatSync(dir)
@@ -364,7 +379,7 @@ function verifyKeysDir(dir: string, create: boolean): boolean {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
   }
   if (st === null) {
-    if (!create) return false
+    if (!create) return null
     mkdirSync(dir, { recursive: true, mode: AGENT_KEYS_DIR_MODE })
   } else if (st.isSymbolicLink() || !st.isDirectory()) {
     throw new Error('agent key dir is a symlink or not a directory')
@@ -373,50 +388,139 @@ function verifyKeysDir(dir: string, create: boolean): boolean {
   try {
     const f = fstatSync(fd)
     if (!f.isDirectory()) throw new Error('agent key dir is not a directory')
-    if (typeof process.getuid === 'function' && f.uid !== process.getuid()) throw new Error('agent key dir is not owned by the current user')
+    const uid = currentUid()
+    if (uid !== undefined && f.uid !== uid) throw new Error('agent key dir is not owned by the current user')
     fchmodSync(fd, AGENT_KEYS_DIR_MODE) // mkdir's mode only applies on creation: tighten a pre-existing looser dir
     if ((fstatSync(fd).mode & 0o777) !== AGENT_KEYS_DIR_MODE) throw new Error('agent key dir mode is not 0700')
-  } finally {
+    return { fd, dev: f.dev, ino: f.ino }
+  } catch (err) {
     closeSync(fd)
+    throw err
   }
+}
+
+function verifyKeysDir(dir: string, create: boolean): boolean {
+  const h = openKeysDir(dir, create)
+  if (h === null) return false
+  closeSync(h.fd)
   return true
 }
 
-/** Write a key file inside a verified dir: O_EXCL|O_NOFOLLOW temp (0600), then rename. A symlink or non-file at the target refuses. */
-function writeKeyFileSafely(path: string, dir: string, data: string): void {
+/**
+ * Residual Q3b (card ed5fc02c): every component from the install root down to the keys dir's parent (store/) must be a
+ * real directory (lstat, no symlink), owned by this uid, and not group/other-writable. The keys dir itself is judged by
+ * openKeysDir. With allowMissing a not-yet-existing component stops the walk (mkdir will create it; the strict second
+ * pass after creation then covers it).
+ */
+function verifyKeyParents(dir: string, root: string, allowMissing: boolean): void {
+  const rel = relative(root, dirname(dir))
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error('agent key dir is outside the install root')
+  const parts = rel === '' ? [] : rel.split(sep)
+  const uid = currentUid()
+  let cur = root
+  for (let i = 0; i <= parts.length; i++) {
+    if (i > 0) cur = join(cur, parts[i - 1])
+    let st: ReturnType<typeof lstatSync>
+    try {
+      st = lstatSync(cur)
+    } catch (err) {
+      if (allowMissing && (err as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw err
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) throw new Error('agent key parent is a symlink or not a directory')
+    if (uid !== undefined && st.uid !== uid) throw new Error('agent key parent is not owned by the current user')
+    if ((st.mode & 0o022) !== 0) throw new Error('agent key parent is group/other-writable')
+  }
+}
+
+/**
+ * Write a key file inside a verified dir: O_EXCL|O_NOFOLLOW temp (0600), then rename. A symlink or non-file at the target refuses.
+ * Residual Q3a (card ed5fc02c): Node has no openat, so the dir PATH is re-checked against the held dir fd before and after the
+ * rename (same dev+ino, still not a symlink, uid, 0700), and the final file is opened O_NOFOLLOW and must be a regular file,
+ * nlink 1, our uid, 0600, on the dir's device and the very inode we wrote. Any mismatch: unlink the new file by path only if
+ * dev/ino still match what we wrote, then throw (the caller revokes the hash).
+ */
+function writeKeyFileSafely(path: string, dir: string, data: string, h: KeysDirHandle): void {
   try {
     const t = lstatSync(path)
     if (t.isSymbolicLink() || !t.isFile()) throw new Error('agent key file is a symlink or not a regular file')
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
   }
+  const uid = currentUid()
+  const dirStillOurs = (): void => {
+    const ls = lstatSync(dir)
+    const fs = fstatSync(h.fd)
+    if (ls.isSymbolicLink() || !ls.isDirectory()) throw new Error('agent key dir changed during write (symlink)')
+    if (ls.dev !== fs.dev || ls.ino !== fs.ino || fs.dev !== h.dev || fs.ino !== h.ino) throw new Error('agent key dir changed during write (swapped)')
+    if (uid !== undefined && (ls.uid !== uid || fs.uid !== uid)) throw new Error('agent key dir changed during write (owner)')
+    if ((ls.mode & 0o777) !== AGENT_KEYS_DIR_MODE || (fs.mode & 0o777) !== AGENT_KEYS_DIR_MODE) throw new Error('agent key dir changed during write (mode)')
+  }
   const tmp = join(dir, `.tmp.${process.pid}.${Date.now()}.${randomBytes(6).toString('hex')}`)
   const fd = openSync(tmp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, AGENT_KEY_FILE_MODE)
+  let ours: { dev: number; ino: number }
   try {
-    try {
-      fchmodSync(fd, AGENT_KEY_FILE_MODE) // exact mode regardless of the umask
-      writeSync(fd, data)
-    } finally {
-      closeSync(fd)
-    }
-    renameSync(tmp, path)
+    fchmodSync(fd, AGENT_KEY_FILE_MODE) // exact mode regardless of the umask
+    writeSync(fd, data)
+    const w = fstatSync(fd)
+    ours = { dev: w.dev, ino: w.ino }
   } catch (err) {
+    closeSync(fd)
     try { unlinkSync(tmp) } catch { /* already gone */ }
+    throw err
+  }
+  closeSync(fd)
+  const unlinkIfOurs = (p: string): void => {
+    try {
+      const l = lstatSync(p)
+      if (l.dev === ours.dev && l.ino === ours.ino) unlinkSync(p)
+    } catch { /* gone, or not ours: leave it */ }
+  }
+  let renamed = false
+  try {
+    agentKeyFsSeam.beforeRename?.()
+    dirStillOurs()
+    renameSync(tmp, path)
+    renamed = true
+    agentKeyFsSeam.afterRename?.()
+    dirStillOurs()
+    const kfd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    try {
+      const k = fstatSync(kfd)
+      if (!k.isFile()) throw new Error('agent key file is not a regular file after write')
+      if (k.nlink !== 1) throw new Error('agent key file has extra hard links')
+      if (uid !== undefined && k.uid !== uid) throw new Error('agent key file owner mismatch')
+      if ((k.mode & 0o777) !== AGENT_KEY_FILE_MODE) throw new Error('agent key file mode is not 0600')
+      if (k.dev !== h.dev) throw new Error('agent key file is on a different device than its dir')
+      if (k.dev !== ours.dev || k.ino !== ours.ino) throw new Error('agent key file is not the file that was written')
+    } finally {
+      closeSync(kfd)
+    }
+  } catch (err) {
+    unlinkIfOurs(renamed ? path : tmp)
     throw err
   }
 }
 
 /** Mint a fresh key for the agent and write it atomically (0600, dir 0700). Returns the file PATH only. */
-export function provisionAgentSendKey(agentId: string, dir: string = AGENT_KEYS_DIR): string {
+export function provisionAgentSendKey(agentId: string, dir: string = AGENT_KEYS_DIR, root?: string): string {
   const path = agentKeyFilePath(agentId, dir) // validates before anything is touched
-  verifyKeysDir(dir, true) // refuses a symlinked / foreign dir BEFORE any key is minted or written
-  const raw = mintAgentSendKey(agentId)
+  const base = root ?? (dir === AGENT_KEYS_DIR ? PROJECT_ROOT : dirname(dir))
+  verifyKeyParents(dir, base, true) // refuses a symlinked / loose parent chain BEFORE anything is created
+  const h = openKeysDir(dir, true) // refuses a symlinked / foreign dir BEFORE any key is minted or written
+  if (h === null) throw new Error('agent key dir missing')
   try {
-    writeKeyFileSafely(path, dir, `X-Agent-Key: ${raw}\n`)
-  } catch (err) {
-    // No file means nobody holds this key: do not leave a live hash behind.
-    try { revokeAgentSendKey(agentId) } catch { /* best-effort */ }
-    throw err
+    verifyKeyParents(dir, base, false) // strict pass: the walk now also covers anything mkdir just created
+    const raw = mintAgentSendKey(agentId)
+    try {
+      writeKeyFileSafely(path, dir, `X-Agent-Key: ${raw}\n`, h)
+    } catch (err) {
+      // No file means nobody holds this key: do not leave a live hash behind.
+      try { revokeAgentSendKey(agentId) } catch { /* best-effort */ }
+      throw err
+    }
+  } finally {
+    closeSync(h.fd)
   }
   return path
 }

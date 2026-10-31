@@ -147,8 +147,12 @@ fi
 # directory, several lines, other headers) sends unsigned, as before. The validated line is fed to
 # curl on stdin below, so the key is in no argv and a header smuggled into the file never goes out.
 KEY_LINE=""; KEY_VAL=""
-if [ -n "${MARVEEN_AGENT_KEY_FILE:-}" ] && [ -f "$MARVEEN_AGENT_KEY_FILE" ] && [ -r "$MARVEEN_AGENT_KEY_FILE" ]; then
-  KEY_RAW="$(head -c 300 "$MARVEEN_AGENT_KEY_FILE" 2>/dev/null || true)"
+KEYLIB="$BASE/scripts/lib/marveen_api.py"
+if [ -n "${MARVEEN_AGENT_KEY_FILE:-}" ] && [ -r "$KEYLIB" ] && command -v python3 >/dev/null 2>&1; then
+  # The file is vetted on its open descriptor by marveen_api.py (card ed5fc02c): no symlink, regular
+  # file, our uid, mode exactly 0600, at most 256 bytes. A refusal prints one warning (no path, no
+  # content) on stderr and nothing on stdout, so the send goes out unsigned.
+  KEY_RAW="$(python3 "$KEYLIB" --read-key-line || true)"
   KEY_RE='^X-Agent-Key: ([A-Za-z0-9_.~-]{1,128})$'
   case "$KEY_RAW" in
     *$'\n'*|*$'\r'*) : ;;
