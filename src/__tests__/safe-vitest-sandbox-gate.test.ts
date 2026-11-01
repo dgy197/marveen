@@ -18,6 +18,8 @@ function verdict(over: Partial<Parameters<typeof sandboxGateVerdict>[0]> = {}) {
     tmpdir: RUN_TMP,
     probeDir: homedir(),
     tryWrite: () => { throw eperm() },
+    uid: 501,
+    inspectDir: (d: string) => (d === RUN_TMP ? { realpath: RUN_TMP, uid: 501 } : null),
     ...over,
   })
 }
@@ -47,9 +49,18 @@ describe('9b4d8a33: vitest runs only inside the safe-vitest sandbox', () => {
     expect(verdict({ tryWrite: enoent }).ok).toBe(false)
   })
 
-  it('accepts EACCES as a refused write too', () => {
+  it('R1 (review B1): EACCES is NOT a sandbox refusal (plain unix permissions give it too); only EPERM is', () => {
     const eacces = () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }) }
-    expect(verdict({ tryWrite: eacces })).toEqual({ ok: true })
+    expect(verdict({ tryWrite: eacces }).ok).toBe(false)
+    const erofs = () => { throw Object.assign(new Error('EROFS'), { code: 'EROFS' }) }
+    expect(verdict({ tryWrite: erofs }).ok).toBe(false)
+  })
+
+  it('R1 (review B2): the TMPDIR run dir must exist, resolve to itself and belong to this uid', () => {
+    expect(verdict({ inspectDir: () => null }).ok).toBe(false) // missing (a leftover exported TMPDIR)
+    expect(verdict({ inspectDir: () => ({ realpath: '/private/var/folders/zz/yy/T/safe-vitest.Other123', uid: 501 }) }).ok).toBe(false) // symlink elsewhere
+    expect(verdict({ inspectDir: () => ({ realpath: RUN_TMP, uid: 0 }) }).ok).toBe(false) // someone else's dir
+    expect(verdict({ tmpdir: RUN_TMP + '/', inspectDir: (d: string) => (d === RUN_TMP + '/' ? { realpath: RUN_TMP, uid: 501 } : null) })).toEqual({ ok: true }) // trailing slash
   })
 
   it('refuses when the probe dir lies inside the checkout or the run dir (the sandbox allows those writes)', () => {
@@ -88,5 +99,8 @@ describe('9b4d8a33: vitest runs only inside the safe-vitest sandbox', () => {
 })
 
 function baseInput() {
-  return { platform: 'darwin' as const, checkoutRoot: ROOT, tmpdir: RUN_TMP, probeDir: homedir(), tryWrite: () => { throw eperm() } }
+  return {
+    platform: 'darwin' as const, checkoutRoot: ROOT, tmpdir: RUN_TMP, probeDir: homedir(), tryWrite: () => { throw eperm() },
+    uid: 501, inspectDir: (d: string) => (d === RUN_TMP ? { realpath: RUN_TMP, uid: 501 } : null),
+  }
 }
