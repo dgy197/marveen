@@ -35,7 +35,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
-import { joinShellLines } from './shell-line-join.mjs'
+import { joinShellLines, shellContext, CTX_CLASS } from './shell-line-join.mjs'
 
 // The allowlist this install's egress-gate.mjs reads (scripts/ -> repo root -> store/).
 const DEFAULT_ALLOWLIST_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'store', 'egress-allowlist.json')
@@ -272,7 +272,11 @@ export function fileToolTargetsAllowlist(toolInput, allowlistPath = DEFAULT_ALLO
 //   - Not quote-aware: a separator INSIDE quotes (e.g. a commit message
 //     `git commit -m "fix; crontab -r"`) splits and could false-deny. Rare
 //     enough (the quoted ; must be immediately followed by a blocked binary at a
-//     segment start) that a full shell-tokenizer is not warranted here.
+//     segment start) that a full shell-tokenizer is not warranted here. The
+//     opposite error is covered too (card 0bb35172): a quoted newline or `;`
+//     can also cut a dangerous pair in two (`tmux 'a<NL>' send-keys`), so the
+//     gate additionally runs maskedSegments, which cuts only where the shell
+//     does, on top of this naive list.
 //   - A $(...) or backtick substitution that assigns a scheduler result
 //     (`X=$(crontab -)`, `X=`crontab -``) is caught by SCHEDULER_RX's boundary
 //     anchor, which now includes both `(` and the backtick.
@@ -364,82 +368,158 @@ function dquoteEnd(src, from) {
   return -1
 }
 
-export function maskInertLiterals(command, heredocs, lenient = false, diagnostic = {}) {
+// maskInertLiterals reads quotes, comments and heredocs from shellContext (shell-line-join.mjs): the ONE lexer
+// model of the gates (card 0bb35172). Nothing here searches for a heredoc opener or a quote with a pattern of its
+// own, so an opener inside a comment or a quote opens nothing (finding 3660cf43 B3).
+//
+// null stays the answer for what the scanner always gave up on: a quote or a heredoc the text never closes, a
+// double quote with a substitution (strict mode), an unquoted heredoc body with one (strict mode), and `$$'`.
+// Any OTHER unsure reading (`case` inside $( ), a continuation inside backticks, an unclosed backtick) still gets a
+// mask, as before: the egress parser calls this on arbitrary text and reads null as "cannot parse" (fail-open for a
+// command without curl/wget), so a new null here would be a new hole there.
+const MASK_HARD_REASONS = new Set([
+  'unterminated single quote',
+  "unterminated $'...'",
+  'unterminated double quote',
+  'unterminated heredoc',
+  'unterminated quote in a heredoc delimiter',
+])
+
+// Did the lexer leave a quote or a heredoc body open? Read off the structure, not only off `reason`: `reason` keeps
+// the FIRST cause, and a soft one (a `case` in $( )) would hide a later hard one. Only called when exact is false.
+function hasOpenLiteral(ctx) {
+  const { text, cls, quotes, heredocs } = ctx
+  const n = text.length
+  for (const h of heredocs) if (h.bodyEnd === h.termEnd) return true
+  // a "..." the text never closes is not in `quotes`: its characters are DQ-class outside every recorded one
+  const covered = new Int32Array(n + 1)
+  for (const q of quotes) {
+    if (q.kind === 'sq') {
+      if (q.end === n && (q.end - q.start < 2 || text[q.end - 1] !== "'")) return true
+    } else if (q.kind === 'ansi') {
+      if (q.end === n) {
+        let k = q.start + 2
+        while (k < n && text[k] !== "'") k += text[k] === '\\' ? 2 : 1
+        if (k >= n) return true
+      }
+    } else {
+      covered[q.start]++
+      covered[q.end]--
+    }
+  }
+  let depth = 0
+  for (let k = 0; k < n; k++) {
+    depth += covered[k]
+    if (depth === 0 && cls[k] === CTX_CLASS.DQ) return true
+  }
+  return false
+}
+
+// true when the character at k is escaped by an odd run of backslashes before it
+function escapedAt(text, k) {
+  let run = 0
+  while (k - run - 1 >= 0 && text[k - run - 1] === '\\') run++
+  return run % 2 === 1
+}
+
+// options.keepRunBodies (default false, the egress parser relies on it): leave the body of a heredoc visible when
+// its owner EXECUTES it (bash, sh, python, ssh ..., the same heredocOwnerRunsBody rule the heredoc stripper uses).
+export function maskInertLiterals(command, heredocs, lenient = false, diagnostic = {}, options = {}) {
   diagnostic.reason = null
-  // The shared shell join (odd backslash run before LF only, quote/heredoc/comment aware). It is idempotent,
-  // so a caller that already joined (shellSegments, quotedWords) gets the same text back and the heredoc
+  // The shared shell join and context (odd backslash run before LF only, quote/heredoc/comment aware). It is
+  // idempotent, so a caller that already joined (shellSegments, quotedWords) gets the same text back and the heredoc
   // coordinates it collects stay valid for that caller.
-  const src = joinShellLines(String(command ?? ''))
-  let cur = ''
-  let i = 0
+  const ctx = shellContext(String(command ?? ''))
+  const { text, cls, quotes, exact } = ctx
 
-  // Inert regions collapse to spaces: the text is gone, and with it every
-  // separator inside it -- which is precisely what prose was faking.
-  const blank = (s) => ' '.repeat(s.length)
-
-  while (i < src.length) {
-    const c = src[i]
-
-    // backslash escape outside quotes: consumes the next character
-    if (c === '\\' && i + 1 < src.length) { cur += src.slice(i, i + 2); i += 2; continue }
-
-    // heredoc: <<TAG / <<-TAG / <<'TAG' / <<"TAG"
-    const here = /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/.exec(src.slice(i))
-    if (here) {
-      const tag = here[1] ?? here[2] ?? here[3]
-      const quotedTag = here[1] != null || here[2] != null
-      const opStart = i
-      cur += here[0]
-      i += here[0].length
-      // the body starts after the rest of THIS line
-      const nl = src.indexOf('\n', i)
-      if (nl === -1) return null // heredoc announced but no body -> cannot resolve
-      cur += src.slice(i, nl + 1)
-      i = nl + 1
-      // find the terminator line (leading tabs allowed for <<-)
-      const endRx = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm')
-      const rel = endRx.exec(src.slice(i))
-      if (!rel) return null // unterminated heredoc
-      const body = src.slice(i, i + rel.index)
-      if (!quotedTag && !lenient && /\$\(|`/.test(body)) return null // unquoted tag expands the body
-      cur += blank(body) + rel[0]
-      if (Array.isArray(heredocs)) heredocs.push({ opStart, bodyStart: i, bodyEnd: i + rel.index, end: i + rel.index + rel[0].length, quotedTag })
-      i += rel.index + rel[0].length
-      continue
-    }
-
-    if (c === "'") { // literal until the next ' -- a backslash is NOT special here
-      const end = src.indexOf("'", i + 1)
-      if (end === -1) return null
-      cur += blank(src.slice(i, end + 1)); i = end + 1; continue
-    }
-
-    // Shell-dependent quoting cannot safely preserve literals or heredoc boundaries.
-    if (src.startsWith("$$'", i)) {
+  // Shell-dependent quoting cannot safely preserve literals or heredoc boundaries (a `$$'` in code position).
+  for (let k = text.indexOf("$$'"); k !== -1; k = text.indexOf("$$'", k + 1)) {
+    if ((cls[k] === CTX_CLASS.CODE || cls[k] === CTX_CLASS.BQ) && !escapedAt(text, k)) {
       diagnostic.reason = 'ambiguous-dollar-quote'
       return null
     }
-
-    if (c === '$' && src[i + 1] === "'") { // ANSI-C: \' does escape
-      let j = i + 2
-      while (j < src.length && src[j] !== "'") { j += src[j] === '\\' ? 2 : 1 }
-      if (j >= src.length) return null
-      cur += blank(src.slice(i, j + 1)); i = j + 1; continue
-    }
-
-    if (c === '"') {
-      let j = i + 1
-      if (lenient) { j = dquoteEnd(src, i + 1); if (j === -1) return null } // nested $( ... ) understood
-      else while (j < src.length && src[j] !== '"') { j += src[j] === '\\' ? 2 : 1 }
-      if (j >= src.length) return null
-      const inner = src.slice(i + 1, j)
-      if (!lenient && /\$\(|`/.test(inner)) return null // may run a command -> not inert
-      cur += blank(src.slice(i, j + 1)); i = j + 1; continue
-    }
-
-    cur += c; i++
   }
-  return cur
+  if (!exact && (MASK_HARD_REASONS.has(ctx.reason) || hasOpenLiteral(ctx))) return null
+
+  const keepRunBodies = options?.keepRunBodies === true
+  const chars = text.split('')
+  const blank = (from, to) => {
+    for (let k = from; k < to; k++) chars[k] = ' '
+  }
+  // Inert regions collapse to spaces: the text is gone, and with it every separator inside it -- which is
+  // precisely what prose was faking.
+  for (const q of quotes) {
+    if (q.kind === 'dq' && q.subst && !lenient) return null // may run a command -> not inert
+    blank(q.start, q.end)
+  }
+  for (const h of ctx.heredocs) {
+    if (!h.quoted && h.subst && !lenient) return null // unquoted tag expands the body
+    const runsBody = keepRunBodies && heredocOwnerRunsBody(text.slice(0, h.opStart))
+    if (!runsBody) blank(h.bodyStart, h.bodyEnd)
+    if (Array.isArray(heredocs)) {
+      heredocs.push({
+        opStart: h.opStart,
+        bodyStart: h.bodyStart,
+        bodyEnd: h.bodyEnd,
+        end: text[h.termEnd - 1] === '\n' ? h.termEnd - 1 : h.termEnd, // the terminator line without its LF
+        quotedTag: h.quoted,
+        runsBody, // true: kept visible (keepRunBodies and its owner executes it)
+      })
+    }
+  }
+  return chars.join('')
+}
+
+// The segments the anchored scheduler check scans, on a mask made with keepRunBodies (the `heredocs` array it filled
+// says which bodies it left visible). A body that an interpreter executes is code, so every line of it is checked --
+// but it is code of ANY language: in python or node `;` `|` `&` are not shell separators (`t = "a | launchctl | b"` is
+// a string, and the python heredoc that carries a message must keep passing), so inside such a body ONLY a newline
+// cuts. The anchored pattern has its own boundary for a real `echo job | crontab -` on one line.
+function anchoredSegments(masked, heredocs) {
+  const visible = heredocs.filter((h) => h.runsBody)
+  if (!visible.length) return splitSegments(masked)
+  const segs = []
+  let start = 0
+  for (const m of masked.matchAll(/&&|\|\||[;&|]|\r?\n/g)) {
+    const newline = m[0].includes('\n')
+    if (!newline && visible.some((h) => m.index >= h.bodyStart && m.index < h.bodyEnd)) continue
+    segs.push(masked.slice(start, m.index).trim())
+    start = m.index + m[0].length
+  }
+  segs.push(masked.slice(start).trim())
+  return segs
+}
+
+// The segments of the text the way the SHELL cuts it, from the same context map: every character of a literal
+// (single quote, $'...', double quote, heredoc body) becomes a space -- a quoted newline too -- and a separator
+// (; & | or a newline, && and || as one) cuts only where it is CODE, a backtick run or a heredoc line. So a
+// separator inside quotes does not split the dangerous pair in two (finding 3660cf43 B4), and the literal text
+// is simply not in any segment (a trigger word that only sits in a message does not count).
+//
+// This pass only ADDS to splitSegments: the gate runs its checks on both lists. The naive list stays because it
+// is the one that sees INSIDE a literal (a `subprocess.run(['tmux','send-keys',..])` in a heredoc body, a kanban
+// SQL in a heredoc) -- and because it also cuts a quoted newline, which only ever errs towards denying.
+export function maskedSegments(command) {
+  const { text, cls } = shellContext(String(command ?? ''))
+  const { SQ, ANSI, DQ, HEREDOC_Q, HEREDOC_U, CODE, BQ } = CTX_CLASS
+  const segs = []
+  let cur = ''
+  for (let k = 0; k < text.length; k++) {
+    const c = text[k]
+    const kind = cls[k]
+    const cuts = kind === CODE || kind === BQ || kind === HEREDOC_Q || kind === HEREDOC_U
+    if (cuts && (c === ';' || c === '&' || c === '|' || c === '\n')) {
+      segs.push(cur.trim())
+      cur = ''
+      if ((c === '&' || c === '|') && text[k + 1] === c && cls[k + 1] === kind) k++
+      continue
+    }
+    if (cuts && c === '\r' && text[k + 1] === '\n') continue
+    const literal = kind === SQ || kind === ANSI || kind === DQ || kind === HEREDOC_Q || kind === HEREDOC_U
+    cur += literal ? ' ' : c
+  }
+  segs.push(cur.trim())
+  return segs
 }
 
 // Blank out curl/HTTP DATA-PAYLOAD arguments before self-pace matching. A -d /
@@ -475,33 +555,61 @@ export function maskInertLiterals(command, heredocs, lenient = false, diagnostic
 // value with $( or ` may substitute, so it is left alone.
 const PROSE_FLAGS = String.raw`--body|--message|--notes|--title|--subject|-b|-m|-t`
 
+// The flag-and-quoted-argument strippers below (data payload, commit message, prose) all work on the lexer's
+// context map, never on the raw text (card 0bb35172, finding 3660cf43 B3): the flag must sit in CODE position
+// (a `-d` / `-m` in a comment, a quote or a heredoc body is not a flag), and the argument must be exactly ONE quote
+// token the lexer closed -- so a look-alike `-d '` in a comment can no longer pair with a later real `'` and
+// swallow the command lines between them. The flag and the blank after it must be on the same line (a quote that
+// starts the NEXT line is a new command word, not this flag's argument). A reading the lexer is not sure of
+// (exact=false) strips NOTHING: stripping removes text from the checks, so doubt must leave the text visible.
+// Output is the continuation-joined text, which is what the gate hands in anyway.
+const flagArgumentRx = (flags) => String.raw`(^|\s)(${flags})([ \t]+|=)`
+
+function stripFlagArguments(ctx, flagSource) {
+  const { text, cls, quotes, exact } = ctx
+  if (!exact) return text
+  const quoteAt = new Map()
+  for (const q of quotes) quoteAt.set(q.start, q)
+  const rx = new RegExp(flagSource, 'gi')
+  let out = ''
+  let last = 0
+  let m
+  while ((m = rx.exec(text))) {
+    const flagStart = m.index + m[1].length
+    const argStart = m.index + m[0].length
+    const q = cls[flagStart] === CTX_CLASS.CODE ? quoteAt.get(argStart) : undefined
+    // a double-quoted value that substitutes may run a command -> keep it visible
+    if (!q || (q.kind === 'dq' && q.subst)) {
+      rx.lastIndex = flagStart + 1
+      continue
+    }
+    out += text.slice(last, argStart) + (q.kind === 'dq' ? '""' : "''") // literal payload -> blank the content
+    last = q.end
+    rx.lastIndex = q.end
+  }
+  return out + text.slice(last)
+}
+
+const PROSE_FLAG_RX = flagArgumentRx(PROSE_FLAGS)
+const PROSE_GUARD_RX = /\b(?:gh|git|glab)\b/i
+
 export function stripProseArguments(seg) {
-  const s = String(seg ?? '')
+  const src = joinShellLines(String(seg ?? ''))
   // Scoped to the tools these prose flags were written for: gh, git, glab (a PR
   // body, a PR comment, a release note). A short flag means different things to
   // different binaries (`tar -t`, `cut -b`, `sort -t`), so blanking it on an
   // unrelated tool would hide real data from the gate (PR #770 review, Szotasz).
   // Same coarse command-word guard as stripGitCommitMessages just below.
-  if (!/\b(?:gh|git|glab)\b/i.test(s)) return s
-  return s.replace(
-    new RegExp(String.raw`((?:^|\s)(?:${PROSE_FLAGS})(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")`, 'gi'),
-    (full, flag, arg) => {
-      const dq = arg.startsWith('"')
-      if (dq && (arg.includes('$(') || arg.includes('`'))) return full
-      return flag + (dq ? '""' : "''")
-    },
-  )
+  if (!new RegExp(PROSE_FLAG_RX, 'i').test(src) || !PROSE_GUARD_RX.test(src)) return src
+  return stripFlagArguments(shellContext(src), PROSE_FLAG_RX)
 }
 
+const DATA_FLAG_RX = flagArgumentRx(String.raw`-d|--data(?:-(?:raw|binary|ascii|urlencode))?`)
+
 export function stripDataPayloads(seg) {
-  return String(seg ?? '').replace(
-    /((?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii|urlencode))?)(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/gi,
-    (full, flag, arg) => {
-      const dq = arg.startsWith('"')
-      if (dq && (arg.includes('$(') || arg.includes('`'))) return full // may substitute -> keep
-      return flag + (dq ? '""' : "''") // literal payload -> blank the content
-    },
-  )
+  const src = joinShellLines(String(seg ?? ''))
+  if (!new RegExp(DATA_FLAG_RX, 'i').test(src)) return src
+  return stripFlagArguments(shellContext(src), DATA_FLAG_RX)
 }
 
 // Blank out git commit/tag/stash -m/--message LITERAL text before self-pace
@@ -565,33 +673,37 @@ function heredocOwnerRunsBody(before) {
   return false
 }
 
+// Only the heredocs the lexer OPENED are stripped (shellContext): an opener inside a comment, a quote or a
+// here-string opens nothing, so the lines after it are never taken for a body (finding 3660cf43 B3). The rest of
+// the operator line (`cat <<'EOF' > f; <command>`) is code and stays; only the body lines between the operator
+// line and the terminator go. A heredoc the text never terminates keeps its body visible, and so does every
+// heredoc of a reading the lexer is not sure of (exact=false): stripping removes text from the checks.
 export function stripHeredocBodies(command) {
-  const cmd = String(command ?? '')
-  if (!/<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*/.test(cmd)) return cmd
-  return cmd.replace(
-    /(<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2)([\s\S]*?)(^\s*\3\s*$)/gm,
-    (full, open, quote, _marker, body, close, offset, string) => {
-      const literal = quote === "'" || quote === '"'
-      if (!literal && (body.includes('$(') || body.includes('`'))) return full
-      // A quoted body the shell will not expand is still executed when an
-      // interpreter/remote-executor owns the redirect -- keep it visible then.
-      if (heredocOwnerRunsBody(string.slice(0, offset))) return full
-      return `${open}\n${close}`
-    },
-  )
+  const { text, heredocs, exact } = shellContext(String(command ?? ''))
+  if (!exact || !heredocs.length) return text
+  let out = ''
+  let last = 0
+  for (const h of heredocs) {
+    if (h.bodyEnd === h.termEnd) continue // unterminated
+    // an unquoted tag expands the body: a $( ) or a backtick there still runs
+    if (!h.quoted && h.subst) continue
+    // A quoted body the shell will not expand is still executed when an
+    // interpreter/remote-executor owns the redirect -- keep it visible then.
+    if (heredocOwnerRunsBody(text.slice(0, h.opStart))) continue
+    out += text.slice(last, h.bodyStart)
+    last = h.bodyEnd
+  }
+  return out + text.slice(last)
 }
 
+const COMMIT_FLAG_RX = flagArgumentRx(String.raw`-m|--message`)
+const COMMIT_GUARD_RX = /\bgit\b[\s\S]*\b(commit|tag|stash)\b/i
+
 export function stripGitCommitMessages(command) {
-  const cmd = String(command ?? '')
-  if (!/\bgit\b[\s\S]*\b(commit|tag|stash)\b/i.test(cmd)) return cmd
-  return cmd.replace(
-    /((?:^|\s)(?:-m|--message)(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/gi,
-    (full, flag, arg) => {
-      const dq = arg.startsWith('"')
-      if (dq && (arg.includes('$(') || arg.includes('`'))) return full // may substitute -> keep
-      return flag + (dq ? '""' : "''") // literal message -> blank the content
-    },
-  )
+  const src = joinShellLines(String(command ?? ''))
+  // the flag probe first: it is linear, the guard is not (a `git` followed by a long text scans to its end)
+  if (!new RegExp(COMMIT_FLAG_RX, 'i').test(src) || !COMMIT_GUARD_RX.test(src)) return src
+  return stripFlagArguments(shellContext(src), COMMIT_FLAG_RX)
 }
 
 // Normalise two shell-level obfuscations that bash resolves at EXEC time, so an
@@ -1746,7 +1858,11 @@ function decide(toolName, toolInput, opts = {}) {
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     const naiveSegs = splitSegments(safeCommand)
-    for (const seg of naiveSegs) {
+    // Every check below runs on the naive segments AND on maskedSegments (card 0bb35172, finding 3660cf43 B4): the
+    // masked pass is cut where the SHELL cuts (never inside a quote) and has the literal text blanked, so a quoted
+    // newline or `;` can no longer split the dangerous pair in two. It only ADDS segments: nothing below `continue`s
+    // or allows because of it, and it is not skipped when the lexer is unsure of its reading.
+    for (const seg of [...naiveSegs, ...maskedSegments(safeCommand)]) {
       // Match the self-pace bash patterns against the shell-normalised segment so a
       // `\/loop` / `$IFS/loop` evasion (which bash resolves to `/loop` at exec) is
       // still caught; the scheduler/store/API checks below use the RAW seg (scoped).
@@ -1770,10 +1886,14 @@ function decide(toolName, toolInput, opts = {}) {
     // segment START -- so it is the one a fake segment boundary can mislead, and
     // the only one that gets quote-aware segments. Preserve the legacy null fallback,
     // except for shell-dependent dollar quoting, which cannot use read exemptions.
+    // The mask leaves the body of a heredoc visible when its owner EXECUTES it (bash <<'EOF', python3 - <<'PY',
+    // ssh box <<'EOF'): that body is code, and the anchored check must see it. A reading the lexer is not sure of
+    // (joinInfo.exact false) falls back to the naive segments, like an unresolvable mask: doubt scans more.
     const diagnostic = {}
-    const masked = maskInertLiterals(safeCommand, undefined, false, diagnostic)
+    const bodies = []
+    const masked = maskInertLiterals(safeCommand, bodies, false, diagnostic, { keepRunBodies: true })
     if (diagnostic.reason === 'ambiguous-dollar-quote') return { deny: true, reason: diagnostic.reason }
-    for (const seg of (masked == null ? naiveSegs : splitSegments(masked))) {
+    for (const seg of (masked == null || !joinInfo.exact ? naiveSegs : anchoredSegments(masked, bodies))) {
       // scheduler binaries: deny the exec/submit forms, allow pure read-listing
       if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg)) return { deny: true }
     }
