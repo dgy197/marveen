@@ -578,6 +578,20 @@ export function codeDestinations(text, { shellJoin = false } = {}) {
   if (shellJoin) scanCode(shellWords(text).join(' '), closed, open)
   return [...new Set(closed), ...new Set(open)]
 }
+// Python and JavaScript join a string literal's backslash-newline themselves (the pair vanishes), so a host
+// split by one (`"http://localhost\<LF>.evil.example/"`) is the host localhost.evil.example for the
+// interpreter, while the raw reading above sees a closed `localhost` or an open host by accident. When the
+// code holds an odd backslash run right before a LF, it is also read with those pairs removed (an even run
+// is escaped backslashes and joins nothing); the union of the findings decides, so the raw reading's hosts
+// all stay. Without such a pair this is exactly the single call (card 0983a3fc, N3).
+const ODD_BACKSLASH_LF = /(?<!\\)(?:\\\\)*\\\n/
+const ODD_BACKSLASH_LF_G = /(?<!\\)((?:\\\\)*)\\\n/g
+function interpreterDestinations(text, opts) {
+  const found = codeDestinations(text, opts)
+  if (!ODD_BACKSLASH_LF.test(text)) return found
+  const joined = text.replace(ODD_BACKSLASH_LF_G, '$1')
+  return [...new Set([...found, ...codeDestinations(joined, opts)])]
+}
 function spans(masked) {
   const out = []; let start = 0
   // A lone `&` ends a command like `;` (`bash <&3 & wait`, #1931 review 8); `&` of a redirection
@@ -2060,7 +2074,7 @@ function classifyCommand(command, depth, vendorHosts, vendorDomains, stdinTainte
       if (!(PYTHON.test(cmd.toLowerCase()) ? pythonUsesNetwork(text) : usesNetwork(cmd, text))) continue
       // The body is read as the interpreter gets it (no shell join: quotes are literal here); a host
       // that is not provably complete is a finding of its own (codeDestinations).
-      const found = codeDestinations(text, { shellJoin: false })
+      const found = interpreterDestinations(text, { shellJoin: false })
       const hosts = [...new Set(found)].filter((h) => !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
       if (hosts.length) return { deny: true, reason: 'heredoc-external', hosts }
     }
@@ -2236,7 +2250,7 @@ function classifyCommand(command, depth, vendorHosts, vendorDomains, stdinTainte
       } else if (at !== -1) found = wgetDestinations(argv.slice(at + 1))
       // A one-liner's code is judged as written AND as bash hands it to the interpreter (shell join);
       // curl / wget with no argv hit keep the old scan. AmbiguousShellSyntax from the join is not caught.
-      else found = target === 'one-liner' ? codeDestinations(text, { shellJoin: true }) : [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
+      else found = target === 'one-liner' ? interpreterDestinations(text, { shellJoin: true }) : [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
       // The PLAIN reading leaves a loop variable unexpanded; its values are judged in the loop
       // readings that follow, so here alone an unresolved host is not a finding.
       if (text === plain && (variants === null || variants.some((v) => v !== plain))) found = found.filter((h) => !h.startsWith('<unresolved:'))
