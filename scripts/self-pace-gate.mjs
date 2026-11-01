@@ -427,8 +427,9 @@ function escapedAt(text, k) {
   return run % 2 === 1
 }
 
-// options.keepRunBodies (default false, the egress parser relies on it): leave the body of a heredoc visible when
-// its owner EXECUTES it (bash, sh, python, ssh ..., the same heredocOwnerRunsBody rule the heredoc stripper uses).
+// options.keepRunBodies (default false, the egress parser relies on it and that path is unchanged): leave the body of
+// a heredoc visible unless heredocBodyIsData says its owner provably takes it as data (the same inverted rule the
+// heredoc stripper uses; limits: see the comment above heredocBodyIsData). runsBody is true for a visible body.
 export function maskInertLiterals(command, heredocs, lenient = false, diagnostic = {}, options = {}) {
   diagnostic.reason = null
   // The shared shell join and context (odd backslash run before LF only, quote/heredoc/comment aware). It is
@@ -459,7 +460,7 @@ export function maskInertLiterals(command, heredocs, lenient = false, diagnostic
   }
   for (const h of ctx.heredocs) {
     if (!h.quoted && h.subst && !lenient) return null // unquoted tag expands the body
-    const runsBody = keepRunBodies && heredocOwnerRunsBody(text.slice(0, h.opStart))
+    const runsBody = keepRunBodies && !heredocBodyIsData(ctx, h)
     if (!runsBody) blank(h.bodyStart, h.bodyEnd)
     if (Array.isArray(heredocs)) {
       heredocs.push({
@@ -468,7 +469,7 @@ export function maskInertLiterals(command, heredocs, lenient = false, diagnostic
         bodyEnd: h.bodyEnd,
         end: text[h.termEnd - 1] === '\n' ? h.termEnd - 1 : h.termEnd, // the terminator line without its LF
         quotedTag: h.quoted,
-        runsBody, // true: kept visible (keepRunBodies and its owner executes it)
+        runsBody, // true: kept visible (keepRunBodies and the body is not provably data)
       })
     }
   }
@@ -653,32 +654,147 @@ export function stripDataPayloads(seg) {
 // stripGitCommitMessages and stripProseArguments all leave a double-quoted
 // value alone when it contains `$(` or a backtick. An unquoted heredoc is the
 // same category; it was simply missing the guard. Reported on PR #770.
-// Whether the command word owning a heredoc redirect EXECUTES the body. The
-// shell-literal guard above is not enough: a quoted marker (<<'EOF') is literal
-// to the SHELL, so blanking looks safe, but `bash <<'EOF'`, `sh`, `ssh box`,
-// `python - <<'EOF'` feed the body to an interpreter that runs it -- blanking
-// would hide a live scheduler command from the gate (PR #770 review, Szotasz).
-// `git commit -F - <<'EOF'` feeds the body to git as DATA, so that stays safe to
-// blank. So: keep the body visible when its redirect owner is an interpreter or
-// remote/container executor.
-const HEREDOC_INTERPRETER_RX = /^(?:bash|sh|zsh|dash|ksh|ash|python[0-9.]*|node|nodejs|ruby|perl|php|ssh)$/
+// WHEN IS A HEREDOC BODY DATA (card 6f27c86a, the rule is INVERTED). Blanking a body hides it from every check,
+// so it is allowed only when the body provably reaches a command that does not run it. The old rule listed the
+// interpreters that DO run a body (bash, sh, python, ssh ...) and read only the first word of the segment before the
+// `<<`; everything it did not know was "data". That missed `cat <<'EOF' | bash`, `env -i bash <<'EOF'`,
+// `bash -c "$(cat <<'EOF' ...)"`, `bash <(cat <<'EOF' ...)` and `for ..; do env -i bash <<'EOF'`. Now the default is
+// "visible", and a body is data only when ALL of these hold (heredocBodyIsData, the one place that decides):
+//   1. the command word that owns the redirect is in the closed DATA_OWNERS list (cat, tee, grep, jq, gh ...; git
+//      only for commit/tag/notes/stash/hash-object/apply/am without -c; curl without -K/--config), after skipping
+//      assignments, shell keywords (do, then ...) and the pass-through prefixes (sudo, env ...) -- a prefix WITH an
+//      option (`env -i`, `sudo -u x`, `nice -n 5`, `timeout 5`, `command -p`) is an unknown owner;
+//   2. every code-level `|` stage on the operator line (`cat <<'EOF' | stage`) is a data command too, and no `<(`
+//      or `>(` stands there;
+//   3. every substitution frame around the heredoc, innermost out, is a `$( )` (ctx.substs, the lexer's own frames:
+//      no bracket is counted here) that is either a pure assignment (`x=$(cat <<'EOF' ..)`) or the argument of a
+//      data command; a `<( )`, `>( )`, a backtick run or a frame the lexer could not close is never data.
+// A script-running interpreter (bash x.sh, python3 x.py, node x.js ...) counts as a data CONSUMER in 2. and 3. only
+// (`cat <<'EOF' | bash agent-msg.sh .. -`, `bash agent-msg.sh .. "$(cat <<'EOF' ..)"`, the fleet's own message
+// idiom), and only when its first argument is a plain path that is not the stdin of the shell itself (/dev/stdin,
+// /dev/fd/N, /proc/*/fd/N, anything under /dev or /proc, `..` segments, quotes, `$`): `bash /dev/stdin`, `bash -s`,
+// `bash -c`, `python3 -` run the body. As the direct owner (`bash agent-msg.sh .. - <<'EOF'`) it stays visible.
+//
+// Limits (measured and accepted, card 6f27c86a): a body written to a file and run later (`cat <<'EOF' > s.sh && bash
+// s.sh`, O14) is not followed -- the file is what runs, and the scheduler surface check still catches the
+// /api/schedules form; text that flows through a variable (`x=$(cat <<'EOF' ..)` then `bash -c "$x"`) is data at
+// the assignment and is not followed; a script file that itself runs its stdin is trusted (it could be run as
+// well from a file Write put there). The rule only ever ADDS visible text, so it can over-block (a body that
+// mentions a trigger word inside `echo "$(cat <<'EOF' ..)"`, F11) but never newly allow. A backtick run keeps its
+// own limit: a heredoc or a quoted payload inside backticks is always visible, and the lexer does not tokenise
+// quotes inside a backtick run (0bb35172 E1: `r=`curl -d '..' ..`` denies where the `$( )` form allows).
+const DATA_OWNERS = new Set(['cat', 'tee', 'wc', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'sort', 'uniq', 'tr', 'base64', 'diff', 'cmp', 'shasum', 'sha256sum', 'md5', 'jq', 'gh', 'glab', 'git', 'curl'])
+const GIT_DATA_SUBCOMMANDS = new Set(['commit', 'tag', 'notes', 'stash', 'hash-object', 'apply', 'am'])
+const PASS_THROUGH_PREFIXES = new Set(['sudo', 'env', 'nice', 'time', 'exec', 'command', 'nohup', 'stdbuf'])
+const SHELL_KEYWORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '{', 'time'])
+// the interpreters that run a script FILE given as the first argument (ssh is not one of them: `| ssh box` runs stdin)
+const SCRIPT_INTERPRETER_RX = /^(?:bash|sh|zsh|dash|ksh|ash|python[0-9.]*|node|nodejs|ruby|perl|php)$/
+const SEGMENT_SEPARATOR_RX = /[\n;|&({]/
+const NOT_CODE_BLANK_RX = /[\s;|&(){}]/
 
-function heredocOwnerRunsBody(before) {
-  // `before` is the command text up to the << redirect; the owner is the first
-  // word of the last command segment.
-  const seg = before.split(/\n|;|\|\|?|&&?|\(|\{/).pop() ?? ''
-  const tokens = seg.trim().split(/\s+/).filter(Boolean)
-  // Pass-through prefixes that do not change what runs the body.
-  while (tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]) ||
-    ['sudo', 'env', 'nice', 'time', 'exec', 'command', 'nohup', 'stdbuf'].includes(tokens[0]))) {
-    tokens.shift()
+// The text of [from, to) with the white space and separators of every non-code character (quote, comment, heredoc
+// body) turned into `_`, so a quoted `; cat ` or `x cat` cannot pass for a command word.
+function codeOnlyText(ctx, from, to) {
+  const { text, cls } = ctx
+  let out = ''
+  for (let k = from; k < to; k++) {
+    const code = cls[k] === CTX_CLASS.CODE || cls[k] === CTX_CLASS.BQ
+    out += code || !NOT_CODE_BLANK_RX.test(text[k]) ? text[k] : '_'
   }
-  if (!tokens.length) return false
-  const word = tokens[0].split('/').pop()
-  if (HEREDOC_INTERPRETER_RX.test(word)) return true
-  // docker/podman/kubectl exec run the body through a shell in the target.
-  if (['docker', 'podman', 'kubectl'].includes(word) && tokens.slice(1).includes('exec')) return true
-  return false
+  return out
+}
+
+// The command segment that ends at `pos`: back to the last code-level separator, but never into an earlier heredoc
+// (its body and terminator are not command text).
+function segmentBefore(ctx, pos) {
+  const { text, cls, heredocs } = ctx
+  let floor = 0
+  for (const h of heredocs) if (h.termEnd <= pos && h.termEnd > floor) floor = h.termEnd
+  let k = pos
+  while (k > floor) {
+    const code = cls[k - 1] === CTX_CLASS.CODE || cls[k - 1] === CTX_CLASS.BQ
+    if (code && SEGMENT_SEPARATOR_RX.test(text[k - 1])) break
+    k--
+  }
+  return codeOnlyText(ctx, k, pos)
+}
+
+// The command of a segment: { word, rest, assigned } past assignments, shell keywords and option-free pass-through
+// prefixes, or null when a pass-through prefix carries an option (the owner is then unknown). An empty word with
+// assigned > 0 is a pure assignment.
+function commandOfSegment(segment) {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean)
+  let i = 0
+  let assigned = 0
+  while (i < tokens.length) {
+    const t = tokens[i]
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) { i++; assigned++; continue }
+    if (SHELL_KEYWORDS.has(t)) { i++; continue } // `do cat <<EOF`
+    if (PASS_THROUGH_PREFIXES.has(t)) {
+      if ((tokens[i + 1] ?? '').startsWith('-')) return null
+      i++
+      continue
+    }
+    break
+  }
+  if (i >= tokens.length) return { word: '', rest: [], assigned }
+  return { word: tokens[i].split('/').pop(), rest: tokens.slice(i + 1), assigned }
+}
+
+// A script path that is plainly a file: not an option, no quote or expansion, no `..`, and not stdin in any spelling.
+function isPlainScriptFile(path) {
+  if (path === undefined || path.startsWith('-') || !/^[\w.\/~+@%-]+$/.test(path)) return false
+  const parts = path.split('/').filter(Boolean)
+  if (parts.some((p) => p === '.' || p === '..')) return false
+  return !(path.startsWith('/') && (parts[0] === 'dev' || parts[0] === 'proc'))
+}
+
+// Does this command take the heredoc text as DATA? role: 'owner' (the command the redirect belongs to), 'pipe' (a
+// stage after a `|` on the operator line) or 'subst' (the command around a `$( )`).
+function consumesAsData(command, role) {
+  if (!command) return false
+  const { word, rest, assigned } = command
+  if (word === '') return role === 'subst' && assigned > 0 // x=$(cat <<EOF ..) stores the text; a bare $(..) runs it
+  if (role !== 'owner' && SCRIPT_INTERPRETER_RX.test(word)) return isPlainScriptFile(rest[0])
+  if (!DATA_OWNERS.has(word)) return false
+  if (rest.some((t) => /[<>]\(/.test(t))) return false // a process substitution can hand the text to a command
+  if (word === 'git') {
+    if (rest.some((t) => t === '-c' || t.startsWith('--exec-path') || t.startsWith('--config-env'))) return false
+    return GIT_DATA_SUBCOMMANDS.has(rest.find((t) => !t.startsWith('-')))
+  }
+  if (word === 'curl') return !rest.some((t) => /^-[A-Za-z]*K/.test(t) || t.startsWith('--config'))
+  return true
+}
+
+// ctx is a shellContext result, h one of its heredocs. False is the default: every unknown owner, wrapper option,
+// pipe stage, process substitution, backtick and unclosed frame answers false (see the rule above).
+export function heredocBodyIsData(ctx, h) {
+  const { text, cls, substs } = ctx
+  if (cls[h.opStart] === CTX_CLASS.BQ) return false
+  // 1. the owner of the redirect
+  if (!consumesAsData(commandOfSegment(segmentBefore(ctx, h.opStart)), 'owner')) return false
+  // 2. where the owner's output goes: the operator line, from the end of the delimiter to the first body line
+  for (const m of text.slice(h.tagEnd, h.bodyStart).matchAll(/[<>]\(|\|+/g)) {
+    const at = h.tagEnd + m.index
+    if (cls[at] !== CTX_CLASS.CODE) continue
+    if (/^[<>]/.test(m[0])) return false // a process substitution on the operator line
+    if (m[0] !== '|') continue // `||`: the next command, not a pipe
+    let from = at + 1
+    if (text[from] === '&') from++ // `|&`
+    let to = from
+    while (to < h.bodyStart && !(cls[to] === CTX_CLASS.CODE && /[;&|\n)]/.test(text[to]))) to++
+    if (!consumesAsData(commandOfSegment(codeOnlyText(ctx, from, to)), 'pipe')) return false
+  }
+  // 3. the substitution frames around the heredoc, innermost out. start is the first character of the opener, end
+  //    the index after the closer, -1 for a frame that is not known to be closed.
+  for (let i = substs.length - 1; i >= 0; i--) {
+    const s = substs[i]
+    if (s.start >= h.opStart) continue
+    if (s.end !== -1 && s.end <= h.opStart) continue // closed before the heredoc: not around it
+    if (s.end === -1 || s.kind !== 'cmd') return false
+    if (!consumesAsData(commandOfSegment(segmentBefore(ctx, s.start)), 'subst')) return false
+  }
+  return true
 }
 
 // Only the heredocs the lexer OPENED are stripped (shellContext): an opener inside a comment, a quote or a
@@ -687,7 +803,8 @@ function heredocOwnerRunsBody(before) {
 // line and the terminator go. A heredoc the text never terminates keeps its body visible, and so does every
 // heredoc of a reading the lexer is not sure of (exact=false): stripping removes text from the checks.
 export function stripHeredocBodies(command) {
-  const { text, heredocs, exact } = shellContext(String(command ?? ''))
+  const ctx = shellContext(String(command ?? ''))
+  const { text, heredocs, exact } = ctx
   if (!exact || !heredocs.length) return text
   let out = ''
   let last = 0
@@ -695,9 +812,8 @@ export function stripHeredocBodies(command) {
     if (h.bodyEnd === h.termEnd) continue // unterminated
     // an unquoted tag expands the body: a $( ) or a backtick there still runs
     if (!h.quoted && h.subst) continue
-    // A quoted body the shell will not expand is still executed when an
-    // interpreter/remote-executor owns the redirect -- keep it visible then.
-    if (heredocOwnerRunsBody(text.slice(0, h.opStart))) continue
+    // A quoted body the shell will not expand is still executed unless its owner provably takes it as data.
+    if (!heredocBodyIsData(ctx, h)) continue
     out += text.slice(last, h.bodyStart)
     last = h.bodyEnd
   }
