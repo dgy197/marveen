@@ -1264,6 +1264,12 @@ _LABEL_VALUE_KEYS = frozenset({"label", "labels", "labelids", "addlabelids", "re
                                "folder", "folderid", "foldername", "parentfolderid", "mailbox"})
 # the name keys of a label / folder tool (_exemption_class label, label-apply)
 _LABEL_NAME_KEYS = frozenset({"name", "displayname", "label", "labelname", "foldername", "title"})
+# card acf545e0: a label tool's rename source / target (_exemption_class label only: `to` / `from` mean something else
+# on a move or a send tool) and the labels it adds / removes (label and label-apply). Name-shaped values only: an
+# address or mailto: fails _NAME_SHAPE and a forward KEY below them still counts. Not part of _LABEL_VALUE_KEYS,
+# because the plain and msgop classes use that set. Twin: LABEL_RENAME_KEYS / LABEL_APPLY_KEYS in email-send-gate.mjs.
+_LABEL_RENAME_KEYS = frozenset({"to", "from", "newname", "oldname"})
+_LABEL_APPLY_KEYS = frozenset({"addlabels", "removelabels"})
 # the target folder of a move / copy tool (a bare destination / target on any other tool is a script value: 61fcac1e B4)
 _FOLDER_TARGET_KEYS = frozenset({"destination", "target", "targetfolder", "targetfolderid", "destinationfolder",
                                  "destinationfolderid"})
@@ -1747,8 +1753,10 @@ def _is_reply_settings_tool(segments) -> bool:
 
 _EX_BY_CLASS = {
     "plain": {"inert": frozenset({"signature"}), "name": _LABEL_VALUE_KEYS, "file": _FILE_NAME_KEYS},
-    "label": {"inert": _EMPTY, "name": _LABEL_NAME_KEYS | _LABEL_VALUE_KEYS, "file": _EMPTY},
-    "label-apply": {"inert": _SELECTOR_KEYS, "name": _LABEL_NAME_KEYS | _LABEL_VALUE_KEYS, "file": _EMPTY},
+    "label": {"inert": _EMPTY, "name": _LABEL_NAME_KEYS | _LABEL_VALUE_KEYS | _LABEL_RENAME_KEYS | _LABEL_APPLY_KEYS,
+              "file": _EMPTY},
+    "label-apply": {"inert": _SELECTOR_KEYS, "name": _LABEL_NAME_KEYS | _LABEL_VALUE_KEYS | _LABEL_APPLY_KEYS,
+                    "file": _EMPTY},
     "move": {"inert": _SELECTOR_KEYS, "name": _FOLDER_TARGET_KEYS | _LABEL_VALUE_KEYS, "file": _EMPTY},
     "msgop": {"inert": _SELECTOR_KEYS, "name": _LABEL_VALUE_KEYS, "file": _EMPTY},
     "reply": {"inert": _REPLY_TEXT_KEYS, "name": _EMPTY, "file": _EMPTY},

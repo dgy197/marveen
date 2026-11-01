@@ -1902,7 +1902,9 @@ export function isReadAction(segments) {
 //     JSON-patch `filePath: /forwardTo` stays denied.
 // Which class uses which keys: a plain draft (name: the label / folder value keys, file:
 // the attachment name keys, inert: signature); a label / folder tool (name: its NAME keys
-// and the value keys, inert: the selector keys when it applies a label to a message); a
+// and the value keys, plus to / from / newName / oldName on a non-apply label tool and
+// addLabels / removeLabels on both, inert: the selector keys when it applies a label
+// to a message); a
 // move / copy tool (name: the target folder keys); a message-operation tool (name: the
 // value keys, inert: the selectors); a reply / settings tool (inert: the auto-reply text
 // keys). Any other tool (Sieve, rule, filter, B5 settings names, unknown names) has no
@@ -1920,6 +1922,12 @@ const LABEL_VALUE_KEYS = new Set(['label', 'labels', 'labelids', 'addlabelids', 
   'folder', 'folderid', 'foldername', 'parentfolderid', 'mailbox'])
 // the name keys of a label / folder tool (exemptionClass label, label-apply)
 const LABEL_NAME_KEYS = new Set(['name', 'displayname', 'label', 'labelname', 'foldername', 'title'])
+// card acf545e0: a label tool's rename source / target (exemptionClass label only: `to` / `from` mean something else
+// on a move or a send tool) and the labels it adds / removes (label and label-apply). Name-shaped values only: an
+// address or mailto: fails NAME_SHAPE and a forward KEY below them still counts. Not part of LABEL_VALUE_KEYS,
+// because the plain and msgop classes use that set.
+const LABEL_RENAME_KEYS = new Set(['to', 'from', 'newname', 'oldname'])
+const LABEL_APPLY_KEYS = new Set(['addlabels', 'removelabels'])
 // the target folder of a move / copy tool (a bare destination / target on any other tool is a script value: 61fcac1e B4)
 const FOLDER_TARGET_KEYS = new Set(['destination', 'target', 'targetfolder', 'targetfolderid', 'destinationfolder',
   'destinationfolderid'])
@@ -2295,8 +2303,8 @@ export function isReplySettingsTool(segments) {
 const unionSets = (...sets) => new Set(sets.flatMap((s) => [...s]))
 const EX_BY_CLASS = Object.freeze({
   plain: Object.freeze({ inert: new Set(['signature']), name: LABEL_VALUE_KEYS, file: FILE_NAME_KEYS }),
-  label: Object.freeze({ inert: EMPTY, name: unionSets(LABEL_NAME_KEYS, LABEL_VALUE_KEYS), file: EMPTY }),
-  'label-apply': Object.freeze({ inert: SELECTOR_KEYS, name: unionSets(LABEL_NAME_KEYS, LABEL_VALUE_KEYS), file: EMPTY }),
+  label: Object.freeze({ inert: EMPTY, name: unionSets(LABEL_NAME_KEYS, LABEL_VALUE_KEYS, LABEL_RENAME_KEYS, LABEL_APPLY_KEYS), file: EMPTY }),
+  'label-apply': Object.freeze({ inert: SELECTOR_KEYS, name: unionSets(LABEL_NAME_KEYS, LABEL_VALUE_KEYS, LABEL_APPLY_KEYS), file: EMPTY }),
   move: Object.freeze({ inert: SELECTOR_KEYS, name: unionSets(FOLDER_TARGET_KEYS, LABEL_VALUE_KEYS), file: EMPTY }),
   msgop: Object.freeze({ inert: SELECTOR_KEYS, name: LABEL_VALUE_KEYS, file: EMPTY }),
   reply: Object.freeze({ inert: REPLY_TEXT_KEYS, name: EMPTY, file: EMPTY }),
