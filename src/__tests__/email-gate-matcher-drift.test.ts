@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { EMAIL_GATE_MATCHER, MAIL_SERVER_ALTERNATIVES, emailGateMatcherStale, injectEmailSendGate } from '../web/agent-scaffold.js'
+import { EMAIL_GATE_MATCHER, MAIL_SERVER_ALTERNATIVES, MAIL_TOOL_ALTERNATIVE, emailGateMatcherStale, injectEmailSendGate } from '../web/agent-scaffold.js'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision, classifyMailTool } from '../../scripts/email-send-gate.mjs'
 
@@ -358,9 +358,54 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
     }
   })
 
+  it('a mail word in the TOOL name reaches all three gate surfaces on a server without one; non-mail servers stay out (card 3d6e5181 N4 B1)', () => {
+    // The N4 reviewer's five names: the filter / settings tool of a server whose name
+    // carries no mail word (google_workspace, gws, zoho). Explicit vectors.
+    const fires = [
+      'mcp__google_workspace__create_gmail_filter', 'mcp__google_workspace__update_gmail_settings',
+      'mcp__google_workspace__manage_gmail_filter', 'mcp__gws__gmail_filters_create',
+      'mcp__zoho__create_mail_filter', 'mcp__acme__set_mailbox_rules', 'mcp__acme__Update_EMAIL_Settings',
+      // slack stays in only when the tool name carries the word (the existing verb rule)
+      'mcp__slack__create_mail_filter',
+    ]
+    const stays = [
+      'mcp__github__create_gmail_filter', 'mcp__github__list_emails',
+      'mcp__plugin_telegram_telegram__reply', 'mcp__plugin_discord_discord__fetch_messages',
+      'mcp__plugin_slack_slack__reply', 'mcp__slack__post_message',
+      'mcp__context7__get-library-docs', 'mcp__playwright__browser_click', 'mcp__fireeng-rag__search',
+      'mcp__finance-readonly__query', 'mcp__memory-graph__create_entities', 'mcp__memory-graph__read_graph',
+      'mcp__ms365__send-chat-message', 'mcp__ms365__list-chats',
+    ]
+    const canonical = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
+    const own = (script: string) => (SETTINGS.hooks?.PreToolUse ?? [])
+      .filter((e) => (e.hooks ?? []).some((h) => (h.command ?? '').includes(script)))
+    const fired = (script: string, tool: string) => own(script).some((e) => new RegExp(`^(${e.matcher ?? ''})$`).test(tool))
+    for (const tool of fires) {
+      expect(canonical.test(tool), `EMAIL_GATE_MATCHER misses ${tool}`).toBe(true)
+      for (const script of EMAIL_HOOKS) expect(fired(script, tool), `${script} misses ${tool}`).toBe(true)
+    }
+    for (const tool of stays) {
+      expect(canonical.test(tool), `EMAIL_GATE_MATCHER fires on ${tool}`).toBe(false)
+      for (const script of EMAIL_HOOKS) {
+        const extra = script === 'outgoing-copy-gate.py' && /plugin_(telegram|discord)_.*__reply$/.test(tool)
+        if (!extra) expect(fired(script, tool), `${script} fires on ${tool}`).toBe(false)
+      }
+    }
+    // the alternative is ONE flat token (the drift split on '|' must keep it whole)
+    expect(CANONICAL.filter((a) => a.endsWith('[Mm][Aa][Ii][Ll].*') && a.startsWith('[Mm][Cc][Pp]__'))).toHaveLength(1)
+    expect(CANONICAL).toContain(MAIL_TOOL_ALTERNATIVE)
+    expect(MAIL_TOOL_ALTERNATIVE).not.toContain('|')
+  })
+
   it('a sub-agent settings file with the pre-3d6e5181 matcher is stale and is repaired on inject (card 3d6e5181 P1)', () => {
-    const oldMatcher = EMAIL_GATE_MATCHER.replace('|' + MAIL_SERVER_ALTERNATIVES.join('|'), '')
+    const oldMatcher = EMAIL_GATE_MATCHER
+      .replace('|' + MAIL_TOOL_ALTERNATIVE, '')
+      .replace('|' + MAIL_SERVER_ALTERNATIVES.join('|'), '')
     expect(oldMatcher).not.toBe(EMAIL_GATE_MATCHER)
+    // the N4 matcher (server alternatives, no tool alternative) is stale too
+    const n3Matcher = EMAIL_GATE_MATCHER.replace('|' + MAIL_TOOL_ALTERNATIVE, '')
+    expect(n3Matcher).not.toBe(EMAIL_GATE_MATCHER)
+    expect(emailGateMatcherStale([{ matcher: n3Matcher, hooks: [{ type: 'command', command: 'node /x/scripts/email-send-gate.mjs' }] }])).toBe(true)
     const cmd = { type: 'command', command: 'node /x/scripts/email-send-gate.mjs' }
     expect(emailGateMatcherStale([{ matcher: oldMatcher, hooks: [cmd] }])).toBe(true)
     expect(emailGateMatcherStale([{ matcher: EMAIL_GATE_MATCHER, hooks: [cmd] }])).toBe(false)
