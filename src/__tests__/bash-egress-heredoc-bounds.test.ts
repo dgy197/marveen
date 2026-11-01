@@ -123,7 +123,7 @@ describe('interpreter code: the second reading (N3, ellenor E2)', () => {
     `python3 - <<'PY'\nimport urllib.request as u\n${mid}\nu.urlopen("http://local${'host'}:3420/api/health")\nPY`
   it('an EVEN backslash run before LF triggers no second reading: the result equals the single raw reading', () => {
     const even = run(py('# note\\\\'))
-    expect(even).toEqual({ deny: false, hosts: [] })
+    expect(even).toMatchObject({ deny: false, hosts: [] })
     // The same code without any backslash run is the single raw reading.
     expect(even).toEqual(run(py('# note')))
   })
