@@ -1,0 +1,216 @@
+{
+  "_comment": "card 5e3c31c5 N0: reader parity corpus for the walker JSON readers (Python _walker_json_loads in scripts/hooks/email_extract.py, JS parseWalkerJson in scripts/email-send-gate.mjs). accept = the shared expectation: both readers accept (and the parsed structures are equal after NaN / Infinity are mapped to a common token) or both reject. A row with repeat / count / template builds its text as template % (repeat * count). Read by scripts/__tests__/walker-json-cases.test.py and src/__tests__/walker-json-cases.test.ts.",
+  "rows": [
+    {
+      "label": "bare NaN value",
+      "text": "{\"a\": NaN}",
+      "accept": true
+    },
+    {
+      "label": "bare Infinity value",
+      "text": "{\"a\": Infinity}",
+      "accept": true
+    },
+    {
+      "label": "bare -Infinity value",
+      "text": "{\"a\": -Infinity}",
+      "accept": true
+    },
+    {
+      "label": "NaN in an array",
+      "text": "[NaN, 1, NaN]",
+      "accept": true
+    },
+    {
+      "label": "Infinity, then -Infinity, nested",
+      "text": "{\"a\": [Infinity, {\"b\": -Infinity}]}",
+      "accept": true
+    },
+    {
+      "label": "NaN as a top-level value after a leading blank",
+      "text": " \t\n\r{\"a\": NaN}",
+      "accept": true
+    },
+    {
+      "label": "NaN with blanks around",
+      "text": "{\"a\" :  NaN  ,\"b\":1}",
+      "accept": true
+    },
+    {
+      "label": "-NaN",
+      "text": "{\"a\": -NaN}",
+      "accept": false
+    },
+    {
+      "label": "+Infinity",
+      "text": "{\"a\": +Infinity}",
+      "accept": false
+    },
+    {
+      "label": "NaNx",
+      "text": "{\"a\": NaNx}",
+      "accept": false
+    },
+    {
+      "label": "lower-case nan",
+      "text": "{\"a\": nan}",
+      "accept": false
+    },
+    {
+      "label": "lower-case infinity",
+      "text": "{\"a\": infinity}",
+      "accept": false
+    },
+    {
+      "label": "Infinity1",
+      "text": "{\"a\": Infinity1}",
+      "accept": false
+    },
+    {
+      "label": "- Infinity",
+      "text": "{\"a\": - Infinity}",
+      "accept": false
+    },
+    {
+      "label": "--Infinity",
+      "text": "{\"a\": --Infinity}",
+      "accept": false
+    },
+    {
+      "label": "NaN in key position",
+      "text": "{NaN: 1}",
+      "accept": false
+    },
+    {
+      "label": "Infinity in key position",
+      "text": "{Infinity: 1}",
+      "accept": false
+    },
+    {
+      "label": "NaN as a string-less key after a comma",
+      "text": "{\"a\": 1, NaN: 2}",
+      "accept": false
+    },
+    {
+      "label": "NaN followed by a letter inside an array",
+      "text": "[NaNa]",
+      "accept": false
+    },
+    {
+      "label": "truncated",
+      "text": "{\"a\": NaN",
+      "accept": false
+    },
+    {
+      "label": "NaN only inside a string",
+      "text": "{\"a\": \"NaN\"}",
+      "accept": true
+    },
+    {
+      "label": "Infinity only inside a string",
+      "text": "{\"a\": \"-Infinity\"}",
+      "accept": true
+    },
+    {
+      "label": "NaN after an escaped quote inside a string",
+      "text": "{\"a\": \"a\\\"NaN\"}",
+      "accept": true
+    },
+    {
+      "label": "NaN after an escaped backslash then a closed string",
+      "text": "{\"a\": \"\\\\\", \"b\": NaN}",
+      "accept": true
+    },
+    {
+      "label": "NaN inside a string after an escaped backslash pair",
+      "text": "{\"a\": \"\\\\\\\\NaN\"}",
+      "accept": true
+    },
+    {
+      "label": "escaped quote at the end of the string, literal outside",
+      "text": "{\"a\": \"x\\\"\", \"b\": Infinity}",
+      "accept": true
+    },
+    {
+      "label": "unicode-escaped N inside a string",
+      "text": "{\"a\": \"\\u004eaN\"}",
+      "accept": true
+    },
+    {
+      "label": "NaN inside a string that never closes",
+      "text": "{\"a\": \"NaN",
+      "accept": false
+    },
+    {
+      "label": "1e400 overflows to a float, accepted by both",
+      "text": "{\"a\": 1e400}",
+      "accept": true
+    },
+    {
+      "label": "negative zero",
+      "text": "{\"a\": -0}",
+      "accept": true
+    },
+    {
+      "label": "negative zero float",
+      "text": "{\"a\": -0.0}",
+      "accept": true
+    },
+    {
+      "label": "plain strict JSON",
+      "text": "{\"a\": [1, 2.5, true, false, null, \"x\"]}",
+      "accept": true
+    },
+    {
+      "label": "top-level JSON string",
+      "text": "\"NaN\"",
+      "accept": true
+    },
+    {
+      "label": "double-encoded JSON with NaN in the inner text",
+      "text": "\"{\\\"a\\\": NaN}\"",
+      "accept": true
+    },
+    {
+      "label": "empty object with trailing comma",
+      "text": "{\"a\": 1,}",
+      "accept": false
+    },
+    {
+      "label": "single quotes",
+      "text": "{'a': 1}",
+      "accept": false
+    },
+    {
+      "label": "trailing garbage",
+      "text": "{\"a\": 1} x",
+      "accept": false
+    },
+    {
+      "label": "deep nesting with a NaN at the bottom",
+      "text": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[NaN]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+      "accept": true
+    },
+    {
+      "label": "integer of 5000 digits (generated)",
+      "repeat": "9",
+      "count": 5000,
+      "template": "{\"a\": %s, \"b\": [1]}",
+      "accept": true
+    },
+    {
+      "label": "integer of 4300 digits (generated)",
+      "repeat": "9",
+      "count": 4300,
+      "template": "{\"a\": %s}",
+      "accept": true
+    },
+    {
+      "label": "negative integer of 5000 digits (generated)",
+      "repeat": "9",
+      "count": 5000,
+      "template": "{\"a\": -%s}",
+      "accept": true
+    }
+  ]
+}
