@@ -1381,7 +1381,8 @@ _MAIL_NOUNS = frozenset({
 })
 # The plain-draft grammar (card ea9215f6, B5): the words from the first plain verb on are
 # all letter vocabulary (a plain verb, a mail noun, a modifier, or a verb glued to a mail
-# noun: createdraft, updateemail), and at least one is a mail noun. What stands BEFORE the
+# noun: createdraft, updateemail), and at least one STANDALONE segment word is a mail
+# noun (a glued name anchors the verb only: updateemail alone stays strict). What stands BEFORE the
 # verb (a namespace: work-, shared_inbox_, v2) is free. update_mail_preferences,
 # update_email_options, create_mail_delegate are not plain: preferences, options, delegate
 # are no letter words.
@@ -1423,7 +1424,9 @@ def _is_plain_draft(segments, classes) -> bool:
         ws = allw[at:]
         if not all(_plain_word(w) for w in ws):
             return False
-        if any(w in _MAIL_NOUNS or _glued_plain(w) for w in ws):
+        # Only a standalone mail-noun segment word counts as the noun: a glued name (updateemail,
+        # savedraft) anchors the verb but is no noun, so it keeps the base (strict) behaviour.
+        if any(w in _MAIL_NOUNS for w in ws):
             noun = True
     return noun
 

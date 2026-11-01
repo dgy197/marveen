@@ -1584,7 +1584,11 @@
         "update_email_options",
         "update_email_identity",
         "create_mail_delegate",
-        "update_contact_email"
+        "update_contact_email",
+        "updateemail",
+        "savedraft",
+        "newmail",
+        "createreply"
       ],
       "label_segments": [
         "create_label",
@@ -2214,7 +2218,7 @@
           "note": "ea9215f6 AC15 B6: top-level fileName of a plain draft, file-name-shaped value"
         }
       ],
-      "_ea9215f6": "Card ea9215f6 N1: exemption_segments = segment list + plain flag -> the class exemptionClass / _exemption_class names; relocation_* = the Sieve forms (referenced by label from sieve_forms) moved under the formerly global inert keys on the Sieve / rule / filter / B5 tools, all denied; relocation_shape_rows = a Sieve form as a NAME on a tool class that frees that name key, denied by the name shape; shape_cases = NAME_SHAPE / FILE_SHAPE verdicts (no @ in the name shape).",
+      "_ea9215f6": "Card ea9215f6 N1: exemption_segments = segment list + plain flag -> the class exemptionClass / _exemption_class names; relocation_* = the Sieve forms (referenced by label from sieve_forms) moved under the formerly global inert keys on the Sieve / rule / filter / B5 tools, all denied; relocation_shape_rows = a Sieve form as a NAME on a tool class that frees that name key, denied by the name shape (round 1 B1: also a Sieve form under a note key on the one-word glued names updateemail / savedraft, which are no plain draft and stay strict); shape_cases = NAME_SHAPE / FILE_SHAPE verdicts (no @ in the name shape).",
       "exemption_segments": [
         {
           "segments": [
@@ -2463,6 +2467,18 @@
           "tool": "mcp__imap__copy_email",
           "key": "target",
           "form": "S7_comment",
+          "fixed": {}
+        },
+        {
+          "tool": "mcp__gmail__updateemail",
+          "key": "note",
+          "form": "S1_copy",
+          "fixed": {}
+        },
+        {
+          "tool": "mcp__gmail__savedraft",
+          "key": "note",
+          "form": "S1_copy",
           "fixed": {}
         }
       ],

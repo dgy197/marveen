@@ -1978,7 +1978,8 @@ const MAIL_NOUNS = ['draft', 'drafts', 'message', 'messages', 'mail', 'mails', '
   'response', 'responses', 'answer', 'answers', 'file', 'files', 'doc', 'docs', 'document', 'documents']
 // The plain-draft grammar (card ea9215f6, B5): the words from the first plain verb on are
 // all letter vocabulary (a plain verb, a mail noun, a modifier, or a verb glued to a mail
-// noun: createdraft, updateemail), and at least one is a mail noun. What stands BEFORE the
+// noun: createdraft, updateemail), and at least one STANDALONE segment word is a mail
+// noun (a glued name anchors the verb only: updateemail alone stays strict). What stands BEFORE the
 // verb (a namespace: work-, shared_inbox_, v2) is free. update_mail_preferences,
 // update_email_options, create_mail_delegate are not plain: preferences, options, delegate
 // are no letter words.
@@ -2006,7 +2007,9 @@ export function isPlainDraft(segments, classes) {
     if (at < 0) return false
     const ws = all.slice(at)
     if (!ws.every(plainWord)) return false
-    if (ws.some((w) => MAIL_NOUNS.includes(w) || gluedPlain(w))) noun = true
+    // Only a standalone mail-noun segment word counts as the noun: a glued name (updateemail,
+    // savedraft) anchors the verb but is no noun, so it keeps the base (strict) behaviour.
+    if (ws.some((w) => MAIL_NOUNS.includes(w))) noun = true
   }
   return noun
 }
