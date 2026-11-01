@@ -21,6 +21,36 @@
 //   rule 7  idempotent: every decision depends only on the joined stream, and the output IS that stream.
 //
 // info: { exact: boolean, reason: string|null }, reset on every call; reason keeps the first cause.
+//
+// shellContext(src) (card 0bb35172, planned as spec section 4): the SAME pass, plus the context it decided on, so the
+// gates never re-guess "is this << a heredoc, is this -d inside a quote" with a regex of their own. It returns
+//   { text, cls, quotes, heredocs, exact, reason }
+//   text      === joinShellLines(src); every coordinate below counts in `text`
+//   cls       Uint8Array, one CTX_CLASS value per character of text:
+//             CODE (including `$(`, `<<` and the heredoc tag), COMMENT (from the # to the LF), SQ ('...'),
+//             ANSI ($'...'), DQ ("..." and $"...", the quotes themselves included; a ${...} inside "..." too),
+//             BQ (a backtick run, both backticks included), HEREDOC_Q / HEREDOC_U (the body lines of a quoted /
+//             unquoted delimiter, the terminator line included, every LF of those lines included)
+//   quotes    [{ start, end, kind: 'sq'|'ansi'|'dq', subst }], in order of start, end exclusive; subst (dq only) is
+//             true when a `$(` or a backtick opens inside, however deep. A "..." the text never closes is left out
+//   heredocs  [{ opStart, tagEnd, bodyStart, bodyEnd, termEnd, quoted, strip, subst, tag }], in order of the
+//             operators; opStart is the `<<`, tagEnd the end of the delimiter word, [bodyStart, bodyEnd) the body,
+//             termEnd the end of the terminator line (with its LF); an unterminated body ends at the end of text.
+//             subst (unquoted only) is true when a body line holds `$(` or a backtick. A `<<` the lexer did not
+//             open as an operator (comment, quote, here-string) is not in the list.
+//   exact/reason  what joinShellLines reports in info for the same call
+// Without a map (every joinShellLines call) the scan allocates nothing for any of this.
+
+// the values of cls (the numbers are part of the contract, tests and gates compare them)
+export const CTX_CLASS = Object.freeze({ CODE: 0, COMMENT: 1, SQ: 2, ANSI: 3, DQ: 4, HEREDOC_Q: 5, HEREDOC_U: 6, BQ: 7 })
+const K_CODE = 0
+const K_COMMENT = 1
+const K_SQ = 2
+const K_ANSI = 3
+const K_DQ = 4
+const K_HQ = 5
+const K_HU = 6
+const K_BQ = 7
 
 const BSL = 92
 const LF = 10
@@ -48,12 +78,45 @@ function isBreak(c) {
 }
 
 export function joinShellLines(src, info = {}) {
+  return scan(src, info, null)
+}
+
+export function shellContext(src) {
+  const info = {}
+  const map = { cls: null, quotes: [], heredocs: [] }
+  const text = scan(src, info, map)
+  return { text, cls: map.cls.subarray(0, text.length), quotes: map.quotes, heredocs: map.heredocs, exact: info.exact, reason: info.reason }
+}
+
+// The one lexer pass. `map` is null (joinShellLines) or { cls, quotes, heredocs } to fill (shellContext).
+function scan(src, info, map) {
   const s = typeof src === 'string' ? src : String(src ?? '')
   info.exact = true
   info.reason = null
   const n = s.length
   let i = 0
   let out = ''
+  const rec = map !== null
+  // the output is never longer than the input (it only drops backslash + LF pairs)
+  const cls = rec ? new Uint8Array(n) : null
+  if (rec) map.cls = cls
+  // open "..." records, innermost last (a substitution marks every one of them)
+  const dqOpen = []
+
+  // append text of class k to the output (and to the class array when a map is wanted)
+  const put = (text, k) => {
+    if (rec) cls.fill(k, out.length, out.length + text.length)
+    out += text
+  }
+  const markSubst = () => {
+    if (rec) for (let q = 0; q < dqOpen.length; q++) dqOpen[q].subst = true
+  }
+  const openDq = (start) => {
+    if (!rec) return
+    const q = { start, end: -1, kind: 'dq', subst: false }
+    map.quotes.push(q)
+    dqOpen.push(q)
+  }
   // atWord: the next joined character starts a word (decides whether # opens a comment, rule 3)
   let atWord = true
   // frames: top | subst $(...) | arith $((...)) / ((...)) | brace ${...} | dq "..." | bq `...`
@@ -127,15 +190,20 @@ export function joinShellLines(src, info = {}) {
     pending = []
     for (const h of list) {
       let closed = false
+      const bodyStart = out.length
+      let bodyEnd = bodyStart
+      let subst = false
       while (i < n && !closed) {
+        const lineStart = out.length
         if (h.quoted) {
           // data: copied line by line, untouched (rule 2)
           const e = s.indexOf('\n', i)
           const end = e < 0 ? n : e
           const line = s.slice(i, end)
-          out += e < 0 ? line : line + '\n'
+          put(e < 0 ? line : line + '\n', K_HQ)
           i = e < 0 ? n : e + 1
           closed = matchesTag(line, h)
+          if (closed) bodyEnd = lineStart
         } else {
           // one logical line, joined; the terminator is looked for on the joined line (V12)
           let line = ''
@@ -155,21 +223,29 @@ export function joinShellLines(src, info = {}) {
               i = j
             }
           }
-          out += ended ? line + '\n' : line
+          put(ended ? line + '\n' : line, K_HU)
           closed = matchesTag(line, h)
+          if (closed) bodyEnd = lineStart
+          else if (rec && (line.includes('$(') || line.includes('`'))) subst = true
         }
       }
-      if (!closed) inexact('unterminated heredoc')
+      if (!closed) {
+        inexact('unterminated heredoc')
+        bodyEnd = out.length
+      }
+      if (rec) {
+        map.heredocs.push({ opStart: h.opStart, tagEnd: h.tagEnd, bodyStart, bodyEnd, termEnd: out.length, quoted: h.quoted, strip: h.strip, subst, tag: h.tag })
+      }
     }
   }
 
   // the delimiter word after << or <<-, read on the joined stream; any quoting makes the body data (rule 5)
-  const readTag = (strip) => {
+  const readTag = (strip, opStart) => {
     for (;;) {
       i = skip(i)
       const c = s.charCodeAt(i)
       if (c !== SP && c !== TAB) break
-      out += s[i]
+      put(s[i], K_CODE)
       i++
     }
     let tag = ''
@@ -184,14 +260,14 @@ export function joinShellLines(src, info = {}) {
       if (c === BSL) {
         // skip() already took a continuation, so this escapes a real character (or ends the text)
         if (i + 1 >= n) {
-          out += '\\'
+          put('\\', K_CODE)
           tag += '\\'
           i++
           break
         }
         quoted = true
         tag += s[i + 1]
-        out += s.slice(i, i + 2)
+        put(s.slice(i, i + 2), K_CODE)
         i += 2
       } else if (c === SQ) {
         quoted = true
@@ -199,16 +275,16 @@ export function joinShellLines(src, info = {}) {
         if (e < 0) {
           inexact('unterminated quote in a heredoc delimiter')
           tag += s.slice(i + 1)
-          out += s.slice(i)
+          put(s.slice(i), K_CODE)
           i = n
           break
         }
         tag += s.slice(i + 1, e)
-        out += s.slice(i, e + 1)
+        put(s.slice(i, e + 1), K_CODE)
         i = e + 1
       } else if (c === DQ) {
         quoted = true
-        out += '"'
+        put('"', K_CODE)
         i++
         let closed = false
         while (i < n) {
@@ -219,29 +295,29 @@ export function joinShellLines(src, info = {}) {
               continue
             }
             if (i + 1 >= n) {
-              out += '\\'
+              put('\\', K_CODE)
               tag += '\\'
               i++
               continue
             }
             const e = s[i + 1]
             tag += '$`"\\'.includes(e) ? e : '\\' + e
-            out += s.slice(i, i + 2)
+            put(s.slice(i, i + 2), K_CODE)
             i += 2
           } else if (d === DQ) {
-            out += '"'
+            put('"', K_CODE)
             i++
             closed = true
             break
           } else {
-            out += s[i]
+            put(s[i], K_CODE)
             tag += s[i]
             i++
           }
         }
         if (!closed) inexact('unterminated quote in a heredoc delimiter')
       } else {
-        out += s[i]
+        put(s[i], K_CODE)
         tag += s[i]
         i++
       }
@@ -251,7 +327,7 @@ export function joinShellLines(src, info = {}) {
       inexact('heredoc without a delimiter')
       return
     }
-    pending.push({ tag, quoted, strip })
+    pending.push({ tag, quoted, strip, opStart, tagEnd: out.length })
     atWord = false
   }
 
@@ -261,28 +337,33 @@ export function joinShellLines(src, info = {}) {
     const d = s.charCodeAt(j)
     if (d === LP) {
       const j2 = skip(j + 1)
+      // the opener is code even inside "...": what follows runs
+      markSubst()
       if (s.charCodeAt(j2) === LP) {
-        out += '$(('
+        put('$((', K_CODE)
         i = j2 + 1
         frames.push({ t: 'arith', depth: 1, inDq: false })
       } else {
-        out += '$('
+        put('$(', K_CODE)
         i = j + 1
         frames.push({ t: 'subst', depth: 0, inDq: false })
       }
       atWord = true
       return
     }
+    const top = frames[frames.length - 1]
+    const inDq = top.t === 'dq' || top.inDq
     if (d === LB) {
-      out += '${'
+      put('${', inDq ? K_DQ : K_CODE)
       i = j + 1
-      frames.push({ t: 'brace', depth: 0, inDq: frames[frames.length - 1].t === 'dq' || frames[frames.length - 1].inDq })
+      frames.push({ t: 'brace', depth: 0, inDq })
       atWord = false
       return
     }
     if (allowAnsi && d === SQ) {
       // $'...': backslash escapes, no joining (rule 2)
-      out += "$'"
+      const qStart = out.length
+      put("$'", K_ANSI)
       let k = j + 1
       while (k < n) {
         const c = s.charCodeAt(k)
@@ -292,23 +373,25 @@ export function joinShellLines(src, info = {}) {
       }
       if (k >= n) {
         inexact("unterminated $'...'")
-        out += s.slice(j + 1)
+        put(s.slice(j + 1), K_ANSI)
         i = n
       } else {
-        out += s.slice(j + 1, k + 1)
+        put(s.slice(j + 1, k + 1), K_ANSI)
         i = k + 1
       }
+      if (rec) map.quotes.push({ start: qStart, end: out.length, kind: 'ansi', subst: false })
       atWord = false
       return
     }
     if (allowAnsi && d === DQ) {
-      out += '$"'
+      openDq(out.length)
+      put('$"', K_DQ)
       i = j + 1
       frames.push({ t: 'dq', depth: 0, inDq: false })
       atWord = false
       return
     }
-    out += '$'
+    put('$', inDq ? K_DQ : K_CODE)
     i++
     atWord = false
   }
@@ -316,43 +399,49 @@ export function joinShellLines(src, info = {}) {
   const stepNormal = (f) => {
     const t = f.t
     const c = s.charCodeAt(i)
+    // a ${...} that sits inside "..." stays part of the string
+    const kc = f.inDq ? K_DQ : K_CODE
     if (c === BSL) {
       const text = backslashRun(t === 'arith' ? () => inexact('continuation inside arithmetic') : null)
       if (text) {
-        out += text
+        put(text, kc)
         atWord = false
       }
       return
     }
     if (c === LF) {
-      out += '\n'
+      put('\n', kc)
       i++
       atWord = true
       if (pending.length) readBodies()
       return
     }
     if (c === SQ && !f.inDq) {
+      const qStart = out.length
       const e = s.indexOf("'", i + 1)
       if (e < 0) {
         inexact('unterminated single quote')
-        out += s.slice(i)
+        put(s.slice(i), K_SQ)
         i = n
       } else {
-        out += s.slice(i, e + 1)
+        put(s.slice(i, e + 1), K_SQ)
         i = e + 1
       }
+      if (rec) map.quotes.push({ start: qStart, end: out.length, kind: 'sq', subst: false })
       atWord = false
       return
     }
     if (c === DQ) {
-      out += '"'
+      openDq(out.length)
+      put('"', K_DQ)
       i++
       frames.push({ t: 'dq', depth: 0, inDq: false })
       atWord = false
       return
     }
     if (c === BQ) {
-      out += '`'
+      markSubst()
+      put('`', K_BQ)
       i++
       frames.push({ t: 'bq', depth: 0, inDq: false })
       atWord = false
@@ -367,14 +456,14 @@ export function joinShellLines(src, info = {}) {
       // a comment runs to the LF, untouched (rules 2 and 3); the LF itself is handled by the next step
       const e = s.indexOf('\n', i)
       const end = e < 0 ? n : e
-      out += s.slice(i, end)
+      put(s.slice(i, end), K_COMMENT)
       i = end
       return
     }
     if (c === LT && words) {
       const j1 = skip(i + 1)
       if (s.charCodeAt(j1) !== LT) {
-        out += '<'
+        put('<', K_CODE)
         i++
         atWord = true
         return
@@ -383,19 +472,20 @@ export function joinShellLines(src, info = {}) {
       const c2 = s.charCodeAt(j2)
       if (c2 === LT) {
         // <<< is a here-string, not a heredoc
-        out += '<<<'
+        put('<<<', K_CODE)
         i = j2 + 1
         atWord = true
         return
       }
+      const opStart = out.length
       if (c2 === DASH) {
-        out += '<<-'
+        put('<<-', K_CODE)
         i = j2 + 1
-        readTag(true)
+        readTag(true, opStart)
       } else {
-        out += '<<'
+        put('<<', K_CODE)
         i = j2
-        readTag(false)
+        readTag(false, opStart)
       }
       return
     }
@@ -405,7 +495,7 @@ export function joinShellLines(src, info = {}) {
         if (f.depth > 0) f.depth--
         else frames.pop()
       }
-      out += s[i]
+      put(s[i], kc)
       i++
       atWord = false
       return
@@ -415,7 +505,7 @@ export function joinShellLines(src, info = {}) {
         const j = skip(i + 1)
         if (s.charCodeAt(j) === LP) {
           // (( arithmetic command
-          out += '(('
+          put('((', K_CODE)
           i = j + 1
           frames.push({ t: 'arith', depth: 1, inDq: false })
           atWord = true
@@ -423,13 +513,13 @@ export function joinShellLines(src, info = {}) {
         }
       }
       if (t !== 'top') f.depth++
-      out += '('
+      put('(', K_CODE)
       i++
       atWord = true
       return
     }
     if (c === RP) {
-      out += ')'
+      put(')', K_CODE)
       i++
       if (t === 'top') {
         atWord = true
@@ -445,7 +535,7 @@ export function joinShellLines(src, info = {}) {
       return
     }
     if (isBreak(c)) {
-      out += s[i]
+      put(s[i], K_CODE)
       i++
       atWord = true
       return
@@ -463,7 +553,7 @@ export function joinShellLines(src, info = {}) {
       if (d === BSL || d === SQ || d === DQ || d === BQ || d === DOLLAR || d === HASH || d === LB || d === RB || isBreak(d)) break
       j++
     }
-    out += s.slice(i, j)
+    put(s.slice(i, j), kc)
     i = j
     atWord = false
   }
@@ -471,13 +561,14 @@ export function joinShellLines(src, info = {}) {
   const stepDq = () => {
     const c = s.charCodeAt(i)
     if (c === BSL) {
-      out += backslashRun(null)
+      put(backslashRun(null), K_DQ)
       return
     }
     if (c === DQ) {
-      out += '"'
+      put('"', K_DQ)
       i++
       frames.pop()
+      if (rec) dqOpen.pop().end = out.length
       atWord = false
       return
     }
@@ -486,7 +577,8 @@ export function joinShellLines(src, info = {}) {
       return
     }
     if (c === BQ) {
-      out += '`'
+      markSubst()
+      put('`', K_BQ)
       i++
       frames.push({ t: 'bq', depth: 0, inDq: false })
       return
@@ -497,7 +589,7 @@ export function joinShellLines(src, info = {}) {
       if (d === BSL || d === DQ || d === DOLLAR || d === BQ) break
       j++
     }
-    out += s.slice(i, j)
+    put(s.slice(i, j), K_DQ)
     i = j
   }
 
@@ -505,11 +597,11 @@ export function joinShellLines(src, info = {}) {
   const stepBq = () => {
     const c = s.charCodeAt(i)
     if (c === BSL) {
-      out += backslashRun(() => inexact('continuation inside backticks'))
+      put(backslashRun(() => inexact('continuation inside backticks')), K_BQ)
       return
     }
     if (c === BQ) {
-      out += '`'
+      put('`', K_BQ)
       i++
       frames.pop()
       atWord = false
@@ -521,7 +613,7 @@ export function joinShellLines(src, info = {}) {
       if (d === BSL || d === BQ) break
       j++
     }
-    out += s.slice(i, j)
+    put(s.slice(i, j), K_BQ)
     i = j
   }
 
@@ -537,5 +629,7 @@ export function joinShellLines(src, info = {}) {
     inexact(t === 'dq' ? 'unterminated double quote' : t === 'bq' ? 'unterminated backtick' : `unterminated ${t}`)
   }
   if (pending.length) inexact('unterminated heredoc')
+  // a "..." the text never closes is not a token (exact is false then, and the gates treat it as such)
+  if (rec && dqOpen.length) map.quotes = map.quotes.filter((q) => q.end >= 0)
   return out
 }
