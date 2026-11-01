@@ -506,6 +506,221 @@ describe('E7: python runners are fine outside /Volumes', () => {
   })
 })
 
+describe('R1 (review round 1): bypasses found by the review', () => {
+  describe('B1: the install-test verbs run the test script', () => {
+    it.each([
+      'npm it', 'npm cit', 'npm sit', 'npm install-test', 'npm install-ci-test', 'npm clean-install-test',
+      'npm --silent it', 'pnpm it', 'pnpm install-test', 'cd . && npm it',
+    ])('denies: %s', (cmd) => {
+      expect(denies(cmd)).toBe(true)
+    })
+    it.each(['npm install', 'npm i', 'npm ci', 'npm init', 'npm install-something-else', 'pnpm install'])('allows: %s', (cmd) => {
+      expect(denies(cmd)).toBe(false)
+    })
+  })
+
+  describe('B2: node --run <script> is npm run <script>', () => {
+    it.each(['node --run test', 'node --run=test', 'node --run test:unit', 'node --run=test:unit', 'node --no-warnings --run test'])('denies: %s', (cmd) => {
+      expect(denies(cmd)).toBe(true)
+    })
+    it.each(['node --run build', 'node --run=lint', 'node --run'])('allows: %s', (cmd) => {
+      expect(denies(cmd)).toBe(false)
+    })
+  })
+
+  describe('B3: a shell that reads its program from stdin', () => {
+    it.each([
+      'echo npx vitest | bash',
+      "printf 'npx vitest run' | sh",
+      "echo 'npx vitest' | bash -s",
+      "echo 'npm test' | zsh",
+      "cat <<'E' | bash\nnpx vitest\nE",
+      "echo 'pytest' | bash -s -- a",
+      "bash < /dev/null; echo vitest",
+    ])('denies: %s', (cmd) => {
+      expect(denies(cmd)).toBe(true)
+    })
+    it.each([
+      'echo hello | bash',
+      'cat script.sh | bash',
+      'bash < script.sh',
+      "bash -c 'echo hi'",
+      'bash script.sh',
+    ])('allows (no runner word in the text): %s', (cmd) => {
+      expect(denies(cmd)).toBe(false)
+    })
+  })
+
+  describe('B4: code handed to an interpreter on the command line', () => {
+    it.each([
+      `node -e "require('child_process').execSync('npx vitest')"`,
+      `node -p "require('child_process').execSync('npm test').toString()"`,
+      `node --eval="require('child_process').execSync('npx jest')"`,
+      `node --print "require('child_process').execSync('npx jest')"`,
+      `python3 -c "import subprocess; subprocess.run(['npx','vitest'])"`,
+      `python -c "import os; os.system('npm test')"`,
+      `osascript -e 'do shell script "npx vitest"'`,
+      `perl -e 'system("npx vitest")'`,
+      `perl -e 'exec("npm", "test")'`,
+      'bun ./node_modules/vitest/vitest.mjs run',
+      'bun node_modules/vitest/vitest.mjs',
+      'bun run ./node_modules/vitest/vitest.mjs',
+    ])('denies: %s', (cmd) => {
+      expect(denies(cmd)).toBe(true)
+    })
+    it.each([
+      `node -e "console.log(1)"`,
+      `node -p "process.version"`,
+      `python3 -c "print(1)"`,
+      `osascript -e 'display dialog "hi"'`,
+      `perl -e 'print "hi"'`,
+      'bun script.ts',
+      'bun run build',
+    ])('allows: %s', (cmd) => {
+      expect(denies(cmd)).toBe(false)
+    })
+    it('python -c running pytest is a python runner: the cwd rule applies', () => {
+      expect(denies(`python3 -c "import pytest; pytest.main()"`)).toBe(false)
+      expect(denies(`python3 -c "import pytest; pytest.main()"`, volp)).toBe(true)
+      expect(denies(`python3 -c "import unittest; unittest.main()"`, volp)).toBe(true)
+      expect(denies(`python3 -Ic "import pytest; pytest.main()"`, volp)).toBe(true)
+      expect(denies(`python3 -c "print(1)"`, volp)).toBe(false)
+    })
+  })
+
+  describe('B5: env -S / --split-string carries a command', () => {
+    it.each([
+      `env -S 'npx vitest'`,
+      `env --split-string='npx vitest'`,
+      `env --split-string 'npm test'`,
+      `env -S'npx vitest run'`,
+      `env -i -S 'FOO=1 npx vitest'`,
+    ])('denies: %s', (cmd) => {
+      expect(denies(cmd)).toBe(true)
+    })
+    it('the value is judged like a command: cwd rule for pytest', () => {
+      expect(denies(`env -S 'pytest -q'`)).toBe(false)
+      expect(denies(`env -S 'pytest -q'`, volp)).toBe(true)
+    })
+    it.each([`env -S 'ls -la'`, 'env FOO=1 ls', `env -u HOME ls`])('allows: %s', (cmd) => {
+      expect(denies(cmd)).toBe(false)
+    })
+  })
+
+  describe('B7: the /Volumes prefix is compared case-insensitively', () => {
+    const up = (p: string) => p.toUpperCase()
+    it('the hook cwd in another case', () => {
+      expect(denies('pytest', up(volp))).toBe(true)
+    })
+    it('a cd target in another case', () => {
+      expect(denies(`cd ${up(volp)} && pytest`)).toBe(true)
+    })
+    it.each(['--rootdir', '--root', '--dir', '--prefix', '-C'])('the %s value in another case', (opt) => {
+      expect(denies(`pytest ${opt} ${up(volp)}`)).toBe(true)
+    })
+    it('the default root: /volumes and /VOLUMES', () => {
+      expect(gateDecision('cd /volumes/8T && pytest', ok, { liveRoot: live }).deny).toBe(true)
+      expect(gateDecision('pytest', '/VOLUMES/8T/x', { liveRoot: live }).deny).toBe(true)
+    })
+    it('a path that only starts with the same letters is not under the volume', () => {
+      expect(denies(`pytest -C ${vol}-other`)).toBe(false)
+    })
+  })
+
+  describe('a missing or relative hook cwd', () => {
+    const open = (cmd: string, cwd?: unknown) => gateDecision(cmd, cwd, { liveRoot: live, volumesRoot: vol }).deny === true
+    it.each([undefined, null, '', 'relative/dir', 42])('a python runner with cwd %s is denied', (cwd) => {
+      expect(open('pytest', cwd)).toBe(true)
+      expect(open('python3 -m pytest -q', cwd)).toBe(true)
+    })
+    it('a JS runner is denied anyway, a non-runner is allowed', () => {
+      expect(open('vitest run', undefined)).toBe(true)
+      expect(open('ls -la', undefined)).toBe(false)
+      expect(open('git status && echo hi', 'relative/dir')).toBe(false)
+    })
+    it('an absolute cd gives the command a cwd of its own', () => {
+      expect(open(`cd ${ok} && pytest`, undefined)).toBe(false)
+      expect(open(`cd ${volp} && pytest`, undefined)).toBe(true)
+    })
+    it('the hook entry: no cwd + pytest exits 2, no cwd + ls exits 0', () => {
+      const run = (command: string) => spawnSync(process.execPath, [GATE], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }), encoding: 'utf8', timeout: 20000,
+      })
+      expect(run('pytest').status).toBe(2)
+      expect(run('ls -la').status).toBe(0)
+    })
+  })
+
+  // Rows are templates (@OK@, @VOLP@, @VOL@): the fixture paths exist only after beforeAll.
+  const fx = (s: string) => s.replace(/@OK@/g, ok).replace(/@VOLP@/g, volp).replace(/@VOL@/g, vol)
+  describe('B6: a cd in a subshell, pipeline element, background job, substitution or bash -c stays there', () => {
+    it.each([
+      `(cd @OK@); pytest`,
+      `(cd @OK@ && ls); python3 -m pytest`,
+      `bash -c 'cd @OK@'; pytest`,
+      `x=$(cd @OK@; pwd); pytest`,
+      `cd @OK@ | cat; pytest`,
+      `cd @OK@ & pytest`,
+      `pytest $(cd @OK@; echo x)`,
+    ])('the outer cwd is unchanged, denies on a volume cwd: %s', (cmd) => {
+      expect(denies(fx(cmd), volp)).toBe(true)
+    })
+    it.each([
+      `(cd @VOLP@); pytest`,
+      `bash -c 'cd @VOLP@'; pytest`,
+      `x=$(cd @VOLP@; pwd); pytest`,
+      `cd @VOLP@ | cat; pytest`,
+    ])('and a cd into the volume inside a scope does not poison the outer cwd: %s', (cmd) => {
+      expect(denies(fx(cmd), ok)).toBe(false)
+    })
+    it.each([
+      `(cd @VOLP@ && pytest)`,
+      `bash -c 'cd @VOLP@ && pytest'`,
+      `x=$(cd @VOLP@; pytest)`,
+      `cd @VOLP@ & pytest`,
+    ])('a runner inside the scope still sees the scope cwd: %s', (cmd) => {
+      expect(denies(fx(cmd), ok)).toBe(true)
+    })
+    it('a plain cd still moves the cwd for what follows', () => {
+      expect(denies(`cd ${ok} && pytest`, volp)).toBe(false)
+      expect(denies(`cd ${volp} && pytest`, ok)).toBe(true)
+      expect(denies(`{ cd ${volp}; }; pytest`, ok)).toBe(true)
+    })
+  })
+
+  describe('B8: an assigned HOME or CDPATH makes ~, $HOME, a bare cd and a relative cd unresolvable', () => {
+    it.each([
+      `export HOME=@VOLP@; cd; pytest`,
+      `HOME=@VOLP@; cd ~ && pytest`,
+      `HOME=@VOLP@; cd $HOME && pytest`,
+      'export HOME=@OK@; cd ~ && pytest',
+      `export CDPATH=@VOL@; cd ok && pytest`,
+      `CDPATH=@VOL@ cd ok && pytest`,
+    ])('denies: %s', (cmd) => {
+      expect(denies(fx(cmd), base)).toBe(true)
+    })
+    it('without such an assignment ~ and a relative cd resolve as before', () => {
+      expect(denies('cd ok && pytest', base)).toBe(false)
+      expect(denies('cd ./ok && pytest', base)).toBe(false)
+    })
+    it('a CDPATH assignment does not touch an explicit ./ cd', () => {
+      expect(denies(`export CDPATH=${vol}; cd ./ok && pytest`, base)).toBe(false)
+    })
+  })
+
+  describe('over-block controls: a runner word in quoted data or in a non-runner stays allowed', () => {
+    it.each([
+      'echo "node -e vitest"',
+      'grep -rn "npm it" src',
+      'git commit -m "npm it works, node --run test"',
+      'cat package.json | grep vitest',
+      'ls | bash',
+    ])('allows: %s', (cmd) => {
+      expect(denies(cmd)).toBe(false)
+    })
+  })
+})
+
 describe('the hook entry (stdin JSON -> exit 0 / 2)', () => {
   const run = (payload: unknown) => spawnSync(process.execPath, [GATE], {
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
