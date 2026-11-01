@@ -98,6 +98,41 @@ export interface HeadlessConfig {
   readonly dailyCap: Micro | null
 }
 
+/** Where the gate's calibration comes from (card 40e03382): the Console reading (default) or the grant model. */
+export type CalibrationSource = 'console' | 'grant_model'
+
+/**
+ * Card 40e03382, spec 3: the recovered usage rows of the ledger gap. A DATA file
+ * the gate reads (readReconstructed), never a ledger source: its rows are
+ * counted once, multiplied, into the prior charge only.
+ */
+export interface ReconstructedConfig {
+  /** Absolute path, inside the gate's store folder at deploy. */
+  readonly path: string
+  /** sha256 (64 lowercase hex) of the file's bytes. */
+  readonly sha256: string
+  /** The rows' cost is multiplied by this (1..10) for the part of the usage the file does not show. */
+  readonly multiplier: Factor
+  /** The stretch with no ledger at all: from the file's last row to the live ledger's first. */
+  readonly gap: {
+    readonly fromMs: number
+    readonly toMs: number
+    /** The fixed charge, already multiplied, while the period starts before `toMs`. */
+    readonly chargeUsd: Micro
+  }
+}
+
+/** Card 40e03382, spec 2: the grant model that calibrates the gate without a Console reading. */
+export interface GrantModelConfig {
+  /** One grant (200.00). */
+  readonly grantUsd: Micro
+  /** Day-of-month (1..28) candidates of the next grant, ascending, 1..4 of them. */
+  readonly grantDays: readonly number[]
+  /** The grant's exact hour is unknown: the period starts and ends this many hours before 00:00Z of the grant day. 0..48, default 24. */
+  readonly boundaryLeadH: number
+  readonly reconstructed: ReconstructedConfig | null
+}
+
 export interface CreditGateConfig {
   readonly schema: typeof CONFIG_SCHEMA
   readonly ledgerSources: readonly LedgerSource[]
@@ -127,6 +162,10 @@ export interface CreditGateConfig {
   readonly vaultKeyId: string
   /** null: the config has no headless part, the headless path stays off. */
   readonly headless: HeadlessConfig | null
+  /** Optional `calibrationSource`; missing means `console`, today's behaviour. */
+  readonly calibrationSource: CalibrationSource
+  /** Optional `grantModel` block; required when calibrationSource is `grant_model`. */
+  readonly grantModel: GrantModelConfig | null
 }
 
 export type ConfigRejectReason =
@@ -258,6 +297,14 @@ const HEADLESS_KEYS = [
   'allowedCallers', 'cwdRoots', 'forbiddenCwds', 'runsDir', 'claudeBin', 'claudeBinSha256', 'models', 'maxBudgetUsd', 'wallClockMin',
 ] as const
 const HEADLESS_OPTIONAL_KEYS = ['keyMode', 'toolProfile', 'maxConcurrent', 'dailyCapUsd'] as const
+const GRANT_MODEL_KEYS = ['grantUsd', 'grantDays'] as const
+const GRANT_MODEL_OPTIONAL_KEYS = ['boundaryLeadH', 'reconstructed'] as const
+const RECONSTRUCTED_KEYS = ['path', 'sha256', 'multiplier', 'gap'] as const
+const GAP_KEYS = ['from', 'to', 'chargeUsd'] as const
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/
+/** The reconstructed rows' multiplier: a factor between 1 and this. */
+const MAX_RECONSTRUCTED_MULTIPLIER = 10n
+export const DEFAULT_BOUNDARY_LEAD_H = 24
 
 function readSources(v: unknown): LedgerSource[] {
   if (!Array.isArray(v) || v.length === 0 || v.length > 8) fail('ledgerSources: must be a list of 1..8 sources')
@@ -330,6 +377,48 @@ function readHeadless(v: unknown): HeadlessConfig {
   })
 }
 
+function readReconstructedBlock(v: unknown): ReconstructedConfig {
+  const p = 'grantModel.reconstructed'
+  if (!isPlainObject(v)) fail(`${p}: must be an object`)
+  checkKeys(v, p, RECONSTRUCTED_KEYS)
+  if (typeof v.sha256 !== 'string' || !SHA256_HEX_RE.test(v.sha256)) fail(`${p}.sha256: must be the 64-hex sha256 of the file`)
+  const multiplier = parseFactor(v.multiplier)
+  if (multiplier === null || multiplier.num > MAX_RECONSTRUCTED_MULTIPLIER * multiplier.den) {
+    fail(`${p}.multiplier: must be a factor from 1 to ${MAX_RECONSTRUCTED_MULTIPLIER}`)
+  }
+  if (!isPlainObject(v.gap)) fail(`${p}.gap: must be an object`)
+  checkKeys(v.gap, `${p}.gap`, GAP_KEYS)
+  const fromMs = parseUtcInstant(v.gap.from)
+  const toMs = parseUtcInstant(v.gap.to)
+  if (fromMs === null) fail(`${p}.gap.from: must be YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ`)
+  if (toMs === null) fail(`${p}.gap.to: must be YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ`)
+  if (fromMs >= toMs) fail(`${p}.gap: from must be before to`)
+  return Object.freeze({
+    path: absPath(v.path, `${p}.path`),
+    sha256: v.sha256,
+    multiplier,
+    gap: Object.freeze({ fromMs, toMs, chargeUsd: usd(v.gap.chargeUsd, `${p}.gap.chargeUsd`) }),
+  })
+}
+
+function readGrantModel(v: unknown): GrantModelConfig {
+  if (!isPlainObject(v)) fail('grantModel: must be an object')
+  checkKeys(v, 'grantModel', GRANT_MODEL_KEYS, GRANT_MODEL_OPTIONAL_KEYS)
+  const grantUsd = usd(v.grantUsd, 'grantModel.grantUsd')
+  if (grantUsd <= 0) fail('grantModel.grantUsd: must be above 0.00')
+  const days = v.grantDays
+  if (!Array.isArray(days) || days.length === 0 || days.length > 4) fail('grantModel.grantDays: must be a list of 1..4 days')
+  const grantDays = days.map((d, i) => int(d, `grantModel.grantDays[${i}]`, 1, 28))
+  if (new Set(grantDays).size !== grantDays.length) fail('grantModel.grantDays: duplicated day')
+  grantDays.sort((a, b) => a - b)
+  return Object.freeze({
+    grantUsd,
+    grantDays: Object.freeze(grantDays),
+    boundaryLeadH: v.boundaryLeadH === undefined ? DEFAULT_BOUNDARY_LEAD_H : int(v.boundaryLeadH, 'grantModel.boundaryLeadH', 0, 48),
+    reconstructed: v.reconstructed === undefined ? null : readReconstructedBlock(v.reconstructed),
+  })
+}
+
 /** Parse and validate a `credit-gate-config/v1` text. Any doubt is a rejection. */
 export function parseCreditGateConfig(text: string): ConfigLoadResult {
   let doc: unknown
@@ -343,7 +432,12 @@ export function parseCreditGateConfig(text: string): ConfigLoadResult {
   if (!isPlainObject(doc)) return { ok: false, reason: 'invalid', detail: 'top level: must be an object' }
   if (doc.schema !== CONFIG_SCHEMA) return { ok: false, reason: 'schema', detail: `schema: expected ${CONFIG_SCHEMA}` }
   try {
-    checkKeys(doc, 'top level', TOP_KEYS, ['headless', 'canaryCloseMaxH'])
+    checkKeys(doc, 'top level', TOP_KEYS, ['headless', 'canaryCloseMaxH', 'calibrationSource', 'grantModel'])
+    const calibrationSource = doc.calibrationSource ?? 'console'
+    if (calibrationSource !== 'console' && calibrationSource !== 'grant_model') fail('calibrationSource: must be console or grant_model')
+    // A grantModel block next to `console` is allowed (the rollback is one key), but it must be well-formed.
+    if (calibrationSource === 'grant_model' && !Object.hasOwn(doc, 'grantModel')) fail('grantModel: required when calibrationSource is grant_model')
+    const grantModel = Object.hasOwn(doc, 'grantModel') ? readGrantModel(doc.grantModel) : null
     const factor = parseFactor(doc.reservationFactor)
     if (factor === null || factor.num * 1_000_000n < MIN_RESERVATION_FACTOR_NUM * factor.den) {
       fail('reservationFactor: must be a factor of at least 1.5')
@@ -373,6 +467,8 @@ export function parseCreditGateConfig(text: string): ConfigLoadResult {
         : int(doc.canaryCloseMaxH, 'canaryCloseMaxH', 1, MAX_CANARY_CLOSE_H),
       vaultKeyId: doc.vaultKeyId,
       headless: Object.hasOwn(doc, 'headless') ? readHeadless(doc.headless) : null,
+      calibrationSource,
+      grantModel,
     })
     return { ok: true, config }
   } catch (err) {

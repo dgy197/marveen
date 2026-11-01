@@ -38,13 +38,9 @@ function grantBlock(over: Record<string, unknown> = {}): Record<string, unknown>
 
 /** A full config object with calibrationSource grant_model and the given grantModel block. */
 function cfgObject(grantModel: Record<string, unknown> | undefined = grantBlock(), over: Record<string, unknown> = {}) {
-  const o: Record<string, unknown> = {
-    ...configObject('/tmp/x/usage.jsonl', '/tmp/x/batch/STOP'),
-    calibrationSource: 'grant_model',
-    ...over,
-  }
+  const o: Record<string, unknown> = { ...configObject('/tmp/x/usage.jsonl', '/tmp/x/batch/STOP'), calibrationSource: 'grant_model' }
   if (grantModel !== undefined) o.grantModel = grantModel
-  return o
+  return { ...o, ...over }
 }
 
 function parse(o: unknown) {
