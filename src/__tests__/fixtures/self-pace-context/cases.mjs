@@ -194,6 +194,36 @@ export const HEREDOC_OWNER_CASES = [
   { id: 'O17-do-bash-loop', command: `for i in 1; do env -i bash <<'EOF'${NL}${C} -r${NL}EOF${NL}done`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'm1 OPEN' },
   { id: 'O18-pipe-bash-midline', command: `cat <<'EOF' | bash${NL}echo x; ${C} -r${NL}EOF`, expect: 'DENY', why: 'pipe', keep: `echo x; ${C} -r`, source: 'm1 OPEN' },
   { id: 'O19-env-bash-midline-pipe', command: `env -i bash <<'EOF'${NL}echo job | ${C} -${NL}EOF`, expect: 'DENY', why: 'owner', keep: `echo job | ${C} -`, source: 'm1 OPEN' },
+  // Fix round 1 after the security review (B1-B4): the rows below (O21 and up) are the shapes the review named, one
+  // row per shape. The 18 rows above stay the reviewer's first set.
+  // B1: the output of the owner's whole compound goes on into a pipe, a process or the shell's descriptors
+  { id: 'O21-group-pipe-bash', command: `{ cat <<'EOF'${NL}${C} -r${NL}EOF${NL}} | bash`, expect: 'DENY', why: 'pipe', keep: `${C} -r`, source: 'review r1 B1' },
+  { id: 'O22-subshell-pipe-bash', command: `( cat <<'EOF'${NL}${C} -r${NL}EOF${NL}) | bash`, expect: 'DENY', why: 'pipe', keep: `${C} -r`, source: 'review r1 B1' },
+  { id: 'O23-loop-pipe-bash', command: `for i in 1; do cat <<'EOF'${NL}${C} -r${NL}EOF${NL}done | bash`, expect: 'DENY', why: 'pipe', keep: `${C} -r`, source: 'review r1 B1' },
+  { id: 'O24-if-pipe-bash', command: `if true; then cat <<'EOF'${NL}${C} -r${NL}EOF${NL}fi | bash`, expect: 'DENY', why: 'pipe', keep: `${C} -r`, source: 'review r1 B1' },
+  { id: 'O25-subst-pipe-bash', command: `tee $(cat <<'EOF'${NL}${C} -r${NL}EOF${NL}) | bash`, expect: 'DENY', why: 'pipe', keep: `${C} -r`, source: 'review r1 B1' },
+  { id: 'O26-exec-procsubst', command: `exec > >(bash)${NL}cat <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'procsubst', keep: `${C} -r`, source: 'review r1 B1' },
+  { id: 'O27-exec-redirect', command: `exec 1>/tmp/p${NL}cat <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'review r1 B1' },
+  { id: 'O28-procsubst-elsewhere', command: `cat <<'EOF'${NL}${C} -r${NL}EOF${NL}diff <(true) <(true)`, expect: 'DENY', why: 'procsubst', keep: `${C} -r`, source: 'review r1 B1' },
+  // B2: an interpreter is a data consumer only as `bash /abs/script` with no assignment prefix
+  { id: 'O29-pipe-env-prefix-script', command: `cat <<'EOF' | BASH_ENV=/tmp/x bash ${MSG} ezermester brainy -${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'pipe', keep: `${C} -r`, source: 'review r1 B2' },
+  { id: 'O30-pipe-relative-script', command: `cat <<'EOF' | bash scripts/agent-msg.sh ezermester brainy -${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'pipe', keep: `${C} -r`, source: 'review r1 B2' },
+  { id: 'O31-subst-env-prefix-script', command: `BASH_ENV=/tmp/x bash ${MSG} ezermester brainy $(cat <<'EOF'${NL}${C} -r${NL}EOF${NL})`, expect: 'DENY', why: 'subst', keep: `${C} -r`, source: 'review r1 B2' },
+  { id: 'O32-subst-relative-script', command: `bash agent-msg.sh ezermester brainy $(cat <<'EOF'${NL}${C} -r${NL}EOF${NL})`, expect: 'DENY', why: 'subst', keep: `${C} -r`, source: 'review r1 B2' },
+  // B3: a redefined data owner, a forge CLI with an alias / extension / unknown word, a data owner with a program option
+  { id: 'O33-function-cat', command: `cat() { bash; }${NL}cat <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'review r1 B3' },
+  { id: 'O34-function-keyword-cat', command: `function cat { bash; }${NL}cat <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'review r1 B3' },
+  { id: 'O35-alias-cat', command: `alias cat=bash${NL}cat <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'review r1 B3' },
+  { id: 'O36-gh-extension', command: `gh extension exec x <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'review r1 B3' },
+  { id: 'O37-gh-alias', command: `gh alias set x bash <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'review r1 B3' },
+  { id: 'O38-gh-unknown-word', command: `gh my-extension <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'review r1 B3' },
+  { id: 'O39-glab-unknown-word', command: `glab my-extension <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'review r1 B3' },
+  { id: 'O40-sort-compress-program', command: `sort --compress-program=bash <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'review r1 B3' },
+  // B4: an option token that is quoted is still the option
+  { id: 'O41-curl-quoted-K', command: `curl ${Q}-K${Q} /tmp/c --data-binary @- <<'JSON'${NL}${C} -r${NL}JSON`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'review r1 B4' },
+  { id: 'O42-curl-quoted-config', command: `curl "--config" /tmp/c --data-binary @- <<'JSON'${NL}${C} -r${NL}JSON`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'review r1 B4' },
+  { id: 'O43-git-quoted-c', command: `git commit ${Q}-c${Q} core.editor=bash -F - <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'review r1 B4' },
+  { id: 'O44-git-dquoted-c', command: `git commit "-c" core.editor=bash -F - <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'review r1 B4' },
 ]
 
 // 6b. Rows that are NOT part of the 18 above. O20 is a green guard (DENY on the head, exact=false in the lexer, the
@@ -252,9 +282,21 @@ export const HEREDOC_GOV_CASES = [
 // 9. The closed list of data owners (spec section 2, rule 1; the list is closed, a new name is a Brainy decision).
 // `NAME <<'EOF'` with nothing else on the line: data. awk and sed are NOT on the list: visible.
 export const DATA_OWNER_NAMES = ['cat', 'tee', 'wc', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'sort', 'uniq', 'tr', 'base64', 'diff', 'cmp', 'shasum', 'sha256sum', 'md5', 'jq', 'gh', 'glab']
+// gh and glab are data owners only with an API subcommand (review r1 B3): the list rows give them `api`, and the bare
+// word (no subcommand: an alias, an extension or an unknown word runs a program) is a row of its own below.
+const OWNER_ARGS = { gh: ' api x', glab: ' api x' }
 export const HEREDOC_LIST_CASES = [
-  ...DATA_OWNER_NAMES.map((n) => ({ id: `L-${n}`, command: `${n} <<'EOF'${NL}x${NL}EOF`, data: true, why: 'data', source: 'spec section 2 rule 1' })),
-  ...['awk', 'sed'].map((n) => ({ id: `L-not-${n}`, command: `${n} <<'EOF'${NL}x${NL}EOF`, data: false, why: 'owner', source: 'spec section 2 rule 1' })),
+  ...DATA_OWNER_NAMES.map((n) => ({ id: `L-${n}`, command: `${n}${OWNER_ARGS[n] ?? ''} <<'EOF'${NL}x${NL}EOF`, data: true, why: 'data', source: 'spec section 2 rule 1' })),
+  ...['awk', 'sed', 'gh', 'glab'].map((n) => ({ id: `L-not-${n}`, command: `${n} <<'EOF'${NL}x${NL}EOF`, data: false, why: 'owner', source: 'spec section 2 rule 1 (review r1 B3 for gh and glab)' })),
+]
+
+// 9b. KEEP (review r1): the new proof conditions must not take a plain data heredoc away. A compound whose output goes
+// on into a DATA consumer, and the fleet's own absolute-path message idiom around a `$( )` and a pipe, stay data.
+export const HEREDOC_KEEP_CASES = [
+  { id: 'K-group-pipe-grep', command: `{ cat <<'EOF'${NL}the ${T} ${S} path${NL}EOF${NL}} | grep -c path`, expect: 'ALLOW', data: true, marker: `${T} ${S}`, source: 'review r1 B1' },
+  { id: 'K-loop-pipe-wc', command: `for i in 1; do cat <<'EOF'${NL}the ${T} ${S} path${NL}EOF${NL}done | wc -l`, expect: 'ALLOW', data: true, marker: `${T} ${S}`, source: 'review r1 B1' },
+  { id: 'K-gh-pr-body-file', command: `gh pr create --title x --body-file - <<'EOF'${NL}the ${T} ${S} path${NL}EOF`, expect: 'ALLOW', data: true, marker: `${T} ${S}`, source: 'review r1 B3' },
+  { id: 'K-usr-bin-cat', command: `/usr/bin/cat <<'EOF'${NL}the ${T} ${S} path${NL}EOF`, expect: 'ALLOW', data: true, marker: `${T} ${S}`, source: 'review r1 B3' },
 ]
 
 // 10. SUBST: the substitution frames the lexer must report in ctx.substs (card 6f27c86a N1). Convention fixed here:

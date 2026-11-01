@@ -660,31 +660,50 @@ export function stripDataPayloads(seg) {
 // `<<`; everything it did not know was "data". That missed `cat <<'EOF' | bash`, `env -i bash <<'EOF'`,
 // `bash -c "$(cat <<'EOF' ...)"`, `bash <(cat <<'EOF' ...)` and `for ..; do env -i bash <<'EOF'`. Now the default is
 // "visible", and a body is data only when ALL of these hold (heredocBodyIsData, the one place that decides):
-//   1. the command word that owns the redirect is in the closed DATA_OWNERS list (cat, tee, grep, jq, gh ...; git
-//      only for commit/tag/notes/stash/hash-object/apply/am without -c; curl without -K/--config), after skipping
-//      assignments, shell keywords (do, then ...) and the pass-through prefixes (sudo, env ...) -- a prefix WITH an
-//      option (`env -i`, `sudo -u x`, `nice -n 5`, `timeout 5`, `command -p`) is an unknown owner;
-//   2. every code-level `|` stage on the operator line (`cat <<'EOF' | stage`) is a data command too, and no `<(`
-//      or `>(` stands there;
+//   0. the command defines no function and no alias, and has no `<(`, `>(` or exec redirection at code level
+//      anywhere (a redefined `cat`, an output sent to a process or to the shell's own descriptors: nothing about
+//      where the text goes can be proved);
+//   1. the command word that owns the redirect is in the closed DATA_OWNERS list (cat, tee, grep, jq ...; git only
+//      for commit/tag/notes/stash/hash-object/apply/am; gh and glab only for the API subcommands; curl; no option
+//      that names a program or a config file: git -c, curl -K/--config, sort --compress-program; option tokens are
+//      compared after their quotes and backslashes are removed), after skipping assignments, shell keywords (do,
+//      then ...) and the pass-through prefixes (sudo, env ...) -- a prefix WITH an option (`env -i`, `sudo -u x`,
+//      `nice -n 5`, `timeout 5`, `command -p`) is an unknown owner, and so is a path-qualified word outside the
+//      system bin directories;
+//   2. every code-level `|` stage on the operator line (`cat <<'EOF' | stage`) is a data command too, and so is every
+//      `|` stage that follows a closer after the terminator (`{ cat <<'EOF' .. EOF }`, `( .. )`, `done`, `fi`,
+//      `esac`, the `)` of a `$( )`): the output of the whole compound goes on to that stage;
 //   3. every substitution frame around the heredoc, innermost out, is a `$( )` (ctx.substs, the lexer's own frames:
 //      no bracket is counted here) that is either a pure assignment (`x=$(cat <<'EOF' ..)`) or the argument of a
 //      data command; a `<( )`, `>( )`, a backtick run or a frame the lexer could not close is never data.
 // A script-running interpreter (bash x.sh, python3 x.py, node x.js ...) counts as a data CONSUMER in 2. and 3. only
-// (`cat <<'EOF' | bash agent-msg.sh .. -`, `bash agent-msg.sh .. "$(cat <<'EOF' ..)"`, the fleet's own message
-// idiom), and only when its first argument is a plain path that is not the stdin of the shell itself (/dev/stdin,
-// /dev/fd/N, /proc/*/fd/N, anything under /dev or /proc, `..` segments, quotes, `$`): `bash /dev/stdin`, `bash -s`,
-// `bash -c`, `python3 -` run the body. As the direct owner (`bash agent-msg.sh .. - <<'EOF'`) it stays visible.
+// (`cat <<'EOF' | bash /abs/agent-msg.sh .. -`, `bash /abs/agent-msg.sh .. "$(cat <<'EOF' ..)"`, the fleet's own
+// message idiom), and only with NO assignment prefix (`BASH_ENV=x bash ..`) and when its first argument is an
+// ABSOLUTE plain path that is not the stdin of the shell itself (/dev/stdin, /dev/fd/N, /proc/*/fd/N, anything
+// under /dev or /proc, `..` segments, quotes, `$`): `bash /dev/stdin`, `bash -s`, `bash -c`, `python3 -` run the
+// body. As the direct owner (`bash /abs/agent-msg.sh .. - <<'EOF'`) it stays visible.
 //
-// Limits (measured and accepted, card 6f27c86a): a body written to a file and run later (`cat <<'EOF' > s.sh && bash
+// Still accepted (measured, card 6f27c86a): a body written to a file and run later (`cat <<'EOF' > s.sh && bash
 // s.sh`, O14) is not followed -- the file is what runs, and the scheduler surface check still catches the
 // /api/schedules form; text that flows through a variable (`x=$(cat <<'EOF' ..)` then `bash -c "$x"`) is data at
 // the assignment and is not followed; a script file that itself runs its stdin is trusted (it could be run as
-// well from a file Write put there). The rule only ever ADDS visible text, so it can over-block (a body that
-// mentions a trigger word inside `echo "$(cat <<'EOF' ..)"`, F11) but never newly allow. A backtick run keeps its
-// own limit: a heredoc or a quoted payload inside backticks is always visible, and the lexer does not tokenise
-// quotes inside a backtick run (0bb35172 E1: `r=`curl -d '..' ..`` denies where the `$( )` form allows).
+// well from a file Write put there, so the absolute path is no new door); an option spelled through a variable
+// (`$K`) is not resolved, a data owner whose first argument starts with `$` is unknown instead. The rule only ever
+// ADDS visible text, so it can over-block (a body that mentions a trigger word inside `echo "$(cat <<'EOF' ..)"`,
+// F11; any `)`, `}`, `done`, `fi` or `esac` after the terminator that is piped on to a non-data stage, even one
+// that closes an unrelated compound; any function, alias, `<(` or exec redirection in the same command) but
+// never newly allow. A backtick run keeps its own limit: a heredoc or a quoted payload inside backticks is always
+// visible, and the lexer does not tokenise quotes inside a backtick run (0bb35172 E1: `r=`curl -d '..' ..``
+// denies where the `$( )` form allows).
 const DATA_OWNERS = new Set(['cat', 'tee', 'wc', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'sort', 'uniq', 'tr', 'base64', 'diff', 'cmp', 'shasum', 'sha256sum', 'md5', 'jq', 'gh', 'glab', 'git', 'curl'])
 const GIT_DATA_SUBCOMMANDS = new Set(['commit', 'tag', 'notes', 'stash', 'hash-object', 'apply', 'am'])
+// gh / glab talk to the hosting API with these; an alias, an extension or an unknown word runs a program
+const FORGE_DATA_SUBCOMMANDS = new Set(['api', 'pr', 'mr', 'issue', 'release', 'repo', 'run', 'workflow', 'gist', 'label', 'search', 'status', 'secret', 'variable', 'ci', 'snippet'])
+// long options that name a program to run, per data owner (GNU getopt takes any unique prefix of them)
+const PROGRAM_OPTIONS = { sort: ['compress-program'], curl: ['config'] }
+const OPTION_SENSITIVE_OWNERS = new Set(['git', 'curl', 'sort', 'gh', 'glab'])
+// a path-qualified command word is only the data command if it lives in a system bin directory
+const DATA_COMMAND_BIN_DIRS = new Set(['/bin', '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'])
 const PASS_THROUGH_PREFIXES = new Set(['sudo', 'env', 'nice', 'time', 'exec', 'command', 'nohup', 'stdbuf'])
 const SHELL_KEYWORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '{', 'time'])
 // the interpreters that run a script FILE given as the first argument (ssh is not one of them: `| ssh box` runs stdin)
@@ -738,12 +757,20 @@ function commandOfSegment(segment) {
     break
   }
   if (i >= tokens.length) return { word: '', rest: [], assigned }
-  return { word: tokens[i].split('/').pop(), rest: tokens.slice(i + 1), assigned }
+  return { word: wordCommandName(tokens[i]), rest: tokens.slice(i + 1), assigned }
 }
 
-// A script path that is plainly a file: not an option, no quote or expansion, no `..`, and not stdin in any spelling.
+// `/usr/bin/cat` is cat; `./cat` or `/tmp/x/cat` is some program that merely carries the name (a name no list has).
+function wordCommandName(token) {
+  const at = token.lastIndexOf('/')
+  if (at === -1) return token
+  return DATA_COMMAND_BIN_DIRS.has(token.slice(0, at)) ? token.slice(at + 1) : `?${token}`
+}
+
+// A script path that is plainly a file: absolute, not an option, no quote or expansion, no `..`, and not stdin in
+// any spelling.
 function isPlainScriptFile(path) {
-  if (path === undefined || path.startsWith('-') || !/^[\w.\/~+@%-]+$/.test(path)) return false
+  if (path === undefined || !path.startsWith('/') || !/^[\w.\/+@%-]+$/.test(path)) return false
   const parts = path.split('/').filter(Boolean)
   if (parts.some((p) => p === '.' || p === '..')) return false
   return !(path.startsWith('/') && (parts[0] === 'dev' || parts[0] === 'proc'))
@@ -755,15 +782,132 @@ function consumesAsData(command, role) {
   if (!command) return false
   const { word, rest, assigned } = command
   if (word === '') return role === 'subst' && assigned > 0 // x=$(cat <<EOF ..) stores the text; a bare $(..) runs it
-  if (role !== 'owner' && SCRIPT_INTERPRETER_RX.test(word)) return isPlainScriptFile(rest[0])
+  // an interpreter consumes a body as data only as `bash /abs/script ..` with no assignment prefix (BASH_ENV=..)
+  if (role !== 'owner' && SCRIPT_INTERPRETER_RX.test(word)) return assigned === 0 && isPlainScriptFile(rest[0])
   if (!DATA_OWNERS.has(word)) return false
   if (rest.some((t) => /[<>]\(/.test(t))) return false // a process substitution can hand the text to a command
+  const opts = optionWords(rest)
+  if (opts === null) return false
+  // an option spelled through a variable (`$K`) or a first argument that is one cannot be read: unknown
+  if (OPTION_SENSITIVE_OWNERS.has(word) && rest.some((t) => t.startsWith('$'))) return false
+  if (opts.some((t) => namesProgramOption(word, t))) return false
   if (word === 'git') {
-    if (rest.some((t) => t === '-c' || t.startsWith('--exec-path') || t.startsWith('--config-env'))) return false
-    return GIT_DATA_SUBCOMMANDS.has(rest.find((t) => !t.startsWith('-')))
+    if (opts.some((t) => t === '-c' || t.startsWith('--exec-path') || t.startsWith('--config-env'))) return false
+    return GIT_DATA_SUBCOMMANDS.has(opts.find((t) => !t.startsWith('-')))
   }
-  if (word === 'curl') return !rest.some((t) => /^-[A-Za-z]*K/.test(t) || t.startsWith('--config'))
+  if (word === 'gh' || word === 'glab') return FORGE_DATA_SUBCOMMANDS.has(opts.find((t) => !t.startsWith('-')))
+  if (word === 'curl') return !opts.some((t) => /^-[A-Za-z]*K/.test(t))
   return true
+}
+
+// The tokens of a command as the shell hands them over: quotes and backslashes are gone (`'-K'`, `"--config"`,
+// `-"K"` and `--conf\ig` are the options they spell). null for ANSI-C quoting with an escape (`$'\x2dK'`), which
+// can spell any option.
+function optionWords(tokens) {
+  const out = []
+  for (const t of tokens) {
+    if (/\$['"]/.test(t) && t.includes('\\')) return null
+    out.push(t.replace(/\$(?=['"])/g, '').replace(/[\\'"]/g, ''))
+  }
+  return out
+}
+
+// Does this (unquoted) token spell a long option of PROGRAM_OPTIONS for the owner, as the full name or any prefix
+// of it that getopt would still take?
+function namesProgramOption(owner, token) {
+  if (!token.startsWith('--')) return false
+  const name = token.slice(2).split('=')[0]
+  return name.length >= 2 && (PROGRAM_OPTIONS[owner] ?? []).some((long) => long.startsWith(name))
+}
+
+const isCodeAt = (cls, k) => cls[k] === CTX_CLASS.CODE || cls[k] === CTX_CLASS.BQ
+
+// Facts about the whole command that make every heredoc body unprovable, computed once per reading: an output that
+// is sent to a process (`<(`, `>(`) or to the shell's own descriptors (`exec >f`, `exec 3>&1`), and a function or
+// an alias definition (a redefined `cat` is any command; a function body is not followed to its callers).
+const WHOLE_COMMAND_BLOCKS = new WeakMap()
+function wholeCommandBlocksData(ctx) {
+  let blocked = WHOLE_COMMAND_BLOCKS.get(ctx)
+  if (blocked === undefined) {
+    blocked = redirectsOutputElsewhere(ctx) || definesFunctionOrAlias(ctx)
+    WHOLE_COMMAND_BLOCKS.set(ctx, blocked)
+  }
+  return blocked
+}
+
+function redirectsOutputElsewhere(ctx) {
+  const { text, cls, substs } = ctx
+  if (substs.some((s) => s.kind === 'proc-in' || s.kind === 'proc-out')) return true
+  for (const m of text.matchAll(/[<>]\(|(?<![\w$-])exec\s*(?:\d+|\{[A-Za-z_]\w*\})?[<>&]/g)) if (isCodeAt(cls, m.index)) return true
+  return false
+}
+
+function definesFunctionOrAlias(ctx) {
+  const { text, cls, heredocs } = ctx
+  for (const m of text.matchAll(/(?<![$<>])\(\s*\)|(?<![\w$.-])function\s/g)) if (isCodeAt(cls, m.index)) return true
+  // alias is a builtin and stays the alias command through quotes (`al'i'as cat=bash`): read the text without
+  // quote and backslash characters, and without the heredoc bodies (prose)
+  let plain = ''
+  let last = 0
+  for (const h of heredocs) {
+    plain += text.slice(last, h.bodyStart)
+    last = h.bodyEnd
+  }
+  plain = (plain + text.slice(last)).replace(/[\\'"]/g, '')
+  return /(?<![\w$.-])alias\s[^;&|\n]*?[\w.+-]+=/.test(plain)
+}
+
+const PIPE_SCAN_LIMIT = 1500
+
+// The stages that follow `from` on its logical line: a code-level `|` opens one (behind a trailing `|` it may open on
+// the next line), and `;`, `&&`, `||`, a background `&`, the end of the line or an outer closer end the scan. True
+// when every stage is a data consumer.
+function pipeStagesAreData(ctx, from) {
+  const { text, cls } = ctx
+  let k = from
+  while (k < text.length) {
+    if (k - from > PIPE_SCAN_LIMIT) return false // a line this long behind a closer is not read: unknown
+    const c = text[k]
+    if (!isCodeAt(cls, k) || c === ' ' || c === '\t') { k++; continue }
+    if (c === '\n' || c === ';' || c === ')' || c === '}') return true
+    if (c === '&') {
+      if (text[k + 1] !== '&' && (text[k - 1] === '>' || text[k - 1] === '<' || text[k + 1] === '>')) { k++; continue } // 2>&1, &>
+      return true
+    }
+    if (c !== '|') { k++; continue }
+    if (text[k + 1] === '|') return true
+    let s = k + (text[k + 1] === '&' ? 2 : 1)
+    while (s < text.length && isCodeAt(cls, s) && /\s/.test(text[s])) s++
+    let e = s
+    while (e < text.length && e - from <= PIPE_SCAN_LIMIT && !(isCodeAt(cls, e) && /[;&|\n)}]/.test(text[e]))) e++
+    if (e - from > PIPE_SCAN_LIMIT) return false
+    if (!consumesAsData(commandOfSegment(codeOnlyText(ctx, s, e)), 'pipe')) return false
+    k = e
+  }
+  return true
+}
+
+const CLOSER_RX = /[)}]|(?<![\w$.\/-])(?:done|fi|esac)(?![\w.\/-])/g
+const LAST_NON_DATA_CLOSER = new WeakMap()
+
+// The heredoc may sit inside a group, a subshell, a loop, an if/case or a `$( )` that closes AFTER its terminator,
+// and the compound's whole output goes on into a pipe behind the closer (`{ cat <<'EOF' .. } | bash`). The lexer has
+// no frames for those, so every code-level closer of the command is looked at once (cached per reading): if a pipe
+// follows it, each stage must be a data consumer. The heredoc is data only if no such closer that fails comes
+// after its terminator. (A closer of an unrelated compound is looked at too: that only over-blocks.)
+function compoundOutputIsData(ctx, from) {
+  let last = LAST_NON_DATA_CLOSER.get(ctx)
+  if (last === undefined) {
+    last = -1
+    const { text, cls } = ctx
+    CLOSER_RX.lastIndex = 0
+    let m
+    while ((m = CLOSER_RX.exec(text)) !== null) {
+      if (isCodeAt(cls, m.index) && !pipeStagesAreData(ctx, m.index + m[0].length)) last = m.index
+    }
+    LAST_NON_DATA_CLOSER.set(ctx, last)
+  }
+  return last < from
 }
 
 // ctx is a shellContext result, h one of its heredocs. False is the default: every unknown owner, wrapper option,
@@ -771,6 +915,8 @@ function consumesAsData(command, role) {
 export function heredocBodyIsData(ctx, h) {
   const { text, cls, substs } = ctx
   if (cls[h.opStart] === CTX_CLASS.BQ) return false
+  // 0. the whole command: no function or alias, no output sent to a process or the shell's descriptors
+  if (wholeCommandBlocksData(ctx)) return false
   // 1. the owner of the redirect
   if (!consumesAsData(commandOfSegment(segmentBefore(ctx, h.opStart)), 'owner')) return false
   // 2. where the owner's output goes: the operator line, from the end of the delimiter to the first body line
@@ -785,6 +931,8 @@ export function heredocBodyIsData(ctx, h) {
     while (to < h.bodyStart && !(cls[to] === CTX_CLASS.CODE && /[;&|\n)]/.test(text[to]))) to++
     if (!consumesAsData(commandOfSegment(codeOnlyText(ctx, from, to)), 'pipe')) return false
   }
+  // 2b. where the output of a compound that closes after the terminator goes: `{ .. } | stage`, `done | stage`, ...
+  if (!compoundOutputIsData(ctx, h.termEnd)) return false
   // 3. the substitution frames around the heredoc, innermost out. start is the first character of the opener, end
   //    the index after the closer, -1 for a frame that is not known to be closed.
   for (let i = substs.length - 1; i >= 0; i--) {

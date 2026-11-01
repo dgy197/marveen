@@ -29,7 +29,7 @@ import * as gate from '../../scripts/self-pace-gate.mjs'
 // @ts-expect-error -- plain .mjs hook script, no types
 import * as lexer from '../../scripts/shell-line-join.mjs'
 // @ts-expect-error -- plain .mjs fixture module, no types
-import { NL, Q, ATTACK_CASES, STRIPPER_UNCHANGED_IDS, INTERP_CASES, OPLINE_CASES, FLEET_CASES, STRIP_CONTRACT_CASES, HEREDOC_OWNER_CASES, HEREDOC_LIMIT_CASES, HEREDOC_DATA_CASES, HEREDOC_GOV_CASES, HEREDOC_LIST_CASES, SUBST_CASES, COMMIT_COMMENT_CASES, INEXACT_CASES } from './fixtures/self-pace-context/cases.mjs'
+import { NL, Q, ATTACK_CASES, STRIPPER_UNCHANGED_IDS, INTERP_CASES, OPLINE_CASES, FLEET_CASES, STRIP_CONTRACT_CASES, HEREDOC_OWNER_CASES, HEREDOC_LIMIT_CASES, HEREDOC_DATA_CASES, HEREDOC_GOV_CASES, HEREDOC_LIST_CASES, HEREDOC_KEEP_CASES, SUBST_CASES, COMMIT_COMMENT_CASES, INEXACT_CASES } from './fixtures/self-pace-context/cases.mjs'
 
 type Row = { id: string; command: string; expect: 'DENY' | 'ALLOW'; note?: string; keep?: string; fn?: string; out?: string; why?: string; data?: boolean; marker?: string }
 type StripFn = 'stripHeredocBodies' | 'stripDataPayloads' | 'stripGitCommitMessages' | 'stripProseArguments'
@@ -224,6 +224,7 @@ const limitRows = HEREDOC_LIMIT_CASES as Row[]
 const dataRows = HEREDOC_DATA_CASES as Row[]
 const govRows = HEREDOC_GOV_CASES as Row[]
 const listRows = HEREDOC_LIST_CASES as Row[]
+const keepRows = HEREDOC_KEEP_CASES as Row[]
 const substRows = SUBST_CASES as Array<{ id: string; command: string; substs: Array<{ kind: string; open: string; close: string }> }>
 const commentRows = COMMIT_COMMENT_CASES as Row[]
 const inexactRows = INEXACT_CASES as Row[]
@@ -241,7 +242,10 @@ const maskOf = (command: string, options?: { keepRunBodies?: boolean }) => {
 // ---------------------------------------------------------------------------------------------------------
 describe('(f) OPEN rows (E1): a heredoc body that the shell runs stays visible', () => {
   it('the corpus has the 18 reviewer rows O1-O13 and O15-O19', () => {
-    expect(ownerRows.map((r) => r.id.split('-')[0])).toEqual(['O1', 'O2', 'O3', 'O4', 'O5', 'O6', 'O7', 'O8', 'O9', 'O10', 'O11', 'O12', 'O13', 'O15', 'O16', 'O17', 'O18', 'O19'])
+    expect(ownerRows.slice(0, 18).map((r) => r.id.split('-')[0])).toEqual(['O1', 'O2', 'O3', 'O4', 'O5', 'O6', 'O7', 'O8', 'O9', 'O10', 'O11', 'O12', 'O13', 'O15', 'O16', 'O17', 'O18', 'O19'])
+  })
+  it('the corpus has the 24 round-1 review rows O21-O44 (B1: 8, B2: 4, B3: 8, B4: 4)', () => {
+    expect(ownerRows.slice(18).map((r) => r.id.split('-')[0])).toEqual(Array.from({ length: 24 }, (_, i) => `O${21 + i}`))
   })
   for (const row of ownerRows) {
     it(`${row.id} [${row.why}]: gateDecision says DENY${row.note ? ` (${row.note})` : ''}`, () => {
@@ -270,7 +274,7 @@ describe('(g) heredocBodyIsData(ctx, heredoc): the decision per heredoc', () => 
   })
   // reason labels: owner (the redirect owner is no provable data consumer), pipe (a pipe stage on the operator line),
   // subst (an enclosing $( ) whose command is no data consumer), procsubst (<( ) / >( )), data (the body is data)
-  for (const row of [...ownerRows, ...dataRows, ...listRows]) {
+  for (const row of [...ownerRows, ...dataRows, ...listRows, ...keepRows]) {
     const want = row.data === true
     it(`${row.id} [${row.why}]: data=${want}`, () => {
       expect(typeof gate.heredocBodyIsData, 'heredocBodyIsData is exported').toBe('function')
@@ -304,7 +308,7 @@ describe('(h) shellContext(x).substs: the frames the decision is made from (N1)'
   }
   const all = [...ownerRows, ...limitRows, ...dataRows, ...govRows, ...listRows]
   it('E6 on the new corpus: text equals joinShellLines, exact is unchanged, the frames are valid, ordered and nested or disjoint', () => {
-    expect(all.length).toBe(18 + 2 + 13 + 22 + 22)
+    expect(all.length).toBe(42 + 2 + 13 + 22 + 24)
     for (const row of all) {
       const info: { exact?: boolean } = {}
       const joined = lexer.joinShellLines(row.command, info) as string
@@ -375,8 +379,8 @@ describe('(j) maskInertLiterals keepRunBodies: runsBody and the visible or maske
     ...['F5-cat-pipe-grep', 'F6-git-F', 'F8-assign-subst', 'F9-agentmsg-direct-owner', 'F10-cat-pipe-agentmsg-plain', 'F12-cat-to-file'].map((id) => ({ id, command: dataRow(id).command, runs: dataRow(id).data !== true, marker: dataRow(id).marker as string })),
     { id: 'S1-heredoc', command: (STRIP_CONTRACT_CASES as Row[]).find((r) => r.id === 'S1-heredoc')!.command, runs: false, marker: 'at the same time' },
   ]
-  it('the table has the 16 OPEN rows, gd47, six FH rows and S1', () => {
-    expect(maskRows.length).toBe(16 + 1 + 6 + 1)
+  it('the table has the 40 OPEN rows (all but O8 and O9), gd47, six FH rows and S1', () => {
+    expect(maskRows.length).toBe(40 + 1 + 6 + 1)
   })
   for (const row of maskRows) {
     it(`${row.id}: keepRunBodies:true -> runsBody=${row.runs}, the body is ${row.runs ? 'visible' : 'masked'}`, () => {
@@ -412,6 +416,18 @@ describe('(k) FH rows: a data heredoc keeps its verdict, a visible one is DENY',
     it(`${row.id}: stripHeredocBodies ${row.data ? 'removes' : 'keeps'} the body (${JSON.stringify(row.marker)})`, () => {
       const out = gate.stripHeredocBodies(row.command) as string
       expect(out.includes(row.marker as string), JSON.stringify(out)).toBe(row.data !== true)
+    })
+  }
+})
+
+describe('(k) KEEP rows (review r1): the stronger proof conditions leave a plain data heredoc alone', () => {
+  it('the corpus has the 4 KEEP rows', () => {
+    expect(keepRows.length).toBe(4)
+  })
+  for (const row of keepRows) {
+    it(`${row.id}: ${row.expect} and the body is stripped`, () => {
+      expect(verdictOf(row.command), JSON.stringify(row.command)).toBe(row.expect)
+      expect((gate.stripHeredocBodies(row.command) as string).includes(row.marker as string), JSON.stringify(row.command)).toBe(false)
     })
   }
 })
