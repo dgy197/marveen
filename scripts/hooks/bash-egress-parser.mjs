@@ -398,7 +398,7 @@ export function commandIndex(mw) {
 // 10 would-be blocks. Browser automation (chromium / playwright / puppeteer) is deliberately NOT in
 // this list: it is the fleet's mandated browser-verify path on its own domains, and an own-domain
 // allowlist is direction (b). Stated as open, measured, and left to the owner.
-const NET_PRIMITIVE = /\b(?:urllib|requests\.|http\.client|httplib|httpx|aiohttp|urlopen|socket\.|fetch\s*\(|https?\.(?:get|request)\s*\(|axios|node-fetch|undici|got\s*\(|LWP::|HTTP::Tiny|Net::HTTP|open-uri|IO::Socket|file_get_contents|curl_exec|Invoke-WebRequest)|-M(?:LWP|HTTP::Tiny|IO::Socket|Net::HTTP)/
+const NET_PRIMITIVE = /\b(?:urllib|requests\.|http\.client|httplib|httpx|aiohttp|urlopen|socket\.|fetch\s*\(|https?\.(?:get|request)\s*\(|axios|node-fetch|undici|got\s*\(|LWP::|HTTP::Tiny|Net::HTTP|open-uri|IO::Socket|file_get_contents|curl_exec|Invoke-WebRequest)|-M(?:LWP|HTTP::Tiny|IO::Socket|Net::HTTP)|['"`](?:node:)?https?['"`]\s*\)\s*\.(?:get|request)\s*\(/
 
 export function hostOf(url) {
   const m = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/?#]*@)?(\[[^\]]*\]|[^/:?#]*)/i.exec(url)
@@ -434,6 +434,14 @@ export function isExternal(url) {
 // host is an OPEN host and denies, however it was built. Used at both interpreter call sites (one-liner
 // body, heredoc / here-string feed); the curl / wget argv path does not come here.
 const SCHEME_SPLIT = /(?<![A-Za-z0-9_])(?:https?|ftps?|sftp|scp|tftp|smbs?|dict|gophers?|imaps?|pop3s?|smtps?|ldaps?|telnet|mqtt|rtsp|h?t{1,2}ps?):\/?['"`\\$]/i
+// A scheme in a literal of its own followed, a few glue characters later (` + `, `, `, `.concat(`), by a lone
+// `':'` or `':/'` literal: `'http'+':'+'//evil.example'`, `'https' ':/' '/evil.example'`. And a literal that
+// opens with `//` and a host character: the tail of a protocol-relative URL (r1, B3).
+const SCHEME_PIECES = /['"`](?:https?|wss?|ftps?|h?t{1,2}ps?)['"`][\s+,.()A-Za-z]{0,24}?['"`]:\/?['"`]/i
+const REL_FRAGMENT = /['"`]\/\/[A-Za-z0-9.[$%{-]/
+// Optional port after the host: digits, or one `{...}` / `${...}` placeholder (f-string, template literal).
+const CODE_PORT = /(?:\d+|\$?\{[^{}]*\}|)/y
+const CTL = /[\t\r\n]/
 // `[userinfo@]` then `[v6]` or a dotted name; sticky, started at the first character after `://`.
 const CODE_AUTHORITY = /(?:[^@\s/?#'"`\\<>()]*@)?(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]*)/y
 // What makes a literal go on: behind a `)` another string or `+`; behind a newline also `.`, `%` or `\`.
@@ -457,17 +465,68 @@ function skipFiller(s) {
 // real end only if the next line does not go on with a string, `+`, `.` or `%` (Python joins adjacent
 // strings across lines inside parentheses; JS carries on with a leading `+` or `.`). A `)` is an end unless
 // it only groups the literal: `('https://api.github.com') + '.evil.example'`.
-function literalEnds(after) {
+// `shellRaw` is the raw reading of a one-liner: its text still carries the SHELL's quotes, so a quote behind
+// `)` may be the shell's closing quote (`node -e "fetch('https://api.github.com')"`), not a string
+// continuation. There the `)` is an end; the shell-joined reading (quotes removed) decides the grouping
+// case (card 44167c0b r1, B4).
+function literalEnds(after, shellRaw = false) {
   const rest = after.slice(0, FILLER_WINDOW).replace(/^[ \t]+/, '')
   if (rest === '') return after.length < FILLER_WINDOW
   const n = rest[0]
   if (n === ',' || n === ';' || n === ']' || n === '}') return true
-  if (n === ')') { const nx = skipFiller(rest.slice(1)); return nx !== null && !GROUP_CONTINUES.test(nx) }
+  if (n === ')') {
+    if (shellRaw) return true
+    const nx = skipFiller(rest.slice(1))
+    return nx !== null && !GROUP_CONTINUES.test(nx)
+  }
   if (n === '\n' || n === '\r') { const nx = skipFiller(rest); return nx !== null && !LINE_CONTINUES.test(nx) }
   return false
 }
 const printable = (s) => s.replace(/[\x00-\x1f\x7f]/g, '?')
-function scanCode(text, closed, open) {
+// Is the authority that ends at `p` (host, or host and port) complete? Closed by `/ ? #`, a plain space, `)`,
+// the end of the text, or a closing quote after which the literal ends. WHATWG URL parsing deletes TAB, CR
+// and LF from anywhere in the input, so those never close a host: `https://api.github.com<LF>.evil.example`
+// is the host api.github.com.evil.example (r1, B2).
+function authorityCloses(text, p, shellRaw, afterPort) {
+  const q = p < text.length ? skipCtl(text, p) : p
+  if (q > p && /[A-Za-z0-9.@%_~\\-]/.test(text[q] ?? '')) return false
+  const c = text[q]
+  if (c === undefined || /[/?# )]/.test(c)) return true
+  if (c === "'" || c === '"' || c === '`') {
+    const after = text.slice(q + 1, q + 1 + FILLER_WINDOW)
+    return literalEnds(after, shellRaw) || (afterPort && portLiteralContinues(after))
+  }
+  return false
+}
+// A literal that closes right behind a PORT (`'http://localhost:3420'`, `f'http://localhost:{p}'`) and goes
+// on: harmless only if the next piece is a path literal (starts with `/ ? #`: `+ '/api/x'`) or an operand
+// that is not a literal (`+ path`: building a URL from a variable is a post-hoc concatenation this scan
+// does not follow). A literal starting with anything else (`'@evil.example'`, `'.evil'`, `'pass@..'`)
+// extends the authority, and so does `.concat(...)`, `% (...)`, `\` (r1, B1).
+function portLiteralContinues(after) {
+  let s = after
+  for (;;) {
+    const nx = skipFiller(s)
+    if (nx === null) return false
+    s = nx
+    if (s[0] === ')') { s = s.slice(1); continue }
+    break
+  }
+  if (s[0] === '+') {
+    const nx = skipFiller(s.slice(1))
+    if (nx === null || nx === '') return false
+    s = nx
+    const lit = /^[rRbBuUfF]{0,2}['"`](.?)/.exec(s)
+    return lit ? lit[1] !== '' && '/?#'.includes(lit[1]) : true
+  }
+  const lit = /^[rRbBuUfF]{0,2}['"`](.?)/.exec(s)
+  return lit ? lit[1] !== '' && '/?#'.includes(lit[1]) : false
+}
+function skipCtl(text, i) {
+  while (i < text.length && CTL.test(text[i])) i++
+  return i
+}
+function scanCode(text, closed, open, shellRaw = false) {
   for (let from = text.indexOf('://'); from !== -1; from = text.indexOf('://', from)) {
     const at = from + 3
     from = at
@@ -476,11 +535,20 @@ function scanCode(text, closed, open) {
     const a = CODE_AUTHORITY.exec(text)
     const host = a[1]
     const end = at + a[0].length
-    const c = text[end]
-    let ok
-    if (c === undefined || /[/?#:\s)]/.test(c)) ok = true
-    else if (c === "'" || c === '"' || c === '`') ok = literalEnds(text.slice(end + 1, end + 1 + FILLER_WINDOW))
-    else ok = false
+    let c = text[end]
+    // A port is part of the authority: after `:` read digits or one placeholder, then the SAME closing rule
+    // as after the host. Anything else behind it (`+`, another literal, `@`, `:`, letters) is an open host:
+    // `'http://localhost:3420' + '@evil.example'` reaches evil.example (r1, B1).
+    let p = end
+    let afterPort = false
+    const q = skipCtl(text, end)
+    if (text[q] === ':') {
+      CODE_PORT.lastIndex = q + 1
+      p = q + 1 + CODE_PORT.exec(text)[0].length
+      c = text[p]
+      afterPort = true
+    }
+    const ok = authorityCloses(text, p, shellRaw, afterPort)
     if (host === '') {
       if (c === '/') continue                 // `file:///x`: an empty host followed by `/` names no network destination
       if (bare && ok) continue                // a lone `'://'` (split, replace): nothing is named
@@ -491,7 +559,7 @@ function scanCode(text, closed, open) {
     }
     open.push(`<open host: ${printable(host + (c ?? '')).slice(0, 40)}>`)
   }
-  if (SCHEME_SPLIT.test(text)) open.push('<split scheme>')
+  if (SCHEME_SPLIT.test(text) || SCHEME_PIECES.test(text) || REL_FRAGMENT.test(text)) open.push('<split scheme>')
 }
 // The destinations of interpreter code: the external hosts that are CLOSED (read as a whole), then the
 // markers for what is not. `shellJoin` adds the reading bash gives a one-liner (quotes removed, adjacent
@@ -501,7 +569,7 @@ function scanCode(text, closed, open) {
 export function codeDestinations(text, { shellJoin = false } = {}) {
   const closed = []
   const open = []
-  scanCode(text, closed, open)
+  scanCode(text, closed, open, shellJoin)
   if (shellJoin) scanCode(shellWords(text).join(' '), closed, open)
   return [...new Set(closed), ...new Set(open)]
 }
