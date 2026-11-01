@@ -15,7 +15,9 @@
 //           body is joined and its terminator is matched on the joined line (V12); <<- strips leading TABs.
 //   rule 6  info.exact = false when the reading is not sure: an unterminated quote, substitution or heredoc,
 //           a backslash run + LF inside backticks (they halve the run, V22), a continuation inside arithmetic,
-//           or a `case` inside $(...). The returned text is still the reading of these rules.
+//           a `case` inside $(...) (the keyword is read on the joined stream), or a `)` that closes a $(...)
+//           whose body holds the word `in` (a case pattern close looks the same; `for x in` trips it too).
+//           The returned text is still the reading of these rules.
 //   rule 7  idempotent: every decision depends only on the joined stream, and the output IS that stream.
 //
 // info: { exact: boolean, reason: string|null }, reset on every call; reason keeps the first cause.
@@ -70,6 +72,20 @@ export function joinShellLines(src, info = {}) {
   const skip = (j) => {
     while (s.charCodeAt(j) === BSL && s.charCodeAt(j + 1) === LF) j += 2
     return j
+  }
+
+  // Does the joined stream hold `word` at i, as a whole word? Every character is read through skip(), so a
+  // continuation inside the word (ca\<NL>se) or right after it (case\<NL> a) is stepped over (rule 4).
+  // Returns true when the word is complete there: the next joined character is a word break or the end.
+  const wordAt = (word, at) => {
+    let j = at
+    for (let k = 0; k < word.length; k++) {
+      j = skip(j)
+      if (s.charCodeAt(j) !== word.charCodeAt(k)) return false
+      j++
+    }
+    j = skip(j)
+    return j >= n || isBreak(s.charCodeAt(j))
   }
 
   // A backslash run at i, in a joining context. Escape pairs are copied; an odd run escapes the next
@@ -421,6 +437,8 @@ export function joinShellLines(src, info = {}) {
         f.depth--
         atWord = true
       } else {
+        // a `)` with no matching `(` closes $(...); after an `in` word it may be a case pattern close instead
+        if (t === 'subst' && f.sawIn) inexact('unmatched ) after in inside $(...)')
         frames.pop()
         atWord = false
       }
@@ -433,9 +451,11 @@ export function joinShellLines(src, info = {}) {
       return
     }
     // a run of ordinary word characters
-    if (t === 'subst' && atWord && s.startsWith('case', i) && (i + 4 >= n || isBreak(s.charCodeAt(i + 4)))) {
-      // `case x in a)` would close $(...) early here: not modelled (spec section 5)
-      inexact('case inside $(...)')
+    if (t === 'subst' && atWord) {
+      // `case x in a)` would close $(...) early here: not modelled (spec section 5). Keywords are read on the
+      // joined stream (rule 4): ca\<NL>se and case\<NL> a are the keyword too.
+      if (wordAt('case', i)) inexact('case inside $(...)')
+      else if (wordAt('in', i)) f.sawIn = true
     }
     let j = i + 1
     while (j < n) {
