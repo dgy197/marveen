@@ -19,7 +19,8 @@ TOKEN_FILE="${ROOT}/store/.dashboard-token"
 # Dashboard port: the same chain as agent-msg.sh (MARVEEN_WEB_PORT, WEB_PORT,
 # this install's .env, 3420). It was a literal 3420 (#1869). The trailing `true` keeps
 # a missing .env from ending the script under set -e/pipefail.
-# The port is checked even when MARVEEN_API_BASE is set (card d4be011e, the f137f980 B3 fix). An unset variable
+# This script always calls localhost:${PORT} (it does not read MARVEEN_API_BASE), so the port is all there is to
+# check (card d4be011e, the f137f980 B3 fix). An unset variable
 # means "next source"; a set but empty one is refused. Digits only (ASCII 0-9), 1-65535, so "1@attacker.local" or
 # "3420/x" can never end up in the URL's host.
 if [ "${MARVEEN_WEB_PORT+set}" = set ]; then PORT="$MARVEEN_WEB_PORT"
