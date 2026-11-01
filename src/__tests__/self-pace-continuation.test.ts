@@ -160,8 +160,22 @@ describe('(b) oracle guard', () => {
   })
 })
 
+// The differential oracle launches a real (restricted, marker-only) shell. It never runs in a normal or full vitest
+// run, a package check or CI: only a person who sets MARVEEN_SHELL_ORACLE=1 by hand gets it (Brainy 6435).
+const ORACLE_OPT_IN = process.env.MARVEEN_SHELL_ORACLE === '1'
+
+describe('(b) the real-shell oracle is opt-in', () => {
+  it('without MARVEEN_SHELL_ORACLE=1, runOracle refuses a real spawn before starting anything', () => {
+    if (ORACLE_OPT_IN) return
+    let caught: unknown = null
+    try { runOracle(rewriteForOracle('true'), 'bash', { cwd: '/var/empty' }) } catch (e) { caught = e }
+    expect(caught).toBeInstanceOf(OracleRefused)
+    expect(String((caught as Error).message)).toContain('MARVEEN_SHELL_ORACLE')
+  })
+})
+
 for (const shell of ['bash', 'zsh']) {
-  describe.skipIf(!shellAvailable(shell))(`(b) differential oracle on /bin/${shell}`, () => {
+  describe.skipIf(!ORACLE_OPT_IN || !shellAvailable(shell))(`(b) differential oracle on /bin/${shell} (opt-in)`, () => {
     const truth = new Map<string, boolean>()
     beforeAll(() => {
       const cwd = freshOracleDir()
