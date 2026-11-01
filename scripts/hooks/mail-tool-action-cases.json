@@ -1534,6 +1534,432 @@
         "note": "N3b: destination folder / mailbox identifiers are free text for the forward-word check"
       }
     ],
+    "walker_json": {
+      "_comment": "card 5e3c31c5 N0: a JSON-looking string whose JSON holds a bare NaN / Infinity / -Infinity literal. Python json.loads accepts it, so the walkers walk it; the JS twin must accept the same language (reader parseWalkerJson). The forward key is hidden by a unicode escape so that only the parsed walk can see it. direct = the walker functions called on the input (hasForwardKey, hasForwardKeyName with value words on, mailEndpointWrite); actions = mail_tool_action / mailToolAction on a tool name, expected = the Python decision at base a82a1f2e (send, draft or null). Read by scripts/__tests__/mail-tool-action.test.py and src/__tests__/mail-tool-action-conformance.test.ts.",
+      "direct": [
+        {
+          "walker": "hasForwardKey",
+          "label": "hasForwardKey: hidden forward key, NaN, shape A",
+          "input": {
+            "body": "{\"\\u0066orwardTo\": NaN}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "hasForwardKeyName",
+          "label": "hasForwardKeyName: hidden forward key, NaN, shape A",
+          "input": {
+            "body": "{\"\\u0066orwardTo\": NaN}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "hasForwardKey",
+          "label": "hasForwardKey: hidden forward key, NaN, shape B",
+          "input": {
+            "body": "{\"n\": NaN, \"\\u0072edirectTo\": 1}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "hasForwardKeyName",
+          "label": "hasForwardKeyName: hidden forward key, NaN, shape B",
+          "input": {
+            "body": "{\"n\": NaN, \"\\u0072edirectTo\": 1}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "mailEndpointWrite",
+          "label": "mailEndpointWrite: mail-writing endpoint, NaN, shape A",
+          "input": {
+            "body": "{\"path\": \"/me/sendMail\", \"v\": NaN}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "mailEndpointWrite",
+          "label": "mailEndpointWrite: mail-writing endpoint, NaN, shape B",
+          "input": {
+            "body": "{\"method\": \"POST\", \"path\": \"/me/mailboxSettings\", \"v\": NaN}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "hasForwardKey",
+          "label": "hasForwardKey: benign control, NaN, no signal",
+          "input": {
+            "body": "{\"v\": NaN, \"label\": \"x\"}"
+          },
+          "expected": false
+        },
+        {
+          "walker": "hasForwardKeyName",
+          "label": "hasForwardKeyName: benign control, NaN, no signal",
+          "input": {
+            "body": "{\"v\": NaN, \"label\": \"x\"}"
+          },
+          "expected": false
+        },
+        {
+          "walker": "mailEndpointWrite",
+          "label": "mailEndpointWrite: benign control, NaN, no signal",
+          "input": {
+            "body": "{\"v\": NaN, \"label\": \"x\"}"
+          },
+          "expected": false
+        },
+        {
+          "walker": "hasForwardKey",
+          "label": "hasForwardKey: hidden forward key, Infinity, shape A",
+          "input": {
+            "body": "{\"\\u0066orwardTo\": Infinity}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "hasForwardKeyName",
+          "label": "hasForwardKeyName: hidden forward key, Infinity, shape A",
+          "input": {
+            "body": "{\"\\u0066orwardTo\": Infinity}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "hasForwardKey",
+          "label": "hasForwardKey: hidden forward key, Infinity, shape B",
+          "input": {
+            "body": "{\"n\": Infinity, \"\\u0072edirectTo\": 1}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "hasForwardKeyName",
+          "label": "hasForwardKeyName: hidden forward key, Infinity, shape B",
+          "input": {
+            "body": "{\"n\": Infinity, \"\\u0072edirectTo\": 1}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "mailEndpointWrite",
+          "label": "mailEndpointWrite: mail-writing endpoint, Infinity, shape A",
+          "input": {
+            "body": "{\"path\": \"/me/sendMail\", \"v\": Infinity}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "mailEndpointWrite",
+          "label": "mailEndpointWrite: mail-writing endpoint, Infinity, shape B",
+          "input": {
+            "body": "{\"method\": \"POST\", \"path\": \"/me/mailboxSettings\", \"v\": Infinity}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "hasForwardKey",
+          "label": "hasForwardKey: benign control, Infinity, no signal",
+          "input": {
+            "body": "{\"v\": Infinity, \"label\": \"x\"}"
+          },
+          "expected": false
+        },
+        {
+          "walker": "hasForwardKeyName",
+          "label": "hasForwardKeyName: benign control, Infinity, no signal",
+          "input": {
+            "body": "{\"v\": Infinity, \"label\": \"x\"}"
+          },
+          "expected": false
+        },
+        {
+          "walker": "mailEndpointWrite",
+          "label": "mailEndpointWrite: benign control, Infinity, no signal",
+          "input": {
+            "body": "{\"v\": Infinity, \"label\": \"x\"}"
+          },
+          "expected": false
+        },
+        {
+          "walker": "hasForwardKey",
+          "label": "hasForwardKey: hidden forward key, -Infinity, shape A",
+          "input": {
+            "body": "{\"\\u0066orwardTo\": -Infinity}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "hasForwardKeyName",
+          "label": "hasForwardKeyName: hidden forward key, -Infinity, shape A",
+          "input": {
+            "body": "{\"\\u0066orwardTo\": -Infinity}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "hasForwardKey",
+          "label": "hasForwardKey: hidden forward key, -Infinity, shape B",
+          "input": {
+            "body": "{\"n\": -Infinity, \"\\u0072edirectTo\": 1}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "hasForwardKeyName",
+          "label": "hasForwardKeyName: hidden forward key, -Infinity, shape B",
+          "input": {
+            "body": "{\"n\": -Infinity, \"\\u0072edirectTo\": 1}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "mailEndpointWrite",
+          "label": "mailEndpointWrite: mail-writing endpoint, -Infinity, shape A",
+          "input": {
+            "body": "{\"path\": \"/me/sendMail\", \"v\": -Infinity}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "mailEndpointWrite",
+          "label": "mailEndpointWrite: mail-writing endpoint, -Infinity, shape B",
+          "input": {
+            "body": "{\"method\": \"POST\", \"path\": \"/me/mailboxSettings\", \"v\": -Infinity}"
+          },
+          "expected": true
+        },
+        {
+          "walker": "hasForwardKey",
+          "label": "hasForwardKey: benign control, -Infinity, no signal",
+          "input": {
+            "body": "{\"v\": -Infinity, \"label\": \"x\"}"
+          },
+          "expected": false
+        },
+        {
+          "walker": "hasForwardKeyName",
+          "label": "hasForwardKeyName: benign control, -Infinity, no signal",
+          "input": {
+            "body": "{\"v\": -Infinity, \"label\": \"x\"}"
+          },
+          "expected": false
+        },
+        {
+          "walker": "mailEndpointWrite",
+          "label": "mailEndpointWrite: benign control, -Infinity, no signal",
+          "input": {
+            "body": "{\"v\": -Infinity, \"label\": \"x\"}"
+          },
+          "expected": false
+        },
+        {
+          "walker": "hasForwardKeyName",
+          "label": "hasForwardKeyName: NaN only inside a JSON string value",
+          "input": {
+            "body": "{\"v\": \"NaN\", \"\\u0066orwardTo\": 1}"
+          },
+          "expected": true
+        }
+      ],
+      "actions": [
+        {
+          "tool": "mcp__outlook__fetch",
+          "input": {
+            "body": "{\"\\u0066orwardTo\": NaN}"
+          },
+          "expected": "send",
+          "note": "card 5e3c31c5 N0: reader name, hasForwardKeyName, hidden forward key + NaN; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__gmail__create_draft",
+          "input": {
+            "body": "{\"\\u0066orwardTo\": NaN}"
+          },
+          "expected": "send",
+          "note": "card 5e3c31c5 N0: non-reader name, hasForwardKeyName, hidden forward key + NaN; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__outlook__manage_email",
+          "input": {
+            "operation": "move",
+            "body": "{\"\\u0066orwardTo\": NaN}"
+          },
+          "expected": "send",
+          "note": "card 5e3c31c5 N0: manage_email, hasForwardKeyName, hidden forward key + NaN; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__outlook__create_inbox_rule",
+          "input": {
+            "body": "{\"\\u0066orwardTo\": NaN}"
+          },
+          "expected": "send",
+          "note": "card 5e3c31c5 N0: rule-write name, hasForwardKey + hasForwardKeyName, hidden forward key + NaN; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__outlook__request",
+          "input": {
+            "body": "{\"path\": \"/me/sendMail\", \"v\": NaN}"
+          },
+          "expected": "send",
+          "note": "card 5e3c31c5 N0: gateway name, mailEndpointWrite, endpoint + NaN; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__gmail__create_draft",
+          "input": {
+            "body": "{\"path\": \"/me/sendMail\", \"v\": NaN}"
+          },
+          "expected": "draft",
+          "note": "card 5e3c31c5 N0: named draft keeps its class (Q4) whatever the endpoint, endpoint +NaN; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__outlook__fetch",
+          "input": {
+            "body": "{\"v\": NaN, \"label\": \"x\"}"
+          },
+          "expected": null,
+          "note": "card 5e3c31c5 N0: control: reader name, NaN, no signal; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__gmail__create_draft",
+          "input": {
+            "body": "{\"v\": NaN, \"label\": \"x\"}"
+          },
+          "expected": "draft",
+          "note": "card 5e3c31c5 N0: control: non-reader name, NaN, no signal; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__outlook__fetch",
+          "input": {
+            "body": "{\"\\u0066orwardTo\": Infinity}"
+          },
+          "expected": "send",
+          "note": "card 5e3c31c5 N0: reader name, hasForwardKeyName, hidden forward key + Infinity; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__gmail__create_draft",
+          "input": {
+            "body": "{\"\\u0066orwardTo\": Infinity}"
+          },
+          "expected": "send",
+          "note": "card 5e3c31c5 N0: non-reader name, hasForwardKeyName, hidden forward key + Infinity; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__outlook__manage_email",
+          "input": {
+            "operation": "move",
+            "body": "{\"\\u0066orwardTo\": Infinity}"
+          },
+          "expected": "send",
+          "note": "card 5e3c31c5 N0: manage_email, hasForwardKeyName, hidden forward key + Infinity; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__outlook__create_inbox_rule",
+          "input": {
+            "body": "{\"\\u0066orwardTo\": Infinity}"
+          },
+          "expected": "send",
+          "note": "card 5e3c31c5 N0: rule-write name, hasForwardKey + hasForwardKeyName, hidden forward key + Infinity; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__outlook__request",
+          "input": {
+            "body": "{\"path\": \"/me/sendMail\", \"v\": Infinity}"
+          },
+          "expected": "send",
+          "note": "card 5e3c31c5 N0: gateway name, mailEndpointWrite, endpoint + Infinity; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__gmail__create_draft",
+          "input": {
+            "body": "{\"path\": \"/me/sendMail\", \"v\": Infinity}"
+          },
+          "expected": "draft",
+          "note": "card 5e3c31c5 N0: named draft keeps its class (Q4) whatever the endpoint, endpoint +Infinity; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__outlook__fetch",
+          "input": {
+            "body": "{\"v\": Infinity, \"label\": \"x\"}"
+          },
+          "expected": null,
+          "note": "card 5e3c31c5 N0: control: reader name, Infinity, no signal; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__gmail__create_draft",
+          "input": {
+            "body": "{\"v\": Infinity, \"label\": \"x\"}"
+          },
+          "expected": "draft",
+          "note": "card 5e3c31c5 N0: control: non-reader name, Infinity, no signal; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__outlook__fetch",
+          "input": {
+            "body": "{\"\\u0066orwardTo\": -Infinity}"
+          },
+          "expected": "send",
+          "note": "card 5e3c31c5 N0: reader name, hasForwardKeyName, hidden forward key + -Infinity; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__gmail__create_draft",
+          "input": {
+            "body": "{\"\\u0066orwardTo\": -Infinity}"
+          },
+          "expected": "send",
+          "note": "card 5e3c31c5 N0: non-reader name, hasForwardKeyName, hidden forward key + -Infinity; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__outlook__manage_email",
+          "input": {
+            "operation": "move",
+            "body": "{\"\\u0066orwardTo\": -Infinity}"
+          },
+          "expected": "send",
+          "note": "card 5e3c31c5 N0: manage_email, hasForwardKeyName, hidden forward key + -Infinity; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__outlook__create_inbox_rule",
+          "input": {
+            "body": "{\"\\u0066orwardTo\": -Infinity}"
+          },
+          "expected": "send",
+          "note": "card 5e3c31c5 N0: rule-write name, hasForwardKey + hasForwardKeyName, hidden forward key + -Infinity; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__outlook__request",
+          "input": {
+            "body": "{\"path\": \"/me/sendMail\", \"v\": -Infinity}"
+          },
+          "expected": "send",
+          "note": "card 5e3c31c5 N0: gateway name, mailEndpointWrite, endpoint + -Infinity; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__gmail__create_draft",
+          "input": {
+            "body": "{\"path\": \"/me/sendMail\", \"v\": -Infinity}"
+          },
+          "expected": "draft",
+          "note": "card 5e3c31c5 N0: named draft keeps its class (Q4) whatever the endpoint, endpoint +-Infinity; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__outlook__fetch",
+          "input": {
+            "body": "{\"v\": -Infinity, \"label\": \"x\"}"
+          },
+          "expected": null,
+          "note": "card 5e3c31c5 N0: control: reader name, -Infinity, no signal; expected = the Python decision at base a82a1f2e"
+        },
+        {
+          "tool": "mcp__gmail__create_draft",
+          "input": {
+            "body": "{\"v\": -Infinity, \"label\": \"x\"}"
+          },
+          "expected": "draft",
+          "note": "card 5e3c31c5 N0: control: non-reader name, -Infinity, no signal; expected = the Python decision at base a82a1f2e"
+        }
+      ]
+    },
     "free_text_invariant": {
       "_comment": "Card 61fcac1e N1: the free text of every non-reader, non-send tool gets the whole word test, except for a plain draft (draft class, a mail noun in a segment, no rule / filter / script / settings / automation word). sieve_tools x sieve_keys x sieve_forms (plus each form wrapped as a JSON string in content) and instruction_tools x instruction_keys x instructions are generated by the tests; 'denied': false is the F7 sentence (a description with no forward word, spec AC5). deny rows: send class + mail-rule-forward; allow rows: the expected class and no rule-forward. Inputs are the 3d6e5181 reviewer set (be-n4r2), no new payloads.",
       "sieve_tools": [
