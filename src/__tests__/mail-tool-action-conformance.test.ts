@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { FILE_SHAPE, NAME_SHAPE, exemptionClass, gateDecision, hasForwardKey, hasForwardKeyName, isLabelFolderTool, isPlainDraft, isReadAction, mailRuleForward as mailRuleForwardJs, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
+import { FILE_SHAPE, NAME_SHAPE, exemptionClass, gateDecision, hasForwardKey, hasForwardKeyName, isLabelFolderTool, isPlainDraft, isReadAction, mailEndpointWrite, mailRuleForward as mailRuleForwardJs, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
 
 // graph-forward N1b (spec G1-G7): the mail tools are recognised by their
 // ACTION, whatever the server name or version prefix. The gap it closes: the
@@ -638,6 +638,159 @@ print(json.dumps([mail_rule_forward(n, i) for n, i in json.load(sys.stdin)]))
     const known = (a: string) => a === 'known@example.com'
     expect(gateDecision('mcp__gmail__create_draft', { to: ['known@example.com'], body: 'please forward this to x@y.example' }, known)).toEqual({ deny: false })
     expect(mailToolAction('mcp__gmail__create_filter', { description: 'move newsletters to folder', action: { addLabelIds: ['X'] } })).toBe(null)
+  })
+})
+
+// card 31d8fc36 N0 (RED first): the mail-writing API endpoint table. A gateway tool of a mail server (any
+// name the classifier does not know) that carries a raw API request - a sending endpoint (A1-A3, any
+// method) or a rule / settings endpoint with a writing request (B1-B3) - in ANY string of its input is a
+// send for the classifier and a deny for the gate; the python twin classifies it the same way (the approval
+// gate then REFUSES it, Q1: the real recipient sits in the raw request, which the hook cannot read). The rows
+// are the `name_independent.endpoint_write` block of the shared fixture. Before the implementation (N1, N2)
+// every positive row on a name with no forward word fails here, and the function twins do not exist.
+type Ew = {
+  names: string[]
+  positive: Array<{ row: string; label: string; input: unknown; kind?: string }>
+  benign: Array<{ label: string; input: unknown }>
+  residual: Array<{ label: string; input: unknown; expected: 'send' | null; note: string }>
+  limits: Array<{ label: string; kind: 'deep' | 'wide' | 'long_json' | 'string_input'; depth?: number; n?: number; chars?: number; value?: string }>
+  named_unchanged: Array<{ tool: string; input: unknown; action: 'send' | 'draft' | null; kind: string | null; note: string }>
+}
+const EW = (JSON.parse(readFileSync(join(EXTRACT_DIR, 'mail-tool-action-cases.json'), 'utf-8')) as { name_independent: { endpoint_write: Ew } }).name_independent.endpoint_write
+function limitInput(l: Ew['limits'][number]): unknown {
+  if (l.kind === 'deep') { let d: Record<string, unknown> = { a: 1 }; for (let i = 0; i < (l.depth ?? 0); i++) d = { n: d }; return d }
+  if (l.kind === 'wide') return { list: Array.from({ length: l.n ?? 0 }, (_, i) => i) }
+  if (l.kind === 'long_json') return { b: '{' + 'a'.repeat(l.chars ?? 0) }
+  return l.value
+}
+// python's mail_endpoint_write on a list of inputs; 'missing' while the function does not exist (RED)
+function pythonEndpoint(inputs: unknown[]): Array<boolean | string> {
+  const out = execFileSync('python3', ['-I', '-c', `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(EXTRACT_DIR)})
+import email_extract
+fn = getattr(email_extract, 'mail_endpoint_write', None)
+print(json.dumps(['missing' if fn is None else fn(i) for i in json.load(sys.stdin)]))
+`], { encoding: 'utf-8', input: JSON.stringify(inputs) })
+  return JSON.parse(out.trim())
+}
+
+describe('mail-writing endpoint table (card 31d8fc36 N0): JS and python agree on every row of every gateway name', () => {
+  type Row = { group: 'positive' | 'benign' | 'residual' | 'limits'; label: string; tool: string; input: unknown; item: unknown }
+  const rows: Row[] = []
+  for (const tool of EW.names) {
+    EW.positive.forEach((p) => rows.push({ group: 'positive', label: `${p.row} ${p.label}`, tool, input: p.input, item: p }))
+    EW.benign.forEach((p) => rows.push({ group: 'benign', label: p.label, tool, input: p.input, item: p }))
+    EW.residual.forEach((p) => rows.push({ group: 'residual', label: p.label, tool, input: p.input, item: p }))
+    EW.limits.forEach((l) => rows.push({ group: 'limits', label: l.label, tool, input: limitInput(l), item: l }))
+  }
+  const py = pythonActions(rows.map((r): [unknown, boolean, unknown] => [r.tool, true, r.input]))
+  const none = () => false
+
+  it('the block is non-trivial: every table row A1-B3 has a positive, the gateway names include readers', () => {
+    expect(EW.names.length).toBeGreaterThanOrEqual(17)
+    expect(EW.names).toContain('mcp__outlook__fetch')
+    expect(EW.names).toContain('mcp__imap__list_messages')
+    for (const id of ['A1', 'A2', 'A3', 'B1', 'B2', 'B3']) expect(EW.positive.some((p) => p.row === id), id).toBe(true)
+    expect(EW.positive.length).toBeGreaterThanOrEqual(40)
+    expect(EW.benign.length).toBeGreaterThanOrEqual(18)
+    expect(EW.residual.map((r) => r.expected)).toContain('send') // Q6d, the accepted over-block
+    expect(EW.residual.map((r) => r.expected)).toContain(null)
+    expect(EW.limits).toHaveLength(4)
+    expect(EW.named_unchanged.length).toBeGreaterThanOrEqual(7)
+    // the classifier does not know any gateway name: it is the generic branch that has to decide them
+    const unknown = rows.filter((r) => r.group === 'positive').every((r) => !/send_email|send_draft|manage_email/.test(r.tool))
+    expect(unknown).toBe(true)
+  })
+
+  it('AC1/AC2: a positive row is a send in both twins and a gate deny, on every gateway name; the rule-forward kind keeps its place (AC5)', () => {
+    let n = 0
+    rows.forEach((r, i) => {
+      if (r.group !== 'positive') return
+      n++
+      const p = r.item as Ew['positive'][number]
+      const id = `${r.tool} ${r.label}`
+      expect(mailToolAction(r.tool, r.input), `JS ${id}`).toBe('send')
+      expect(py[i], `py ${id}`).toBe('send')
+      const d = gateDecision(r.tool, r.input, none)
+      expect(d.deny, `deny ${id}`).toBe(true)
+      // the forward rule runs first: a path with a forward word on a non-reader name stays mail-rule-forward
+      const kind = mailRuleForwardJs(r.tool, r.input) ? 'mail-rule-forward' : 'mail-tool-send'
+      expect(d.kind, `kind ${id}`).toBe(kind)
+      if (p.kind) expect(d.kind, `declared kind ${id}`).toBe(p.kind)
+    })
+    expect(n).toBe(EW.names.length * EW.positive.length)
+  })
+
+  it('AC3: the benign gateway corpus stays allowed and is no send, in both twins, on every gateway name', () => {
+    let n = 0
+    rows.forEach((r, i) => {
+      if (r.group !== 'benign') return
+      n++
+      expect(mailToolAction(r.tool, r.input), `JS ${r.tool} ${r.label}`).toBe(null)
+      expect(py[i], `py ${r.tool} ${r.label}`).toBe(null)
+      expect(gateDecision(r.tool, r.input, none), `${r.tool} ${r.label}`).toEqual({ deny: false })
+    })
+    expect(n).toBe(EW.names.length * EW.benign.length)
+  })
+
+  it('Q6: the accepted remainder is pinned with its class (a-c allowed, d over-blocks), in both twins', () => {
+    let n = 0
+    rows.forEach((r, i) => {
+      if (r.group !== 'residual') return
+      n++
+      const want = (r.item as Ew['residual'][number]).expected
+      expect(mailToolAction(r.tool, r.input), `JS ${r.tool} ${r.label}`).toBe(want)
+      expect(py[i], `py ${r.tool} ${r.label}`).toBe(want)
+      expect(gateDecision(r.tool, r.input, none).deny, `${r.tool} ${r.label}`).toBe(want === 'send')
+    })
+    expect(n).toBe(EW.names.length * EW.residual.length)
+  })
+
+  it('AC4: walk-limit overflow and a non-object input fail closed on every gateway name (already denied before the table, so this stays green)', () => {
+    let n = 0
+    rows.forEach((r, i) => {
+      if (r.group !== 'limits') return
+      n++
+      expect(mailToolAction(r.tool, r.input), `JS ${r.tool} ${r.label}`).toBe('send')
+      expect(py[i], `py ${r.tool} ${r.label}`).toBe('send')
+      expect(gateDecision(r.tool, r.input, none).deny, `${r.tool} ${r.label}`).toBe(true)
+    })
+    expect(n).toBe(EW.names.length * EW.limits.length)
+  })
+
+  it('AC4/AC11: mailEndpointWrite exists in both twins, is true on positive rows, false on benign rows, follows the residual class, true on a limit overflow, false on a non-object', () => {
+    expect(typeof mailEndpointWrite, 'JS export').toBe('function')
+    const inputs: unknown[] = [
+      ...EW.positive.map((p) => p.input), ...EW.benign.map((p) => p.input), ...EW.residual.map((p) => p.input), ...EW.limits.map(limitInput),
+    ]
+    const pyOut = pythonEndpoint(inputs)
+    let k = 0
+    const check = (label: string, want: boolean) => {
+      const input = inputs[k]
+      expect(typeof mailEndpointWrite === 'function' ? mailEndpointWrite(input) : 'missing', `JS ${label}`).toBe(want)
+      expect(pyOut[k], `py ${label}`).toBe(want)
+      k++
+    }
+    EW.positive.forEach((p) => check(`positive ${p.row} ${p.label}`, true))
+    EW.benign.forEach((p) => check(`benign ${p.label}`, false))
+    EW.residual.forEach((p) => check(`residual ${p.label}`, p.expected === 'send'))
+    // walk limits fail closed (true); a non-object input is false here (mailRuleForward already denies it)
+    EW.limits.forEach((l) => check(`limits ${l.label}`, l.kind !== 'string_input'))
+  })
+
+  it('AC5/Q4: the tools the classifier names keep their class and deny kind, with an endpoint form in the input', () => {
+    const verified = (a: string) => a === 'known@example.com'
+    const pyNamed = pythonActions(EW.named_unchanged.map((c): [unknown, boolean, unknown] => [c.tool, true, c.input]))
+    EW.named_unchanged.forEach((c, i) => {
+      expect(mailToolAction(c.tool, c.input), `JS ${c.note}`).toBe(c.action)
+      expect(pyNamed[i], `py ${c.note}`).toBe(c.action)
+      const d = gateDecision(c.tool, c.input, verified)
+      expect(d.deny, c.note).toBe(c.kind !== null)
+      if (c.kind !== null) expect(d.kind, c.note).toBe(c.kind)
+    })
+    // a messageRules write with a forward key keeps the mail-rule-forward kind on a gateway name
+    expect(gateDecision('mcp__outlook__request', NI.reader_forward_key_inputs[1].input, none)).toEqual({ deny: true, kind: 'mail-rule-forward' })
   })
 })
 
