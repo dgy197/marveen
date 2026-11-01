@@ -165,6 +165,12 @@ export function insertPeriod(db: Database.Database, p: NewPeriod): number {
   db.prepare(`INSERT INTO credit_grant_periods
       (id, approval_id, grant_model_hash, lb, expires, remaining_micro, row_json, content_hash, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, p.approvalId, p.hash, p.period.lbMs, p.period.expiresMs, p.remaining, text, sha256(text), p.nowMs)
+  // R1 B3: the Console's autoincrement continues above this id, so a later reading (the switch back) is above every period row.
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'").get() !== undefined) {
+    const seq = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'credit_calibrations'").get() as { seq: number } | undefined
+    if (seq === undefined) db.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES ('credit_calibrations', ?)").run(id)
+    else if (seq.seq < id) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'credit_calibrations'").run(id)
+  }
   return id
 }
 

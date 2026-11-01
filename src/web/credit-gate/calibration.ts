@@ -150,6 +150,11 @@ const PROCESSED: readonly CreditGateApprovalCategory[] = ['credit_gate_calibrati
 const PROCESSED_GRANT: readonly CreditGateApprovalCategory[] = ['credit_gate_enforce', 'credit_gate_incident_clear']
 /** The HOLD of a reconstructed file (or its pricing) that cannot be trusted (A6). */
 const RECONSTRUCTED_BAD = 'grant_model_reconstructed_bad'
+/**
+ * Under the grant model the gate's closings that only a new owner enforce button
+ * lifts (R1): the period boundary writes no row while the gate is latched by one.
+ */
+const BUTTON_ONLY_LATCHES: ReadonlySet<string> = new Set(['auth_401', 'credit_balance_too_low', 'canary_undecidable', 'calibration_error'])
 const PENDING_LIMIT = 500
 
 // ------------------------------------------------------------------ readings
@@ -963,7 +968,8 @@ export class CalibrationProcessor {
         const cs = this.calState()
         if (this.ownerMismatch(owner, cs)) return 'skipped'
         // A9: after an incident-clear (or an owner re-pin) only an approval decided after it counts.
-        if (cs.min_captured_at_lb !== null && (a.resolved_at == null || a.resolved_at < Math.floor(cs.min_captured_at_lb / 1000))) return 'skipped'
+        // Fail-closed compare (R1 B2): an approval decided in the floor's own second, before the floor ms, does not count.
+        if (cs.min_captured_at_lb !== null && (a.resolved_at == null || a.resolved_at * 1000 < cs.min_captured_at_lb)) return 'skipped'
         const budget = parseUsd(p.canary.budget_usd)
         const minExpected = parseUsd(p.canary.min_expected_usd)
         if (budget === null || minExpected === null) return 'skipped'
@@ -994,13 +1000,17 @@ export class CalibrationProcessor {
    * A3: when the period changes, ONE new row (same approval, a higher id) --
    * no button. Only a chain in force advances: it verifies (readChain), binds
    * the config as it is now, was enforced after the owner's last clear, and the
-   * gate is not in INCIDENT. A row that does not verify is left to the source,
+   * gate is not in INCIDENT nor latched by a 401, a balance signal or a
+   * canary_undecidable / calibration_error HOLD (R1: a new button lifts those). A row that does not verify is left to the source,
    * which makes the gate read calibration_invalid.
    */
   private advanceGrantPeriod(cfg: CreditGateConfig, inputs: GrantInputs | null, nowMs: number, rep: ProcessReport): void {
     if (inputs === null || !inputs.ok || cfg.grantModel === null) return
-    const st = this.db.prepare('SELECT state FROM credit_gate_state WHERE id = 1').get() as { state: string } | undefined
+    const st = this.db.prepare('SELECT state, latch_cal_id, latch_reason FROM credit_gate_state WHERE id = 1').get() as
+      { state: string; latch_cal_id: number | null; latch_reason: string | null } | undefined
     if (!st || st.state === 'INCIDENT') return
+    // R1 B1: these closings are not lifted by a new period row, only by a new owner enforce button.
+    if (st.latch_cal_id !== null && st.latch_reason !== null && BUTTON_ONLY_LATCHES.has(st.latch_reason)) return
     let read: ChainRead
     try {
       read = readChain(this.db, cfg, inputs.hash)
