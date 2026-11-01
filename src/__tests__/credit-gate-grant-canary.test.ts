@@ -675,12 +675,23 @@ function call(method: string, path: string): { ctx: RouteContext; out: Out; done
   return { ctx: { req, res, path, method, url } as RouteContext, out, done }
 }
 
+/** GET /status as the route serves it; the clock of the route is the file's NOW (only Date is faked, for the call). */
 async function status(mode: 'shadow' | 'enforce' = 'shadow'): Promise<Out> {
-  setCreditGateRuntime({ mode: readCreditGateMode(mode), gate: h.gate, storeDir: h.storeDir, db: getDb(), startError: null, calibrations: h.proc })
-  const c = call('GET', '/api/credit-gate/status')
-  expect(await tryHandleCreditGate(c.ctx)).toBe(true)
-  await c.done
-  return c.out
+  const m = readCreditGateMode(mode)
+  const gate = mode === 'enforce'
+    ? h.gate
+    : new CreditGate(fileGateDeps({ storeDir: h.storeDir, db: getDb(), mode: m, calibration: h.source, now: () => h.now }))
+  setCreditGateRuntime({ mode: m, gate, storeDir: h.storeDir, db: getDb(), startError: null, calibrations: h.proc })
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(h.now)
+  try {
+    const c = call('GET', '/api/credit-gate/status')
+    expect(await tryHandleCreditGate(c.ctx)).toBe(true)
+    await c.done
+    return c.out
+  } finally {
+    vi.useRealTimers()
+  }
 }
 
 describe('the status endpoint shows the grant_model block (also in shadow mode)', () => {

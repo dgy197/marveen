@@ -31,7 +31,11 @@
 // consumed approval's row, once, for that run only (takeCanaryHash) -- never
 // from the request (a config_hash in the body is refused). Everything that
 // can refuse for free runs BEFORE the consume, so a bad request does not
-// spend the approval.
+// spend the approval. Under the grant model (card 40e03382) `canary_approval_id`
+// is the owner's credit_gate_enforce approval: the same consume call binds the
+// run to that button's canary row (no new approval, once; the old
+// credit_gate_canary approval is refused there), and the status answer carries
+// the model's `grant_model` block.
 //
 // GET and cancel of a run (B7): its own caller is served before the config is
 // asked, so a live run stays visible and stoppable when the config goes
@@ -39,12 +43,15 @@
 // a 404 -- exactly what an unknown id gets.
 
 import { createHash } from 'node:crypto'
+import { join } from 'node:path'
 import { logger } from '../../logger.js'
 import { json, methodNotAllowed, readBody, RequestBodyTooLargeError } from '../http-helpers.js'
 import { auditStatus } from '../credit-gate/audit.js'
 import { formatUsd, SIGNAL_KINDS, type CreditGate, type OpResult, type SignalKind } from '../credit-gate/gate.js'
 import { parseUsd } from '../credit-gate/money.js'
-import { getCreditGateRuntime, inactiveStatus, type CreditGateRuntime } from '../credit-gate/runtime.js'
+import { CONFIG_FILE, CREDIT_GATE_DIR, loadCreditGateConfigFile, PRICING_FILE } from '../credit-gate/config.js'
+import { grantModelStatus, type GrantModelStatus } from '../credit-gate/grant-status.js'
+import { getCreditGateRuntime, inactiveStatus, loadPricingFile, type CreditGateRuntime } from '../credit-gate/runtime.js'
 import { getHeadlessRunner } from '../credit-gate/headless/reconcile.js'
 import { approvedCanary } from '../credit-gate/calibration.js'
 import { MAX_PROMPT_BYTES, type HeadlessRunner, type HeadlessRunRequest, type RunRecord, type StartContext } from '../credit-gate/headless/runner.js'
@@ -166,6 +173,24 @@ function canaryView(rt: CreditGateRuntime): { approved_hash: string | null; curr
   return { approved_hash: approved, current_hash: current, match: approved !== null && approved === current }
 }
 
+/**
+ * Card 40e03382 (N3): the grant model's numbers when the config selects it, in
+ * every mode (the owner sees them before the button); null otherwise. Read-only.
+ */
+function grantModelView(rt: CreditGateRuntime): GrantModelStatus | null {
+  try {
+    const dir = join(rt.storeDir, CREDIT_GATE_DIR)
+    return grantModelStatus(
+      rt.db,
+      loadCreditGateConfigFile(join(dir, CONFIG_FILE)),
+      (nowMs) => loadPricingFile(join(dir, PRICING_FILE), nowMs),
+      Date.now(),
+    )
+  } catch {
+    return null
+  }
+}
+
 function usdOrNull(micro: number | null): string | null {
   return micro === null ? null : formatUsd(micro)
 }
@@ -279,7 +304,7 @@ export async function tryHandleCreditGate(ctx: RouteContext): Promise<boolean> {
         return true
       }
       // The delivery state (notify.failed), the auto-rejected approvals and the key reads: N5.
-      json(res, { ...(gate ? gate.status() : inactiveStatus(rt)), ...auditStatus(rt.db, Date.now()), canary: canaryView(rt) })
+      json(res, { ...(gate ? gate.status() : inactiveStatus(rt)), ...auditStatus(rt.db, Date.now()), canary: canaryView(rt), grant_model: grantModelView(rt) })
       return true
     }
 
