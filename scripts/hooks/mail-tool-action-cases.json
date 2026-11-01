@@ -1338,15 +1338,6 @@
         "note": "N4 B2: a filter whose description is not a forward instruction stays as before"
       },
       {
-        "tool": "mcp__outlook__manage_rules",
-        "input": {
-          "description": "forward looking: move newsletters to folder",
-          "folder": "forward to x@evil.example"
-        },
-        "expected": null,
-        "note": "N4 B2: a forward word without an address nearby, and a folder identifier, are not instructions"
-      },
-      {
         "tool": "mcp__imap__delete_message",
         "input": {
           "messageId": "<abc@host>"
@@ -1607,6 +1598,14 @@
             }
           },
           "note": "T7 fail-closed over-block (Brainy 6415): fwd in a rule description"
+        },
+        {
+          "tool": "mcp__outlook__manage_rules",
+          "input": {
+            "description": "forward looking: move newsletters to folder",
+            "folder": "forward to x@evil.example"
+          },
+          "note": "T7 fail-closed over-block (Brainy 6415): forward looking in a rule description (the 3d6e5181 clean case, flipped on purpose); the folder identifier alone stays inert"
         },
         {
           "tool": "mcp__gmail__set_vacation",
