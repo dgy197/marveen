@@ -127,7 +127,10 @@ import {
   evaluateGrantCanary, GRANT_CANARY_COLUMNS, GRANT_CANARY_SQL, grantCanaryStart, openGrantCanaries, signalSince, windowSince,
   type GrantCanaryRow, type GrantCanaryVerdict,
 } from './grant-canary.js'
-import { insertPeriod, measureGrantInputs, newestPeriod, nextCalibrationId, readChain, type ChainRead, type GrantInputs } from './grant-period.js'
+import {
+  clearGrantButton, grantButtonRequired, insertPeriod, measureGrantInputs, newestPeriod, nextCalibrationId, readChain, requireGrantButton,
+  type ChainRead, type GrantInputs,
+} from './grant-period.js'
 import { HEADLESS_SOURCE } from './ledger.js'
 import { MICRO_PER_USD, parseUsd } from './money.js'
 import type { Micro, PricingTable } from './types.js'
@@ -152,9 +155,13 @@ const PROCESSED_GRANT: readonly CreditGateApprovalCategory[] = ['credit_gate_enf
 const RECONSTRUCTED_BAD = 'grant_model_reconstructed_bad'
 /**
  * Under the grant model the gate's closings that only a new owner enforce button
- * lifts (R1): the period boundary writes no row while the gate is latched by one.
+ * lifts (R1, R1c): the tick sets the durable button-required flag on the first
+ * tick it sees the gate latched or held for one, and no period row is written
+ * until a new enforce button clears it.
  */
-const BUTTON_ONLY_LATCHES: ReadonlySet<string> = new Set(['auth_401', 'credit_balance_too_low', 'canary_undecidable', 'calibration_error'])
+const BUTTON_ONLY_LATCHES: ReadonlySet<string> = new Set([
+  'auth_401', 'credit_balance_too_low', 'canary_undecidable', 'calibration_error', 'disarm', 'human_stop',
+])
 const PENDING_LIMIT = 500
 
 // ------------------------------------------------------------------ readings
@@ -838,6 +845,7 @@ export class CalibrationProcessor {
       const cfgR = pending.length > 0 ? this.deps.loadConfig() : null
       const cfg = cfgR?.ok ? cfgR.config : null
       let deferred = false
+      const acceptedBefore = rep.accepted
       for (const a of pending) {
         setCurrent(a.id)
         if (!isOwnerVerified(a.id, owner)) {
@@ -864,7 +872,8 @@ export class CalibrationProcessor {
         else if (step === 'cleared') rep.cleared++
         else rep.refused++
       }
-      if (grant !== null && !deferred) this.advanceGrantPeriod(grant, inputs, nowMs, rep)
+      // A new enforce button in this pass wrote the chain's row and cleared the flag; the gate has not re-evaluated its old closing yet.
+      if (grant !== null && !deferred && rep.accepted === acceptedBefore) this.advanceGrantPeriod(grant, inputs, nowMs, rep)
       if (grant !== null) this.settleGrantCanaries(grant, nowMs, rep)
       else this.closeOrphanGrantCanaries(nowMs, rep)
     }
@@ -977,6 +986,8 @@ export class CalibrationProcessor {
         const periodId = insertPeriod(this.db, {
           approvalId: a.id, hash: inputs.hash, enforcedAtMs: nowMs, period: calc.period, original: gm.grantUsd, remaining: calc.remaining, nowMs,
         })
+        // R1c: the owner's new button is what the flag waits for; same transaction as the new chain row.
+        clearGrantButton(this.db)
         this.consume(a, owner, `credit_grant_periods:${periodId}`, nowMs)
         this.db.prepare(`INSERT INTO credit_canaries
             (approval_id, config_hash, model, budget_micro, min_expected_micro, before_calibration_id, run_id, status, consumed_at)
@@ -1000,17 +1011,33 @@ export class CalibrationProcessor {
    * A3: when the period changes, ONE new row (same approval, a higher id) --
    * no button. Only a chain in force advances: it verifies (readChain), binds
    * the config as it is now, was enforced after the owner's last clear, and the
-   * gate is not in INCIDENT nor latched by a 401, a balance signal or a
-   * canary_undecidable / calibration_error HOLD (R1: a new button lifts those). A row that does not verify is left to the source,
-   * which makes the gate read calibration_invalid.
+   * gate is not in INCIDENT nor latched by a 401, a disarm, a human STOP, a
+   * balance signal or a canary_undecidable / calibration_error HOLD (R1: a new
+   * button lifts those). R1c: the first tick that sees one of those sets the
+   * durable button-required flag (own transaction) -- the period boundary
+   * overwrites the gate's latch reason with its own threshold latch, so a later
+   * tick can no longer tell -- and while the flag is set no row is written and
+   * the source hands the gate no calibration; only enforceStep clears it. A row
+   * that does not verify is left to the source, which makes the gate read
+   * calibration_invalid.
    */
   private advanceGrantPeriod(cfg: CreditGateConfig, inputs: GrantInputs | null, nowMs: number, rep: ProcessReport): void {
     if (inputs === null || !inputs.ok || cfg.grantModel === null) return
-    const st = this.db.prepare('SELECT state, latch_cal_id, latch_reason FROM credit_gate_state WHERE id = 1').get() as
-      { state: string; latch_cal_id: number | null; latch_reason: string | null } | undefined
+    const st = this.db.prepare('SELECT state, reason, latch_cal_id, latch_reason FROM credit_gate_state WHERE id = 1').get() as
+      { state: string; reason: string; latch_cal_id: number | null; latch_reason: string | null } | undefined
     if (!st || st.state === 'INCIDENT') return
-    // R1 B1: these closings are not lifted by a new period row, only by a new owner enforce button.
-    if (st.latch_cal_id !== null && st.latch_reason !== null && BUTTON_ONLY_LATCHES.has(st.latch_reason)) return
+    // R1 B1 / R1c: these closings are not lifted by a new period row, only by a new owner enforce button.
+    if (grantButtonRequired(this.db) !== null) return
+    // A latch below the newest period's id is already lifted by it (the gate lifts on a strictly larger id), only not yet re-evaluated.
+    const newestId = newestPeriod(this.db)?.id ?? 0
+    const latchedFor = st.latch_cal_id !== null && st.latch_cal_id >= newestId && st.latch_reason !== null && BUTTON_ONLY_LATCHES.has(st.latch_reason)
+      ? st.latch_reason
+      : null
+    const heldFor = st.state === 'HOLD' && (st.latch_cal_id === null || st.latch_cal_id >= newestId) && BUTTON_ONLY_LATCHES.has(st.reason) ? st.reason : null
+    if (latchedFor !== null || heldFor !== null) {
+      this.markButtonRequired((latchedFor ?? heldFor) as string, nowMs, rep)
+      return
+    }
     let read: ChainRead
     try {
       read = readChain(this.db, cfg, inputs.hash)
@@ -1046,6 +1073,20 @@ export class CalibrationProcessor {
     } catch (err) {
       if (isBusy(err)) return
       throw err
+    }
+  }
+
+  /** R1c: set the durable flag in its own transaction, audited once. Busy: the next tick tries again. */
+  private markButtonRequired(reason: string, nowMs: number, rep: ProcessReport): void {
+    try {
+      const set = this.tx((): boolean => {
+        if (!requireGrantButton(this.db, reason, nowMs)) return false
+        this.gate.audit('grant_button_required', { reason: 'grant_button_required', detail: { why: reason } }, nowMs)
+        return true
+      })
+      if (set) rep.changed = true
+    } catch (err) {
+      if (!isBusy(err)) throw err
     }
   }
 
