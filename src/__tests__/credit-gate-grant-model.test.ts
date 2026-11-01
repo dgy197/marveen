@@ -259,6 +259,8 @@ describe('grantModelHash (spec 4: binds the model, the thresholds, the margins, 
       ['lowcalWaitH', h({ ...cfgObject(), thresholds: { tClose: '20.00', tLowcal: '60.00', tReopen: '50.00', tCloseLowcalFallback: '40.00', lowcalWaitH: 6 } })],
       ['expiryMarginH', h({ ...cfgObject(), expiryMarginH: 3 })],
       ['batchHorizonH', h({ ...cfgObject(), batchHorizonH: 36 })],
+      ['reservationFactor', h({ ...cfgObject(), reservationFactor: '3.0' })],
+      ['maxLedgerAgeS', h({ ...cfgObject(), maxLedgerAgeS: 60 })],
       ['ledger source path', h({ ...cfgObject(), ledgerSources: [{ id: 'anthropic-batch', path: '/tmp/y/usage.jsonl', format: 'usage-jsonl-v1' }] })],
       ['ledger source id', h({ ...cfgObject(), ledgerSources: [{ id: 'other', path: '/tmp/x/usage.jsonl', format: 'usage-jsonl-v1' }] })],
       ['file sha', h(cfgObject(), 'e'.repeat(64))],
@@ -274,6 +276,14 @@ describe('grantModelHash (spec 4: binds the model, the thresholds, the margins, 
     const base = h(cfgObject())
     expect(h({ ...cfgObject(), refreshS: 20 })).toBe(base)
     expect(h({ ...cfgObject(), vaultKeyId: 'OTHER_KEY' })).toBe(base)
+  })
+
+  it('R2 LOW-2: reservationFactor alone and maxLedgerAgeS alone each move it; refreshS alone does not', () => {
+    const base = h(cfgObject())
+    expect(h({ ...cfgObject(), reservationFactor: '3.0' })).not.toBe(base)
+    expect(h({ ...cfgObject(), maxLedgerAgeS: 60 })).not.toBe(base)
+    expect(h({ ...cfgObject(), refreshS: 20 })).toBe(base)
+    expect(h({ ...cfgObject(), reservationFactor: '3.0' })).not.toBe(h({ ...cfgObject(), maxLedgerAgeS: 60 }))
   })
 
   it('refuses a config that has no grantModel', () => {
