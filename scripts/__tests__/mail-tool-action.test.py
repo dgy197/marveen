@@ -398,7 +398,8 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     # AC6(c): the copy gate audits an endpoint send (a send with no readable text blocks; an em dash in the body blocks);
     # the draft log does not write it, and a draft-class tool with a table URL is still a draft for it (Q4)
     for t in gate_names:
-        code, _, err = run(COPY, ew1, t, EW["positive"][0]["input"])
+        # positive[0] carries body.message.subject, which the copy gate reads as text; positive[1] has no text at all
+        code, _, err = run(COPY, ew1, t, EW["positive"][1]["input"])
         check(f"AC6(c) copy gate: {t} endpoint send with no readable text is blocked (exit 2)", code == 2, f"exit={code} err={err[:120]!r}")
         probe = dict(EW["positive"][0]["input"])
         probe["body"] = "Próba " + EM_DASH + " vége."
