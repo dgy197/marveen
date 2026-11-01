@@ -115,6 +115,22 @@ os.chmod(os.path.join(BIN, 'curl'), 0o755)
 with open(os.path.join(BIN, 'sleep'), 'w') as f:
     f.write('#!/usr/bin/env bash\nexit 0\n')
 os.chmod(os.path.join(BIN, 'sleep'), 0o755)
+# test-only seam: a python3 shim on PATH (card d4be011e: the helpers run python3 -I, which ignores PYTHONPATH and
+# so a sitecustomize) makes os.geteuid() lie for an isolated script run, so "the file is owned by someone else".
+# Active only when FOREIGN_UID is set; otherwise it hands everything to the real python3 unchanged.
+REAL_PY = shutil.which('python3') or '/usr/bin/python3'
+with open(os.path.join(BIN, 'python3'), 'w') as f:
+    f.write('#!/usr/bin/env bash\n'
+            'if [ -n "${FOREIGN_UID:-}" ] && [ "${1:-}" = "-I" ] && [ -f "${2:-}" ]; then\n'
+            '  s="$2"; shift 2\n'
+            f'  exec {REAL_PY!r} -I -c \'import os, sys, runpy\n'
+            '_r = os.geteuid\n'
+            'os.geteuid = lambda: _r() + 4242\n'
+            'sys.argv = sys.argv[1:]\n'
+            'runpy.run_path(sys.argv[0], run_name="__main__")\' "$s" "$@"\n'
+            'fi\n'
+            f'exec {REAL_PY!r} "$@"\n')
+os.chmod(os.path.join(BIN, 'python3'), 0o755)
 
 
 def keyfile(name, content):
@@ -151,7 +167,8 @@ def msg(sender, key_file, content='tiszta uzenet', extra=None, cwd=None):
 
 def api(args, key_file, extra=None):
     SEEN.clear()
-    return subprocess.run([sys.executable, os.path.join(INST, 'scripts', 'lib', 'marveen_api.py')] + args,
+    # through the BIN python3 shim (it is how the foreign-uid seam reaches an isolated run), as -I like the helpers
+    return subprocess.run([os.path.join(BIN, 'python3'), '-I', os.path.join(INST, 'scripts', 'lib', 'marveen_api.py')] + args,
                           env=env(extra, key_file), capture_output=True, text=True, cwd=SANDBOX, timeout=60)
 
 
@@ -315,12 +332,7 @@ os.chmod(loose640, 0o640)
 tight400 = keyfile('mode400', VALID)
 os.chmod(tight400, 0o400)
 oversize = keyfile('oversize', VALID + '\n' * 300)  # one valid line, then padding: only the size check refuses it
-# test-only seam: a sitecustomize on PYTHONPATH makes os.geteuid() lie, so "the file is owned by someone else"
-SEAM_DIR = os.path.join(SANDBOX, 'seam')
-os.makedirs(SEAM_DIR)
-with open(os.path.join(SEAM_DIR, 'sitecustomize.py'), 'w') as f:
-    f.write('import os\n_real = os.geteuid\nos.geteuid = lambda: _real() + 4242\n')
-foreign_uid = {'PYTHONPATH': SEAM_DIR}
+foreign_uid = {'FOREIGN_UID': '1'}
 hardlinked = keyfile('hardlinked', VALID)
 os.link(hardlinked, os.path.join(KEYS, 'hardlinked-twin'))
 

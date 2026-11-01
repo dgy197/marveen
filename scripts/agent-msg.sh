@@ -62,8 +62,19 @@ BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # environment, then WEB_PORT from this install's .env, then 3420. An agent's tmux
 # session sets neither variable, so on an install with a non-default WEB_PORT the
 # env-only lookup sent every message to 3420 (#1869).
-PORT="${MARVEEN_WEB_PORT:-${WEB_PORT:-$(sed -n 's/^WEB_PORT=//p' "$BASE/.env" 2>/dev/null | head -1 | tr -d ' "'"'"''; true)}}"
-PORT="${PORT:-3420}"
+# The port is checked even when MARVEEN_API_BASE is set (card d4be011e, the f137f980 B3 fix). An unset variable
+# means "next source"; a set but empty one is refused. Digits only (ASCII 0-9), 1-65535, so "1@attacker.local" or
+# "3420/x" can never end up in the URL's host.
+if [ "${MARVEEN_WEB_PORT+set}" = set ]; then PORT="$MARVEEN_WEB_PORT"
+elif [ "${WEB_PORT+set}" = set ]; then PORT="$WEB_PORT"
+elif [ -n "$(sed -n '/^WEB_PORT=/p' "$BASE/.env" 2>/dev/null | head -1)" ]; then
+  PORT="$(sed -n 's/^WEB_PORT=//p' "$BASE/.env" 2>/dev/null | head -1 | tr -d ' "'"'"'')"
+else PORT=3420
+fi
+case "$PORT" in ''|*[!0123456789]*) echo "FAIL: the web port must be digits only, 1-65535; nothing was sent." >&2; exit 2 ;; esac
+if [ "${#PORT}" -gt 5 ] || [ "$((10#$PORT))" -lt 1 ] || [ "$((10#$PORT))" -gt 65535 ]; then
+  echo "FAIL: the web port must be 1-65535; nothing was sent." >&2; exit 2
+fi
 API_BASE="${MARVEEN_API_BASE:-http://localhost:${PORT}}"
 API_BASE="${API_BASE%/}"
 TOKEN_FILE="${MARVEEN_TOKEN_FILE:-$BASE/store/.dashboard-token}"
@@ -123,7 +134,7 @@ if [ -r "$HG" ] && command -v python3 >/dev/null 2>&1; then
   # of #1541: a checker that exits 0 with EMPTY stdout made this helper send an
   # empty message and report OK -- a broken tool silently replaced the message
   # instead of failing. The exit code is the only thing read here.
-  printf '%s' "$C" | python3 "$HG" >/dev/null
+  printf '%s' "$C" | python3 -I "$HG" >/dev/null
   HG_RC=$?
   case "$HG_RC" in
     0) : ;;
@@ -152,7 +163,7 @@ if [ -n "${MARVEEN_AGENT_KEY_FILE:-}" ] && [ -r "$KEYLIB" ] && command -v python
   # The file is vetted on its open descriptor by marveen_api.py (card ed5fc02c): no symlink, regular
   # file, our uid, mode exactly 0600, at most 256 bytes. A refusal prints one warning (no path, no
   # content) on stderr and nothing on stdout, so the send goes out unsigned.
-  KEY_RAW="$(python3 "$KEYLIB" --read-key-line || true)"
+  KEY_RAW="$(python3 -I "$KEYLIB" --read-key-line || true)"
   KEY_RE='^X-Agent-Key: ([A-Za-z0-9_.~-]{1,128})$'
   case "$KEY_RAW" in
     *$'\n'*|*$'\r'*) : ;;
@@ -161,7 +172,7 @@ if [ -n "${MARVEEN_AGENT_KEY_FILE:-}" ] && [ -r "$KEYLIB" ] && command -v python
   unset KEY_RAW
 fi
 
-BODY="$(FROM="$FROM" TO="$TO" C="$C" P="$PRIORITY" python3 -c 'import json,os
+BODY="$(FROM="$FROM" TO="$TO" C="$C" P="$PRIORITY" python3 -I -c 'import json,os
 d={"from":os.environ["FROM"],"to":os.environ["TO"],"content":os.environ["C"]}
 if os.environ.get("P"): d["priority"]=os.environ["P"]
 print(json.dumps(d))')"
@@ -192,7 +203,7 @@ while [ "$attempt" -lt "$max" ]; do
   # least one minute: a 20-second median printed as "~0 min" would read as
   # "instant", the same lie a NULL flattened to 0 would tell.
   read -r ID DEPTH MINS QUEUED WARN <<EOF
-$(printf '%s' "$JSON" | python3 -c 'import sys,json,math
+$(printf '%s' "$JSON" | python3 -I -c 'import sys,json,math
 try:
   d=json.load(sys.stdin)
   if not isinstance(d,dict): d={}
@@ -242,7 +253,7 @@ EOF
     fi
     # Card ad771121: a high request over the pair's hourly budget went in as normal (accepted, never
     # dropped); the server says so with "downgraded": true, and the sender hears it here.
-    if [ "$PRIORITY" = "high" ] && printf '%s' "$JSON" | python3 -c 'import sys,json
+    if [ "$PRIORITY" = "high" ] && printf '%s' "$JSON" | python3 -I -c 'import sys,json
 try:
   d=json.load(sys.stdin)
 except Exception:
