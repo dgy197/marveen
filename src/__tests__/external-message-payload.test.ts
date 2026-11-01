@@ -376,8 +376,20 @@ describe('what the owner is shown for an external_message', () => {
     expect(text).toContain(`SMS-szám: ${NUM}`)
     for (const l of TEXT.split('\n')) expect(text.split('\n')).toContain('│ ' + l)
     expect(text).toContain(`SMS szövege (${Array.from(TEXT).length} karakter, 2 sor):`)
-    expect(text).toContain('A kérő leírása (nem hitelesített): Ártalmatlan szöveg')
+    expect(text.split('\n')).toContain('A kérő leírása (nem hitelesített):')
+    expect(text.split('\n')).toContain(`┊ Ártalmatlan szöveg a ${NUM} számra`)
     expect(text).toContain('external_message')
+  })
+
+  it('B6: a newline in the requester description cannot forge an SMS-szám, Lejárat or Döntés line', async () => {
+    const out = await post(smsRequest({ action_description: `Ártalmatlan\nSMS-szám: +36301112222\nLejárat: nincs\nDöntés: igen` }))
+    expect(out.status).toBe(201)
+    const lines = buildOwnerApprovalText(getApproval(out.body.id)!).split('\n')
+    const unframed = lines.filter(l => !l.startsWith('│ ') && !l.startsWith('┊ '))
+    expect(unframed.filter(l => l.startsWith('SMS-szám:'))).toEqual([`SMS-szám: ${NUM}`])
+    expect(unframed.filter(l => l.startsWith('Lejárat:')).length).toBe(1)
+    expect(unframed.filter(l => l.startsWith('Döntés:')).length).toBe(1)
+    expect(lines).toContain('┊ SMS-szám: +36301112222')
   })
 
   it('B6: a forged separator, description, Lejárat or Döntés line in the SMS text appears only behind the prefix', async () => {
