@@ -81,6 +81,20 @@
 // Any exception: HOLD (calibration_error), the approval unconsumed. Nothing
 // here can open the gate by itself: an accepted row only lets the gate's own
 // tick decide (gate-state.ts).
+//
+// The grant model (card 40e03382, config calibrationSource = grant_model) swaps
+// the source of the calibration, not the order above. The processor then takes
+// credit_gate_enforce approvals INSTEAD of credit_gate_calibration ones (those
+// stay pending, untouched, as do the enforce approvals under the Console
+// path): the same G-02 steps, and in the transaction that consumes the owner's
+// ONE button it writes the chain's first credit_grant_periods row (grant-
+// period.ts), the canary row of the approval's canary terms (run_id null; node
+// N3 binds and judges the run) and the owner pin. The tick then advances the
+// chain by itself, one row when the period changes, no button -- but only
+// while the chain is in force (same config hash, enforced after the owner's last
+// incident-clear, gate not in INCIDENT): after an INCIDENT only a NEW enforce
+// approval, decided after the clear, reopens. A bad reconstructed file (A6) is a
+// HOLD and nothing is consumed.
 
 import { createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
@@ -93,13 +107,16 @@ import {
   type CalibrationPayload,
   type CanaryPayload,
   type CreditGateApprovalCategory,
+  type EnforcePayload,
   type IncidentClearPayload,
 } from './approval-payload.js'
 import { parseUtcInstant, type ConfigLoadResult, type CreditGateConfig } from './config.js'
-import { formatUsd, type Calibration, type CalibrationSource, type CanaryCloseResult } from './gate.js'
+import { formatUsd, type Calibration, type CalibrationSource, type CanaryCloseResult, type PricingFileResult } from './gate.js'
+import { currentPeriod, grantRemaining, priorCharge, type GrantPeriod } from './grant-model.js'
+import { insertPeriod, measureGrantInputs, newestPeriod, readChain, type ChainRead, type GrantInputs } from './grant-period.js'
 import { HEADLESS_SOURCE } from './ledger.js'
 import { MICRO_PER_USD, parseUsd } from './money.js'
-import type { Micro } from './types.js'
+import type { Micro, PricingTable } from './types.js'
 
 const HOUR_MS = 60 * 60 * 1000
 const DAY_MS = 24 * HOUR_MS
@@ -115,6 +132,10 @@ const SHA256_HEX_RE = /^[0-9a-f]{64}$/
 const RUN_ID_RE = /^[A-Za-z0-9_-]{1,128}$/
 const DATE_ONLY_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/
 const PROCESSED: readonly CreditGateApprovalCategory[] = ['credit_gate_calibration', 'credit_gate_incident_clear']
+/** Under the grant model the owner's one button is the enforce approval; no Console reading is processed. */
+const PROCESSED_GRANT: readonly CreditGateApprovalCategory[] = ['credit_gate_enforce', 'credit_gate_incident_clear']
+/** The HOLD of a reconstructed file (or its pricing) that cannot be trusted (A6). */
+const RECONSTRUCTED_BAD = 'grant_model_reconstructed_bad'
 const PENDING_LIMIT = 500
 
 // ------------------------------------------------------------------ readings
@@ -545,6 +566,12 @@ export interface CalibrationDeps {
   readonly db: Database.Database
   readonly gate: CalibrationGatePort
   readonly loadConfig: () => ConfigLoadResult
+  /**
+   * The gate's pricing table (the runtime passes the same file the gate reads). Only the grant model
+   * needs it, and only with a reconstructed block: its rows are priced to make the prior charge.
+   * Absent or failing: no period is written (the gate's own pricing closure says why).
+   */
+  readonly loadPricing?: (nowMs: number) => PricingFileResult
   /** The configured owner's Telegram user id; default strictOwnerUserId. null = nothing is processed. */
   readonly ownerId?: () => string | null
   readonly now?: () => number
@@ -637,6 +664,8 @@ export class CalibrationProcessor {
   private readonly ownerFn: () => string | null
   private readonly consumeFn: typeof consumeCreditGateApproval
   private readonly warned = new Set<string>()
+  /** The reconstructed file's HOLD was raised in this episode (reset when the file reads fine again). */
+  private badRaised = false
 
   constructor(private readonly deps: CalibrationDeps) {
     // isOwnerVerified and the consume run on db.ts's connection; a second
@@ -781,9 +810,13 @@ export class CalibrationProcessor {
           this.gate.audit('owner_change_reverted', { reason: 'owner_change_reverted' }, nowMs)
         })
       }
-      const pending = listOwnerApprovedUnconsumed(PROCESSED, owner, PENDING_LIMIT)
+      // Card 40e03382: under the grant model the enforce approval replaces the calibration one.
+      const grant = this.grantConfig()
+      const inputs = grant === null ? null : this.measureInputs(grant, nowMs, rep)
+      const pending = listOwnerApprovedUnconsumed(grant === null ? PROCESSED : PROCESSED_GRANT, owner, PENDING_LIMIT)
       const cfgR = pending.length > 0 ? this.deps.loadConfig() : null
       const cfg = cfgR?.ok ? cfgR.config : null
+      let deferred = false
       for (const a of pending) {
         setCurrent(a.id)
         if (!isOwnerVerified(a.id, owner)) {
@@ -792,11 +825,14 @@ export class CalibrationProcessor {
         }
         const step = a.category === 'credit_gate_calibration'
           ? this.calibrationStep(a.id, owner, cfg, nowMs)
-          : this.incidentClearStep(a.id, owner, nowMs)
+          : a.category === 'credit_gate_enforce'
+            ? this.enforceStep(a.id, owner, grant, inputs, nowMs, rep)
+            : this.incidentClearStep(a.id, owner, nowMs)
         if (step === 'skipped') continue
         // Order matters (a clear counts only for readings after it): a deferred approval stops the pass.
         if (step === 'deferred') {
           rep.deferred++
+          deferred = true
           break
         }
         rep.changed = true
@@ -807,6 +843,181 @@ export class CalibrationProcessor {
         else if (step === 'cleared') rep.cleared++
         else rep.refused++
       }
+      if (grant !== null && !deferred) this.advanceGrantPeriod(grant, inputs, nowMs, rep)
+    }
+  }
+
+  // ------------------------------------------------------------------ the grant model (card 40e03382)
+
+  /** The config when it selects the grant model (and holds its block); else null -- the Console path, untouched. A config that cannot be read is the Console path's business. */
+  private grantConfig(): CreditGateConfig | null {
+    try {
+      const r = this.deps.loadConfig()
+      return r.ok && r.config.calibrationSource === 'grant_model' && r.config.grantModel !== null ? r.config : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * The reconstructed file measured (A6). A file that is not exactly the pinned
+   * bytes, or does not parse, is a HOLD -- once per episode: the state is
+   * HOLD already (or an INCIDENT, which stays), or this processor raised it.
+   */
+  private measureInputs(cfg: CreditGateConfig, nowMs: number, rep: ProcessReport): GrantInputs {
+    const inputs = measureGrantInputs(cfg)
+    if (inputs.ok) {
+      this.badRaised = false
+      return inputs
+    }
+    this.raiseBad(inputs.why, inputs.detail, nowMs, rep)
+    return inputs
+  }
+
+  private raiseBad(why: string, detail: string, nowMs: number, rep: ProcessReport): void {
+    if (this.badRaised) return
+    this.badRaised = true
+    const st = this.db.prepare('SELECT state, reason FROM credit_gate_state WHERE id = 1').get() as { state: string; reason: string } | undefined
+    if (st && (st.state === 'INCIDENT' || (st.state === 'HOLD' && st.reason === RECONSTRUCTED_BAD))) return
+    this.warnOnce(`grant_bad:${why}`, 'credit gate: the grant model\'s reconstructed file cannot be used, HOLD', { why })
+    this.gate.audit('grant_model_bad', { reason: RECONSTRUCTED_BAD, detail: { why, error: detail } }, nowMs)
+    this.gate.raiseHold(RECONSTRUCTED_BAD, { why }, nowMs, false)
+    rep.held++
+    rep.changed = true
+  }
+
+  /**
+   * The period at `nowMs` and what remains of the grant in it (A4): the prior
+   * charge of the reconstructed rows and the gap, priced with the gate's own
+   * table. `skip`: no table right now (the gate says pricing_error itself);
+   * `bad`: a reconstructed row that cannot be priced -- the data is not usable.
+   */
+  private periodOf(cfg: CreditGateConfig, inputs: GrantInputs & { ok: true }, nowMs: number):
+    | { readonly ok: true; readonly period: GrantPeriod; readonly remaining: Micro }
+    | { readonly ok: false; readonly kind: 'skip' | 'bad'; readonly why: string } {
+    const gm = cfg.grantModel
+    if (gm === null) return { ok: false, kind: 'skip', why: 'no_grant_model' }
+    const period = currentPeriod(gm, nowMs)
+    let table: PricingTable | null = null
+    if (gm.reconstructed !== null) {
+      let p: PricingFileResult | null = null
+      try {
+        p = this.deps.loadPricing ? this.deps.loadPricing(nowMs) : null
+      } catch {
+        p = null
+      }
+      if (p === null || !p.ok) return { ok: false, kind: 'skip', why: 'pricing_unavailable' }
+      table = p.table
+    }
+    const prior = priorCharge(inputs.rows, gm, period.lbMs, table as PricingTable)
+    if (prior === null) return { ok: false, kind: 'bad', why: 'reconstructed_row_unpriced' }
+    return { ok: true, period, remaining: grantRemaining(gm, prior) }
+  }
+
+  /**
+   * The owner's ONE button (spec 4): the same G-02 order as every approval --
+   * exact category, isOwnerVerified with the configured owner, the canonical
+   * payload, one consume -- and, in that transaction, the chain's first period
+   * row, the canary row of the approval's terms and the owner pin. It binds
+   * the hash of the config as it is now: another hash, a bad reconstructed
+   * file, an open INCIDENT, a decision before the owner's last clear: skipped,
+   * unconsumed.
+   */
+  private enforceStep(id: string, owner: string, cfg: CreditGateConfig | null, inputs: GrantInputs | null, nowMs: number, rep: ProcessReport): Step {
+    if (cfg === null || inputs === null || !inputs.ok) return 'skipped'
+    const calc = this.periodOf(cfg, inputs, nowMs)
+    if (!calc.ok) {
+      if (calc.kind === 'bad') this.raiseBad(calc.why, calc.why, nowMs, rep)
+      else this.warnOnce(`grant_skip:${calc.why}`, 'credit gate: no grant period can be written now', { why: calc.why })
+      return 'skipped'
+    }
+    try {
+      return this.tx((): Step => {
+        const a = this.verified(id, 'credit_gate_enforce', owner)
+        if (a === null) return 'skipped'
+        const p = (creditGateBinding(a) as { bound: true; payload: EnforcePayload }).payload
+        if (p.grant_model_hash !== inputs.hash) {
+          this.warnOnce(`enforce_hash:${a.id}`, 'credit gate: an enforce approval binds another grant model hash, left unconsumed', { approval_id: a.id })
+          return 'skipped'
+        }
+        const st = this.db.prepare('SELECT state FROM credit_gate_state WHERE id = 1').get() as { state: string } | undefined
+        if (st?.state === 'INCIDENT') return 'skipped'
+        const cs = this.calState()
+        if (this.ownerMismatch(owner, cs)) return 'skipped'
+        // A9: after an incident-clear (or an owner re-pin) only an approval decided after it counts.
+        if (cs.min_captured_at_lb !== null && (a.resolved_at == null || a.resolved_at < Math.floor(cs.min_captured_at_lb / 1000))) return 'skipped'
+        const budget = parseUsd(p.canary.budget_usd)
+        const minExpected = parseUsd(p.canary.min_expected_usd)
+        if (budget === null || minExpected === null) return 'skipped'
+        const gm = cfg.grantModel as NonNullable<CreditGateConfig['grantModel']>
+        const periodId = insertPeriod(this.db, {
+          approvalId: a.id, hash: inputs.hash, enforcedAtMs: nowMs, period: calc.period, original: gm.grantUsd, remaining: calc.remaining, nowMs,
+        })
+        this.consume(a, owner, `credit_grant_periods:${periodId}`, nowMs)
+        this.db.prepare(`INSERT INTO credit_canaries
+            (approval_id, config_hash, model, budget_micro, min_expected_micro, before_calibration_id, run_id, status, consumed_at)
+          VALUES (?, ?, ?, ?, ?, ?, NULL, 'consumed', ?)`).run(a.id, p.canary.config_hash, p.canary.model, budget, minExpected, periodId, nowMs)
+        if (cs.owner_id === null) this.updateCalState({ owner_id: owner, owner_pinned_at: nowMs })
+        this.gate.audit('grant_enforce', {
+          reason: 'grant_enforce',
+          calId: periodId,
+          detail: { approval_id: a.id, period: calc.period.key, remaining_usd: formatUsd(calc.remaining) },
+        }, nowMs)
+        return 'accepted'
+      })
+    } catch (err) {
+      if (err instanceof Rollback) return err.step
+      if (isBusy(err)) return 'deferred'
+      throw err
+    }
+  }
+
+  /**
+   * A3: when the period changes, ONE new row (same approval, a higher id) --
+   * no button. Only a chain in force advances: it verifies (readChain), binds
+   * the config as it is now, was enforced after the owner's last clear, and the
+   * gate is not in INCIDENT. A row that does not verify is left to the source,
+   * which makes the gate read calibration_invalid.
+   */
+  private advanceGrantPeriod(cfg: CreditGateConfig, inputs: GrantInputs | null, nowMs: number, rep: ProcessReport): void {
+    if (inputs === null || !inputs.ok || cfg.grantModel === null) return
+    const st = this.db.prepare('SELECT state FROM credit_gate_state WHERE id = 1').get() as { state: string } | undefined
+    if (!st || st.state === 'INCIDENT') return
+    let read: ChainRead
+    try {
+      read = readChain(this.db, cfg, inputs.hash)
+    } catch (err) {
+      this.warnOnce('grant_chain_invalid', 'credit gate: the grant period chain does not verify, not advanced', { error: err instanceof Error ? err.name : typeof err })
+      return
+    }
+    if (read.kind !== 'ok' || currentPeriod(cfg.grantModel, nowMs).key === read.record.key) return
+    const calc = this.periodOf(cfg, inputs, nowMs)
+    if (!calc.ok) {
+      if (calc.kind === 'bad') this.raiseBad(calc.why, calc.why, nowMs, rep)
+      return
+    }
+    const record = read.record
+    try {
+      const id = this.tx((): number | null => {
+        // Still the newest row, and still in the old period: nobody wrote between the read and here.
+        const newest = newestPeriod(this.db)
+        if (newest === null || newest.id !== read.row.id) return null
+        const gm = cfg.grantModel as NonNullable<CreditGateConfig['grantModel']>
+        const newId = insertPeriod(this.db, {
+          approvalId: record.approval_id, hash: record.grant_model_hash, enforcedAtMs: record.enforced_at_ms, period: calc.period,
+          original: gm.grantUsd, remaining: calc.remaining, nowMs,
+        })
+        this.gate.audit('grant_period', {
+          reason: 'grant_period',
+          calId: newId,
+          detail: { approval_id: record.approval_id, period: calc.period.key, remaining_usd: formatUsd(calc.remaining) },
+        }, nowMs)
+        return newId
+      })
+      if (id !== null) rep.changed = true
+    } catch (err) {
+      if (isBusy(err)) return
+      throw err
     }
   }
 

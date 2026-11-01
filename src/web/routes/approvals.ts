@@ -1101,7 +1101,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // first bad field, never the payload.
     const cat = category.trim()
     if (claimsCreditGatePrefix(cat) && !isCreditGateCategory(cat)) {
-      json(res, { error: 'category: the credit_gate_ prefix is reserved for credit_gate_calibration, credit_gate_canary and credit_gate_incident_clear' }, 400)
+      json(res, { error: 'category: the credit_gate_ prefix is reserved for credit_gate_calibration, credit_gate_canary, credit_gate_incident_clear and credit_gate_enforce' }, 400)
       return true
     }
     // e487f46c B1: an external_message (SMS) request that names a content_hash must carry

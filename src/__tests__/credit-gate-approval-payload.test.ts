@@ -96,6 +96,12 @@ function canary(over: Record<string, unknown> = {}): Record<string, unknown> {
   }
 }
 
+// Card 40e03382: the grant_model button; the canary terms are the canary payload's without the Console reading.
+function enforce(): Record<string, unknown> {
+  const { v: _v, kind: _kind, before_calibration_id: _before, ...terms } = canary()
+  return { v: 1, kind: 'credit_gate_enforce', grant_model_hash: 'ef'.repeat(32), mode: 'enforce', canary: terms }
+}
+
 function incidentClear(over: Record<string, unknown> = {}): Record<string, unknown> {
   return { v: 1, kind: 'credit_gate_incident_clear', incident_event_id: 42, ...over }
 }
@@ -104,8 +110,8 @@ const parse = (category: string, payload: unknown) => parseCreditGatePayload(cat
 const fieldOf = (r: ReturnType<typeof parseCreditGatePayload>) => (r.ok ? 'OK' : r.field)
 
 describe('the credit_gate_* categories', () => {
-  it('are exactly the three of blueprint 3.7, and the prefix is recognised regardless of case and whitespace', () => {
-    expect([...CREDIT_GATE_APPROVAL_CATEGORIES]).toEqual(['credit_gate_calibration', 'credit_gate_canary', 'credit_gate_incident_clear'])
+  it('are exactly the three of blueprint 3.7 and the enforce button of card 40e03382, and the prefix is recognised regardless of case and whitespace', () => {
+    expect([...CREDIT_GATE_APPROVAL_CATEGORIES]).toEqual(['credit_gate_calibration', 'credit_gate_canary', 'credit_gate_incident_clear', 'credit_gate_enforce'])
     for (const c of CREDIT_GATE_APPROVAL_CATEGORIES) expect(isCreditGateCategory(c)).toBe(true)
     for (const c of ['credit_gate_open', 'Credit_Gate_Calibration', ' credit_gate_canary', 'email_send', '', null, 1]) {
       expect(isCreditGateCategory(c)).toBe(false)
@@ -428,7 +434,8 @@ describe('the DB side: which rows a button may bind and decide (N2b)', () => {
   }
 
   it.each(CREDIT_GATE_APPROVAL_CATEGORIES)('%s: the nonces bind, and the owner\'s press decides it once', (category) => {
-    const text = canon(category === 'credit_gate_calibration' ? calibration() : category === 'credit_gate_canary' ? canary() : incidentClear())
+    const text = canon(category === 'credit_gate_calibration' ? calibration() : category === 'credit_gate_canary' ? canary()
+      : category === 'credit_gate_enforce' ? enforce() : incidentClear())
     pending('c1', category, text, sha(text))
     const b = bind('c1')
     expect(b.ok).toBe(true)

@@ -21,6 +21,16 @@
 // window's ledger row of that run is what the canary measured. hash_taken_at:
 // the runner took the hash (once).
 //
+// credit_grant_periods (card 40e03382): the grant_model calibration. One row
+// per period of one enforce approval's chain -- the first one written in the
+// transaction that consumes the approval, the next ones by the tick when the
+// period changes. `id` is NOT autoincremented: it is assigned in the same
+// transaction as max(id of credit_calibrations, id of this table) + 1, so the
+// two tables share ONE id space and a newer period always has an id above every
+// calibration the gate has seen (the latch lifts on a strictly larger id).
+// row_json is the canonical period record, content_hash its sha256; both and
+// the enforce approval are re-checked on every read (grant-period.ts).
+//
 // credit_calibration_state: one row (id = 1). owner_id is the owner's Telegram
 // id, pinned at the first accepted reading; while the configured owner differs
 // the gate is on HOLD (owner_changed, the event's id and time here) and only a
@@ -60,6 +70,19 @@ export function applyCalibrationSchema(db: Database.Database): void {
       evaluated_at INTEGER,
       hash_taken_at INTEGER
     );
+
+    CREATE TABLE IF NOT EXISTS credit_grant_periods (
+      id INTEGER PRIMARY KEY,
+      approval_id TEXT NOT NULL,
+      grant_model_hash TEXT NOT NULL,
+      lb INTEGER NOT NULL,
+      expires INTEGER NOT NULL,
+      remaining_micro INTEGER NOT NULL CHECK (remaining_micro >= 0),
+      row_json TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_credit_grant_periods_approval ON credit_grant_periods(approval_id, id);
 
     CREATE TABLE IF NOT EXISTS credit_calibration_state (
       id INTEGER PRIMARY KEY CHECK (id = 1),

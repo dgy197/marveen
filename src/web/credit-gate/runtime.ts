@@ -7,7 +7,9 @@
 // answer {enforced:false} / gate_off. In shadow or enforce mode it applies the
 // gate's tables, builds the gate on the real files (store/credit-gate/,
 // the PR-A guard-event file) and ticks it every refreshS seconds. The
-// calibration is the newest accepted credit_calibrations row (N2c); between
+// calibration is the newest accepted credit_calibrations row (N2c) -- or, when
+// the config selects calibrationSource grant_model (card 40e03382), the newest
+// verified credit_grant_periods row (grant-period.ts); between
 // two ticks the processor takes the owner-approved calibration and
 // incident-clear approvals (calibration.ts) -- only on the dashboard's own
 // database, where the approvals are.
@@ -33,6 +35,7 @@ import {
   type ModeReading,
 } from './config.js'
 import { CalibrationProcessor, calibrationSource } from './calibration.js'
+import { dispatchCalibrationSource } from './grant-period.js'
 import { CreditGate, noCalibration, stopView, type CalibrationSource, type CreditGateDeps, type GateStatus, type PricingFileResult } from './gate.js'
 import { AuditNotifier, defaultNotifyDeps, type NotifyDeps } from './notify.js'
 import { loadPricing } from './pricing.js'
@@ -129,11 +132,21 @@ export function startCreditGateRuntime(opts: StartOptions): NodeJS.Timeout | und
     const db = opts.db ?? getDb()
     applyCreditGateSchema(db)
     const configPath = join(storeDir, CREDIT_GATE_DIR, CONFIG_FILE)
-    const gate = new CreditGate(fileGateDeps({ storeDir, db, mode, calibration: opts.calibration ?? calibrationSource(db), now: opts.now }))
+    const loadConfig = () => loadCreditGateConfigFile(configPath)
+    // Card 40e03382: the Console source unless the config selects the grant model.
+    const gate = new CreditGate(fileGateDeps({
+      storeDir, db, mode, calibration: opts.calibration ?? dispatchCalibrationSource(calibrationSource(db), db, loadConfig), now: opts.now,
+    }))
     // The approvals live in db.ts's database: on any other handle nothing is
     // processed, and the gate (without a calibration) never opens.
     const calibrations = opts.calibration === undefined && db === getDb()
-      ? new CalibrationProcessor({ db, gate, loadConfig: () => loadCreditGateConfigFile(configPath), now: opts.now })
+      ? new CalibrationProcessor({
+        db,
+        gate,
+        loadConfig,
+        loadPricing: (nowMs) => loadPricingFile(join(storeDir, CREDIT_GATE_DIR, PRICING_FILE), nowMs),
+        now: opts.now,
+      })
       : null
     if (calibrations === null && opts.calibration === undefined) logger.warn('Credit gate: not on the dashboard database, no approval is processed')
     current = { mode, gate, storeDir, db, startError: null, calibrations }
