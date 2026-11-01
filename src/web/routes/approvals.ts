@@ -149,6 +149,8 @@ export function categoryWindowSeconds(v: unknown): number | null {
 
 // Owner-facing Telegram text. Pure + exported for tests. Plain text (no
 // markdown escaping concerns), proper accents: this is outgoing copy.
+const DESCRIPTION_LINE_PREFIX = '┊ '
+
 export function buildOwnerApprovalText(approval: Approval): string {
   // fec6335f N2b: a credit-gate request without its button message shows no
   // payload and no free text, and says that it cannot be decided this way.
@@ -168,7 +170,10 @@ export function buildOwnerApprovalText(approval: Approval): string {
     ? [
         `SMS-szám: ${sms.number}`,
         ...smsTextBlock(sms.text),
-        `A kérő leírása (nem hitelesített): ${approval.action_description}`,
+        // The description is requester text too: framed per line, so a newline in it cannot
+        // forge an SMS-szám, Lejárat or Döntés line either.
+        'A kérő leírása (nem hitelesített):',
+        ...approval.action_description.split('\n').map(l => DESCRIPTION_LINE_PREFIX + l),
       ]
     : [approval.action_description]
   return [
