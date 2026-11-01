@@ -90,6 +90,25 @@ def env_file_values(*keys):
     return out
 
 
+PORT_RE = re.compile(r'[0-9]{1,5}', re.ASCII)
+
+
+def web_port():
+    """(port, None) or (None, error). MARVEEN_WEB_PORT, then WEB_PORT, then the .env, then 3420.
+
+    A variable that is set but empty is an error, not "next source". Only ASCII digits, 1-65535
+    (str.isdigit() takes fullwidth and Arabic-Indic digits), so the port can never reshape the URL."""
+    if 'MARVEEN_WEB_PORT' in os.environ:
+        raw = os.environ['MARVEEN_WEB_PORT']
+    elif 'WEB_PORT' in os.environ:
+        raw = os.environ['WEB_PORT']
+    else:
+        raw = env_file_values('WEB_PORT').get('WEB_PORT', '3420')
+    if PORT_RE.fullmatch(raw) is None or not 1 <= int(raw) <= 65535:
+        return None, 'the web port must be digits only, 1-65535; nothing was sent.'
+    return raw, None
+
+
 def check_env():
     """Refuses an environment that would send the token elsewhere; None when it is fine.
 
@@ -106,6 +125,9 @@ def check_env():
         if not on_loopback and b not in configured:
             return (f'MARVEEN_API_BASE={b} is neither loopback nor this install\'s AGENT_API_ORIGIN or '
                     'DASHBOARD_PUBLIC_URL (.env); nothing was sent.')
+    _, port_err = web_port()  # checked even when MARVEEN_API_BASE is set (card d4be011e)
+    if port_err:
+        return port_err
     token_file = os.environ.get('MARVEEN_TOKEN_FILE')
     if token_file and os.path.basename(token_file) != TOKEN_FILE_NAME:
         return f'MARVEEN_TOKEN_FILE must name a {TOKEN_FILE_NAME} file; nothing was sent.'
@@ -116,8 +138,11 @@ def api_base():
     base = os.environ.get('MARVEEN_API_BASE')
     if base:
         return base.strip().rstrip('/')
-    port = os.environ.get('MARVEEN_WEB_PORT') or os.environ.get('WEB_PORT') or env_file_values('WEB_PORT').get('WEB_PORT')
-    return f'http://localhost:{port or 3420}'
+    port, err = web_port()
+    if err:
+        print('FAIL: ' + err, file=sys.stderr)
+        sys.exit(2)
+    return f'http://localhost:{port}'
 
 
 def read_token():
