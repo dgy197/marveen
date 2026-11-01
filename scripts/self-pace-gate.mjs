@@ -35,6 +35,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
+import { joinShellLines } from './shell-line-join.mjs'
 
 // The allowlist this install's egress-gate.mjs reads (scripts/ -> repo root -> store/).
 const DEFAULT_ALLOWLIST_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'store', 'egress-allowlist.json')
@@ -257,9 +258,13 @@ export function fileToolTargetsAllowlist(toolInput, allowlistPath = DEFAULT_ALLO
 
 // Split a compound command into individual simple commands, so a token in one
 // segment cannot trip a check anchored in another (e.g. `cat store && cp a b`).
-// Line-continuations (backslash-newline) are collapsed FIRST so a single command
-// continued across lines stays ONE segment (this is what keeps the
-// tmux\<newline>send-keys vector closed); only real separators split.
+// Line-continuations (backslash-newline) are collapsed FIRST, exactly as the
+// shell's lexer does it (joinShellLines: an odd backslash run before LF only, not
+// inside '...' or a comment, nothing left in their place), so a single command
+// continued across lines stays ONE segment and a `\\<newline>` or a comment ending
+// in a backslash does NOT hide the next line; only real separators split.
+// (`tmux \<newline>send-keys` joins to `tmux send-keys`; `tmux\<newline>send-keys`
+// joins to the single word `tmuxsend-keys`, which is what the shell runs.)
 //
 // KNOWN LIMITATIONS (accepted, defense-in-depth -- the runtime tool-deny is the
 // primary guard, this Bash hook is a second layer; a sub-agent is not adversarial
@@ -272,8 +277,7 @@ export function fileToolTargetsAllowlist(toolInput, allowlistPath = DEFAULT_ALLO
 //     (`X=$(crontab -)`, `X=`crontab -``) is caught by SCHEDULER_RX's boundary
 //     anchor, which now includes both `(` and the backtick.
 export function splitSegments(command) {
-  return String(command ?? '')
-    .replace(/\\\r?\n/g, ' ')
+  return joinShellLines(String(command ?? ''))
     .split(/&&|\|\||[;&|]|\r?\n/)
     // trim so a leading-separator segment (" at now") anchors at ^ correctly
     .map((s) => s.trim())
@@ -362,10 +366,10 @@ function dquoteEnd(src, from) {
 
 export function maskInertLiterals(command, heredocs, lenient = false, diagnostic = {}) {
   diagnostic.reason = null
-  // A backslash-newline joins the lines only behind an ODD run of backslashes (`a\\<NL>b` is an escaped
-  // backslash and then a real newline); the egress parser's own join counts the same way, and a longer
-  // or shorter result here would read as an unparseable command (card 44167c0b, B5).
-  const src = String(command ?? '').replace(/(\\+)(\r?\n)/g, (m, bs) => (bs.length % 2 === 1 ? bs.slice(0, -1) + ' ' : m))
+  // The shared shell join (odd backslash run before LF only, quote/heredoc/comment aware). It is idempotent,
+  // so a caller that already joined (shellSegments, quotedWords) gets the same text back and the heredoc
+  // coordinates it collects stay valid for that caller.
+  const src = joinShellLines(String(command ?? ''))
   let cur = ''
   let i = 0
 
@@ -762,8 +766,22 @@ function decodeEscapes(s) {
 // Spellings of the same text that the matchers run against. Each one can only
 // ADD matches (it removes or decodes characters), so it can never let a
 // reference through that the raw text would have caught.
+//
+// The first four are the canonical reading (joinShellLines: what the shell sees
+// after line continuation). When the old naive join -- EVERY backslash + newline
+// dropped, in any context -- reads differently, its four spellings are appended as
+// extra variants: they can only add a denial (a word cut by `\\<newline>` that the
+// shell does not join), never remove one. Index [1] stays the canonical unquoted
+// spelling for the callers that take it.
 export function scheduleSurfaceVariants(text) {
-  const joined = String(text ?? '').replace(/\\\r?\n/g, '')
+  const raw = String(text ?? '')
+  const canonical = joinShellLines(raw)
+  // deliberately NOT a replace(): the structural test keeps the gates free of private joins
+  const naive = raw.split(/\\\r?\n/).join('')
+  return naive === canonical ? surfaceSpellings(canonical) : [...surfaceSpellings(canonical), ...surfaceSpellings(naive)]
+}
+
+function surfaceSpellings(joined) {
   const decoded = decodeEscapes(decodeEscapes(joined)) // twice: %5cx73 -> \x73 -> s
   // quotes, backslashes and $IFS are shell syntax: gone before the program runs
   const unquoted = decoded.replace(/\$\{IFS\}|\$IFS\b/g, '').replace(/[\\'"`]/g, '')
@@ -853,7 +871,7 @@ function isSubsequence(needle, hay) {
 // words of its own. Returns null when the quoting cannot be resolved.
 export function quotedWords(text, depth = 0) {
   if (depth > 8) return null
-  const src = String(text ?? '').replace(/\\\r?\n/g, ' ')
+  const src = joinShellLines(String(text ?? ''))
   const heredocs = []
   if (maskInertLiterals(src, heredocs, true) == null) return null
   let s = src
@@ -1107,8 +1125,9 @@ function resolveFlatSubst(cmd, opts) {
 // when the quoting cannot be resolved -- the caller then denies.
 const SEGMENT_SEP_RX = /\|\||&&|\|&|;;|[;|\n]|(?<![<>])&(?!>)/g
 export function shellSegments(command, opts) {
-  const src = resolveFlatSubst(resolveCatSubst(resolveLiteralHeredocSubst(String(command ?? '')), opts), opts)
-    .replace(/\\\r?\n/g, ' ')
+  // Join first: the substitution resolvers below must see the text the shell sees. The result is the
+  // coordinate system of `heredocs`, `masked` and the segment slices (maskInertLiterals joins again, a no-op).
+  const src = resolveFlatSubst(resolveCatSubst(resolveLiteralHeredocSubst(joinShellLines(String(command ?? ''))), opts), opts)
   const heredocs = []
   const masked = maskInertLiterals(src, heredocs)
   if (masked == null || masked.length !== src.length) return null
@@ -1552,15 +1571,14 @@ const SHADOW_ANYWHERE_RX = new RegExp(`${CMD_POS}(?:alias|enable|builtin|command
 // any of them denies -- flat, instead of modelling each one's assignment.
 const VAR_WRITER_RX = new RegExp(`${CMD_POS}(?:printf\\s+(?:-[^\\s]*\\s+)*-v\\b|read\\b|mapfile\\b|readarray\\b|getopts\\b|(?:declare|local|typeset)\\s+(?:-\\w+\\s+)*-\\w*n)`)
 function wholeCommandShadows(command) {
-  const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
-  const masked = maskInertLiterals(src, [], true)
+  const masked = maskInertLiterals(joinShellLines(String(command ?? '')), [], true)
   if (masked == null) return true // unresolvable: fail closed
   return ANY_FUNCTION_DEF_RX.test(masked) || SHADOW_ANYWHERE_RX.test(masked) || VAR_WRITER_RX.test(masked)
 }
 
 // The definition/shadow half of wholeCommandShadows, without the variable writers.
 function wholeCommandDefines(command) {
-  const masked = maskInertLiterals(String(command ?? '').replace(/\\\r?\n/g, ' '), [], true)
+  const masked = maskInertLiterals(joinShellLines(String(command ?? '')), [], true)
   return masked == null || ANY_FUNCTION_DEF_RX.test(masked) || SHADOW_ANYWHERE_RX.test(masked)
 }
 
@@ -1571,7 +1589,7 @@ function wholeCommandDefines(command) {
 // that use. Once a variable carries a reference, any of these denies (flat).
 const ENV_EXPORT_RX = new RegExp(`${CMD_POS}(?:export(?=\\s|$)|(?:declare|local|typeset)\\s+(?:-\\w+\\s+)*-\\w*x|set\\s+(?:-\\w*a|-o\\s+allexport))`)
 function wholeCommandExports(command) {
-  const masked = maskInertLiterals(String(command ?? '').replace(/\\\r?\n/g, ' '), [], true)
+  const masked = maskInertLiterals(joinShellLines(String(command ?? '')), [], true)
   return masked == null || ENV_EXPORT_RX.test(masked)
 }
 
@@ -1705,11 +1723,18 @@ function decide(toolName, toolInput, opts = {}) {
     if (SCHEDULE_DIR_PATH_RX.test(fp)) return { deny: true }
   }
   if (name === 'Bash') {
-    // The schedule surface is judged on the RAW command, before the payload and
+    // Line continuations are resolved ONCE here, the way the shell lexer does it (joinShellLines, the one
+    // shared join); every helper below joins again on its own entrance, which is a no-op on this text.
+    // A reading the joiner is not sure of (unterminated quote or heredoc, a continuation inside backticks
+    // or arithmetic) must not let anything through: with a backslash-newline in the command, DENY.
+    const joinInfo = {}
+    const command = joinShellLines(String(toolInput?.command ?? ''), joinInfo)
+    if (!joinInfo.exact && /\\\n/.test(String(toolInput?.command ?? ''))) return { deny: true, reason: 'ambiguous-continuation' }
+    // The schedule surface is judged on the command BEFORE the payload and
     // commit-message blanking below: that blanking is regex-based and trusts a
     // `-d` wherever it appears (`python3 -c CODE -d URL` would blank the URL),
     // so this check does its own grammar-aware data removal instead.
-    if (scheduleSurfaceDeny(String(toolInput?.command ?? ''), opts)) return { deny: true }
+    if (scheduleSurfaceDeny(command, opts)) return { deny: true }
     // Strip -d/--data payloads on the WHOLE command BEFORE splitting. A payload is
     // data, not an invocation; and since splitSegments is NOT quote-aware, a shell
     // separator (; && | &) INSIDE a dispatch body would otherwise orphan a fragment
@@ -1717,7 +1742,7 @@ function decide(toolName, toolInput, opts = {}) {
     // it), so the URL/method args still match but the body text never does. A
     // separator OUTSIDE the payload still splits, so `curl -d '' x ; crontab -r`
     // is still caught.
-    const safeCommand = stripProseArguments(stripDataPayloads(stripGitCommitMessages(stripHeredocBodies(String(toolInput?.command ?? '')))))
+    const safeCommand = stripProseArguments(stripDataPayloads(stripGitCommitMessages(stripHeredocBodies(command))))
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     const naiveSegs = splitSegments(safeCommand)
