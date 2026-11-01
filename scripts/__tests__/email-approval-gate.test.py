@@ -1119,6 +1119,22 @@ with tempfile.TemporaryDirectory() as td:
     code, _, err = run_gate(owner_store(os.path.join(td, "dn-owner-3"), 3), mcp_send(), gate=broken)
     check("broken email_extract.py -> level 3 send_email without the owner DENIED, naming the owner",
           code == 2 and OWNER in err, f"exit={code} err={err[:200]!r}")
+    # Prefilter on a load failure (card 31d8fc36, package P): a NAMED reader still
+    # passes, an unknown-named (gateway-style) tool is denied whatever its input.
+    for level in (1, 2):
+        for name in ("mcp__gmail__read_email", "mcp__gmail__search_emails",
+                     "mcp__outlook__list_messages", "mcp__ms365__get_message"):
+            code, _, err = run_gate(make_store(os.path.join(td, f"dn-rd-{level}-{name}"), level=level),
+                                    {"tool_name": name, "tool_input": {"messageId": "m"}}, gate=broken)
+            check(f"broken email_extract.py -> named reader {name} at level {level} exits 0",
+                  code == 0, f"exit={code} err={err[:200]!r}")
+        for name in ("mcp__harder-mail__request", "mcp__outlook__call_api"):
+            for label, tin in (("mail-writing endpoint", {"path": "/me/sendMail"}),
+                               ("plain read input", {"path": "/me/messages"})):
+                code, _, err = run_gate(make_store(os.path.join(td, f"dn-gw-{level}-{name}-{label[:4]}"), level=level),
+                                        {"tool_name": name, "tool_input": tin}, gate=broken)
+                check(f"broken email_extract.py -> unknown-named {name} ({label}) at level {level} exits 2",
+                      code == 2, f"exit={code} err={err[:200]!r}")
 
 # --- the level-2 pass-through for this project's own senders -----------------
 # The senders consume the level-2 approval themselves (scripts/hooks/sender_check.py).
