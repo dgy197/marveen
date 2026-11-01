@@ -15,7 +15,7 @@
 
 import {
   CREDIT_GATE_TEXT_CHARS,
-  type CalibrationPayload, type CanaryPayload, type CreditGatePayload, type IncidentClearPayload,
+  type CalibrationPayload, type CanaryPayload, type CreditGatePayload, type EnforcePayload, type IncidentClearPayload,
 } from './credit-gate/approval-payload.js'
 
 // The view the notifier builds from the verified envelope. Declared here so
@@ -321,6 +321,28 @@ function canaryLines(p: CanaryPayload): string[] {
   return lines
 }
 
+// Card 40e03382: the one button of the grant_model calibration. The owner sees
+// what the press binds: the config hash, enforce, and the canary's terms.
+function enforceLines(p: EnforcePayload): string[] {
+  const c = p.canary
+  const lines = [
+    'Kredit-kapu: grant-modell bekapcsolása (enforce + kanári, egy gomb)',
+    `Grant-modell hash: ${cgVisible(p.grant_model_hash)}`,
+    `Üzemmód: ${cgVisible(p.mode)}`,
+    'Kanári-futás (ugyanebből a jóváhagyásból indulhat):',
+    `Modell: ${cgVisible(c.model)}`,
+    `Költségplafon: ${cgVisible(c.budget_usd)} USD`,
+    `Várt minimum költés: ${cgVisible(c.min_expected_usd)} USD`,
+    `Futtató-konfiguráció (hash): ${cgVisible(c.config_hash)}`,
+    `Node: ${cgVisible(c.node)}`,
+    `Munkakönyvtár: ${cgVisible(c.cwd)}`,
+    `Prompt (sha256 eleje): ${cgVisible(c.prompt_sha256.slice(0, 16))}`,
+    'A konfiguráció bármilyen változása után új gomb kell.',
+  ]
+  if (hasNonAscii(c.cwd)) lines.push(`FIGYELEM: nem-ASCII karakter a munkakönyvtárban: ${escapeNonAscii(c.cwd)}`)
+  return lines
+}
+
 function utcStampOfMs(ms: number): string {
   return new Date(ms).toISOString().replace(/\.[0-9]{3}Z$/, 'Z')
 }
@@ -345,7 +367,8 @@ export function buildCreditGateApprovalText(payload: CreditGatePayload, meta: Cr
   const body =
     payload.kind === 'credit_gate_calibration' ? calibrationLines(payload)
       : payload.kind === 'credit_gate_canary' ? canaryLines(payload)
-        : incidentClearLines(payload, meta.incident)
+        : payload.kind === 'credit_gate_enforce' ? enforceLines(payload)
+          : incidentClearLines(payload, meta.incident)
   const expires = meta.timeoutAt != null ? formatBudapest(meta.timeoutAt) : 'nincs'
   return [
     `[JÓVÁHAGYÁS KELL] ${cgVisible(meta.agentId)} | ${cgVisible(meta.category)}`,

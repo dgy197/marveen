@@ -2,11 +2,14 @@
 // N2b): their categories, their bound payloads, and the binding of a payload
 // to the approval's content_hash.
 //
-// Three categories travel the strict Telegram button path of card 345f34e2
+// Four categories travel the strict Telegram button path of card 345f34e2
 // (owner:telegram:<id>, a nonce per button, one conditional UPDATE):
 //   credit_gate_calibration    a Console reading, grant by grant (G-02, D-01)
 //   credit_gate_canary         the one canary run (K-01)
 //   credit_gate_incident_clear the owner lifts one INCIDENT (3.5)
+//   credit_gate_enforce        card 40e03382: the ONE button of the grant_model
+//                              calibration -- the grant-model config hash, enforce
+//                              and the canary's terms in one approval
 // The gate itself (consume, calibration, the INCIDENT lift) is node N2c; this
 // module only decides what such an approval may carry and whether its payload
 // is the one its content_hash approves.
@@ -38,6 +41,7 @@ export const CREDIT_GATE_APPROVAL_CATEGORIES = [
   'credit_gate_calibration',
   'credit_gate_canary',
   'credit_gate_incident_clear',
+  'credit_gate_enforce',
 ] as const
 
 export type CreditGateApprovalCategory = (typeof CREDIT_GATE_APPROVAL_CATEGORIES)[number]
@@ -127,7 +131,32 @@ export interface IncidentClearPayload {
   readonly incident_event_id: number
 }
 
-export type CreditGatePayload = CalibrationPayload | CanaryPayload | IncidentClearPayload
+/**
+ * Card 40e03382: the canary's terms inside the enforce approval. The canary
+ * payload's own fields, minus the Console calibration it follows (there is none
+ * under the grant model: the first period row is its before-reading).
+ */
+export interface EnforceCanaryTerms {
+  readonly config_hash: string
+  readonly model: string
+  readonly budget_usd: string
+  readonly min_expected_usd: string
+  readonly node: string
+  readonly cwd: string
+  readonly prompt_sha256: string
+}
+
+/** Card 40e03382: the one owner button of the grant_model calibration (spec 4). */
+export interface EnforcePayload {
+  readonly v: 1
+  readonly kind: 'credit_gate_enforce'
+  /** grantModelHash(): the grant-model config and what it rests on, as the owner saw it. */
+  readonly grant_model_hash: string
+  readonly mode: 'enforce'
+  readonly canary: EnforceCanaryTerms
+}
+
+export type CreditGatePayload = CalibrationPayload | CanaryPayload | IncidentClearPayload | EnforcePayload
 
 export type CreditGatePayloadResult =
   | { readonly ok: true; readonly payload: CreditGatePayload; readonly canonical: string; readonly contentHash: string }
@@ -232,23 +261,45 @@ function checkCalibration(o: Record<string, unknown>): void {
   checkScreenshot(o['screenshot'])
 }
 
+// The canary terms the canary approval and the enforce approval share, one
+// rule set: the runner's config hash, the model, the budget strictly below 1 USD
+// and the minimum cost. `at` prefixes the reported field name of a nested copy.
+function checkCanaryHead(o: Record<string, unknown>, at: string): void {
+  const hash = o['config_hash']
+  if (typeof hash !== 'string' || !SHA256_HEX_RE.test(hash)) throw new Bad(`${at}config_hash`)
+  const model = o['model']
+  if (typeof model !== 'string' || model.length > 64 || !MODEL_RE.test(model)) throw new Bad(`${at}model`)
+  const budget = usd(o['budget_usd'], `${at}budget_usd`)
+  if (budget <= 0 || budget >= CANARY_BUDGET_LIMIT_MICRO) throw new Bad(`${at}budget_usd`)
+  const min = usd(o['min_expected_usd'], `${at}min_expected_usd`)
+  if (min < CANARY_MIN_EXPECTED_MICRO || min > budget) throw new Bad(`${at}min_expected_usd`)
+}
+
+// The run the canary is for (BE-4b P6): its node, cwd and prompt hash.
+function checkCanaryRun(o: Record<string, unknown>, at: string): void {
+  const node = o['node']
+  if (typeof node !== 'string' || !NODE_ID_RE.test(node)) throw new Bad(`${at}node`)
+  checkPath(o['cwd'], `${at}cwd`)
+  const promptHash = o['prompt_sha256']
+  if (typeof promptHash !== 'string' || !SHA256_HEX_RE.test(promptHash)) throw new Bad(`${at}prompt_sha256`)
+}
+
 function checkCanary(o: Record<string, unknown>): void {
   exactKeys(o, ['v', 'kind', 'config_hash', 'model', 'budget_usd', 'min_expected_usd', 'before_calibration_id', 'node', 'cwd', 'prompt_sha256'], '')
-  const hash = o['config_hash']
-  if (typeof hash !== 'string' || !SHA256_HEX_RE.test(hash)) throw new Bad('config_hash')
-  const model = o['model']
-  if (typeof model !== 'string' || model.length > 64 || !MODEL_RE.test(model)) throw new Bad('model')
-  const budget = usd(o['budget_usd'], 'budget_usd')
-  if (budget <= 0 || budget >= CANARY_BUDGET_LIMIT_MICRO) throw new Bad('budget_usd')
-  const min = usd(o['min_expected_usd'], 'min_expected_usd')
-  if (min < CANARY_MIN_EXPECTED_MICRO || min > budget) throw new Bad('min_expected_usd')
+  checkCanaryHead(o, '')
   const before = o['before_calibration_id']
   if (typeof before !== 'string' || !UUID_RE.test(before)) throw new Bad('before_calibration_id')
-  const node = o['node']
-  if (typeof node !== 'string' || !NODE_ID_RE.test(node)) throw new Bad('node')
-  checkPath(o['cwd'], 'cwd')
-  const promptHash = o['prompt_sha256']
-  if (typeof promptHash !== 'string' || !SHA256_HEX_RE.test(promptHash)) throw new Bad('prompt_sha256')
+  checkCanaryRun(o, '')
+}
+
+function checkEnforce(o: Record<string, unknown>): void {
+  exactKeys(o, ['v', 'kind', 'grant_model_hash', 'mode', 'canary'], '')
+  const hash = o['grant_model_hash']
+  if (typeof hash !== 'string' || !SHA256_HEX_RE.test(hash)) throw new Bad('grant_model_hash')
+  if (o['mode'] !== 'enforce') throw new Bad('mode')
+  const c = exactKeys(o['canary'], ['config_hash', 'model', 'budget_usd', 'min_expected_usd', 'node', 'cwd', 'prompt_sha256'], 'canary')
+  checkCanaryHead(c, 'canary.')
+  checkCanaryRun(c, 'canary.')
 }
 
 function checkIncidentClear(o: Record<string, unknown>): void {
@@ -279,6 +330,7 @@ export function parseCreditGatePayload(category: unknown, raw: unknown): CreditG
     if (obj['kind'] !== category) throw new Bad('kind')
     if (category === 'credit_gate_calibration') checkCalibration(obj)
     else if (category === 'credit_gate_canary') checkCanary(obj)
+    else if (category === 'credit_gate_enforce') checkEnforce(obj)
     else checkIncidentClear(obj)
   } catch (err) {
     if (err instanceof Bad) return { ok: false, field: err.field }
