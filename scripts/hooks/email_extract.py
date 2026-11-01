@@ -1314,7 +1314,8 @@ def _name_independent_forward(segments, tool_input) -> bool:
     # branch decides those: only a forward KEY counts here, so the existing manage_email
     # verdicts do not change.
     multiplexed = any("_".join(_action_words(s)) == "manage_email" for s in segments)
-    return _has_forward_key_name(tool_input, not multiplexed, not _is_plain_draft(segments, classes))
+    return _has_forward_key_name(
+        tool_input, not multiplexed and not _is_label_folder_tool(segments), not _is_plain_draft(segments, classes))
 
 
 # A rule / filter / script / settings / automation word in a segment: such a tool is no
@@ -1342,6 +1343,24 @@ def _is_plain_draft(segments, classes) -> bool:
     if not any(m in w for s in segments for w in _action_words(s) for m in _MAIL_NOUNS):
         return False
     return not any(r in w for s in segments for w in _action_words(s) for r in _RULE_CLASS_WORDS)
+
+
+_LABEL_FOLDER_NOUNS = frozenset({"label", "labels", "folder", "folders", "category", "categories", "tag", "tags",
+                                 "mailbox", "mailboxes"})
+
+
+def _is_label_folder_tool(segments) -> bool:
+    """A label / folder / category / tag / mailbox tool (create_label, update_folder, ...)
+    names a container, not a letter or a rule: its name value ("Forwarded", "Forwarded
+    Items") is not a forward. It is exempt from the free-text forward WORD test (no value is
+    word-tested, like the multiplexed manage_email), if no segment has a rule-class, forward or redirect word (create_folder_rule,
+    update_label_settings stay strict); the forward KEY test still applies to it. Closed
+    list, whole words only.
+    Twin: isLabelFolderTool in scripts/email-send-gate.mjs."""
+    words = [w for s in segments for w in _action_words(s)]
+    if not any(w in _LABEL_FOLDER_NOUNS for w in words):
+        return False
+    return not any(r in w for w in words for r in _RULE_CLASS_WORDS + ("forward", "redirect"))
 
 
 def mail_rule_forward(tool_name, tool_input=_NO_INPUT) -> bool:

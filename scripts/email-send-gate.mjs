@@ -1912,7 +1912,7 @@ function nameIndependentForward(segments, toolInput) {
   // branch below decides those (kind draft-required): only a forward KEY counts here, so the
   // kind of the existing manage_email denies does not change.
   const multiplexed = segments.some((s) => segmentWords(s).join('_') === 'manage_email')
-  return hasForwardKeyName(toolInput, !multiplexed, !isPlainDraft(segments, classes))
+  return hasForwardKeyName(toolInput, !multiplexed && !isLabelFolderTool(segments), !isPlainDraft(segments, classes))
 }
 
 // A rule / filter / script / settings / automation word in a segment: such a tool is no
@@ -1936,6 +1936,21 @@ export function isPlainDraft(segments, classes) {
   if (!classes.includes('draft')) return false
   if (!segments.some((s) => segmentWords(s).some((w) => MAIL_NOUNS.some((m) => w.includes(m))))) return false
   return !segments.some((s) => segmentWords(s).some((w) => RULE_CLASS_WORDS.some((r) => w.includes(r))))
+}
+
+// A label / folder / category / tag / mailbox tool (create_label, update_folder, ...) names
+// a container, not a letter or a rule: its name value ("Forwarded", "Forwarded Items") is
+// not a forward. It is exempt from the free-text forward WORD test (no value is word-tested, like the
+// multiplexed manage_email), if no
+// segment has a rule-class, forward or redirect word (create_folder_rule, update_label_settings
+// stay strict); the forward KEY test still applies to it. Closed list, whole words only.
+// Twin: _is_label_folder_tool in scripts/hooks/email_extract.py.
+const LABEL_FOLDER_NOUNS = ['label', 'labels', 'folder', 'folders', 'category', 'categories', 'tag', 'tags',
+  'mailbox', 'mailboxes']
+export function isLabelFolderTool(segments) {
+  const words = segments.flatMap((s) => segmentWords(s))
+  if (!words.some((w) => LABEL_FOLDER_NOUNS.includes(w))) return false
+  return !words.some((w) => [...RULE_CLASS_WORDS, 'forward', 'redirect'].some((r) => w.includes(r)))
 }
 
 // A rule / filter write whose input forwards (hasForwardKey), or any non-reader call

@@ -1569,6 +1569,28 @@
       ],
       "deny": [
         {
+          "tool": "mcp__gmail__create_label",
+          "input": {
+            "name": "x",
+            "forwardTo": "a@b.example"
+          },
+          "note": "N1b: a forward KEY, a rule word or a settings word keeps a label / folder tool strict"
+        },
+        {
+          "tool": "mcp__outlook__create_folder_rule",
+          "input": {
+            "displayName": "Forwarded"
+          },
+          "note": "N1b: a forward KEY, a rule word or a settings word keeps a label / folder tool strict"
+        },
+        {
+          "tool": "mcp__gmail__update_label_settings",
+          "input": {
+            "description": "forward all"
+          },
+          "note": "N1b: a forward KEY, a rule word or a settings word keeps a label / folder tool strict"
+        },
+        {
           "tool": "mcp__gmail__create_draft",
           "input": {
             "to": [
@@ -1661,6 +1683,30 @@
         }
       ],
       "allow": [
+        {
+          "tool": "mcp__gmail__create_label",
+          "input": {
+            "name": "Forwarded"
+          },
+          "expected": null,
+          "note": "N1b: a label / folder name with a forward word is no forward (the forward KEY test still applies)"
+        },
+        {
+          "tool": "mcp__outlook__create_folder",
+          "input": {
+            "displayName": "Forwarded Items"
+          },
+          "expected": null,
+          "note": "N1b: a label / folder name with a forward word is no forward (the forward KEY test still applies)"
+        },
+        {
+          "tool": "mcp__gmail__update_label",
+          "input": {
+            "name": "Fwd"
+          },
+          "expected": "draft",
+          "note": "N1b: a label / folder name with a forward word is no forward (the forward KEY test still applies)"
+        },
         {
           "tool": "mcp__gmail__create_draft",
           "input": {
