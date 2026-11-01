@@ -46,7 +46,9 @@ import {
 } from '../web/credit-gate/approval-payload.js'
 import { grantModelHash } from '../web/credit-gate/grant-model.js'
 import { dispatchCalibrationSource, GRANT_CONSUMER, grantButtonRequired, requireGrantButton } from '../web/credit-gate/grant-period.js'
-import { buildCreditGateApprovalText } from '../web/approval-telegram-text.js'
+import { buildCreditGateApprovalText, type EnforceConfigView } from '../web/approval-telegram-text.js'
+import { enforceConfigView } from '../web/credit-gate/grant-status.js'
+import { creditGateEnforceView } from '../web/routes/approvals.js'
 import { configObject, pricingText, USD } from './fixtures/credit-gate/gate-harness.js'
 
 const OWNER = '1000000001'
@@ -402,6 +404,116 @@ describe('credit_gate_enforce: the category and its payload (spec 4)', () => {
     expect(text).toContain('N9x')
     expect(text).toContain(CANARY_TERMS.cwd)
     expect(text).toContain(CANARY_TERMS.model)
+  })
+
+  // R2 MED-1: the text shows what the press opens, read from the config now and bound by the hash.
+  describe('R2 MED-1: the grant-model figures in the button message', () => {
+    const REC = [
+      JSON.stringify({ month: '2026-10', caller: 'test', model: 'claude-sonnet-5-5', in: 1_000_000, out: 100_000, ts: Date.UTC(2026, 9, 20) / 1000 }),
+      JSON.stringify({ month: '2026-10', caller: 'test', model: 'claude-sonnet-5-5', in: 1_000_000, out: 100_000, ts: Date.UTC(2026, 9, 21) / 1000 }),
+    ].join('\n') + '\n'
+
+    function withReconstructed(): void {
+      const dir = join(h.dir, 'recon')
+      mkdirSync(dir, { mode: 0o700 })
+      chmodSync(dir, 0o700)
+      const path = join(dir, 'reconstructed.jsonl')
+      writeFileSync(path, REC, { mode: 0o600 })
+      chmodSync(path, 0o600)
+      h.editConfig((c) => {
+        (c.grantModel as Record<string, unknown>).reconstructed = {
+          path, sha256: sha(REC), multiplier: '2', gap: { from: '2026-10-05T00:00:00Z', to: '2026-10-06T00:00:00Z', chargeUsd: '0.50' },
+        }
+      })
+    }
+
+    const viewNow = (hash: string) =>
+      enforceConfigView(loadCreditGateConfigFile(h.cfgPath), hash, (t) => loadPricingFile(h.pricingPath, t), NOW0)
+
+    function textFor(hash: string, grantModel: EnforceConfigView | null | undefined): string {
+      const p = parse(enforcePayload(hash))
+      if (!p.ok) throw new Error(p.field)
+      return buildCreditGateApprovalText(p.payload, {
+        agentId: 'brainy', category: 'credit_gate_enforce', shortId: 'abcd1234', hash16: p.contentHash.slice(0, 16), timeoutAt: null, grantModel,
+      })
+    }
+    const bud = (ms: number) => new Date(ms).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
+
+    it('a matching config: all seven figures are in the text and no FIGYELEM about the config', () => {
+      withReconstructed()
+      const text = textFor(h.hash(), viewNow(h.hash()))
+      expect(text).toContain('Grant összege: 200.00 USD')
+      expect(text).toContain('Grant napjai (a hónap napja): 15')
+      expect(text).toContain(`Mostani periódus (Budapest): ${bud(P1.lb)} - ${bud(P1.expires)}`)
+      expect(text).toContain('Periódushatár előrehozása: 0 óra')
+      expect(text).toContain('Szorzó: 2\n')
+      expect(text).toContain('Hézag-terhelés: 0.50 USD')
+      expect(text).toContain('Várt maradék a periódus elején: 188.00 USD')
+      expect(text).not.toContain('FIGYELEM: a kredit-kapu konfigurációja')
+      expect(text).toContain('A konfiguráció bármilyen változása után új gomb kell.')
+    })
+
+    it('a config without a reconstructed block says so instead of a multiplier and a gap', () => {
+      const text = textFor(h.hash(), viewNow(h.hash()))
+      expect(text).toContain('Grant összege: 200.00 USD')
+      expect(text).toContain('Szorzó: nincs helyreállított blokk')
+      expect(text).toContain('Hézag-terhelés: nincs helyreállított blokk')
+      expect(text).toContain('Várt maradék a periódus elején: 200.00 USD')
+    })
+
+    it('the config changed after the request (hash differs): FIGYELEM and none of the figures', () => {
+      const asked = h.hash()
+      h.editConfig((c) => { (c.grantModel as Record<string, unknown>).grantUsd = '900.00' })
+      const view = viewNow(asked)
+      expect(view).toEqual({ state: 'mismatch' })
+      const text = textFor(asked, view)
+      expect(text).toContain('FIGYELEM: a kredit-kapu konfigurációja a kérés óta megváltozott')
+      expect(text).not.toContain('900.00')
+      expect(text).not.toContain('Grant összege')
+      expect(text).not.toContain('Várt maradék')
+      expect(text).toContain(`Grant-modell hash: ${asked}`)
+      expect(text).toContain('Üzemmód: enforce')
+    })
+
+    it('an unreadable config, a console config and an absent view: FIGYELEM and none of the figures', () => {
+      const asked = h.hash()
+      const noFigures = (text: string) => {
+        expect(text).toContain('FIGYELEM: a kredit-kapu konfigurációja most nem olvasható')
+        expect(text).not.toContain('Grant összege')
+        expect(text).not.toContain('Várt maradék')
+      }
+      writeFileSync(h.cfgPath, '{ not json', { mode: 0o600 })
+      const broken = viewNow(asked)
+      expect(broken).toEqual({ state: 'unreadable' })
+      noFigures(textFor(asked, broken))
+      h.writeConfig({ ...configObject(h.usagePath, h.humanStopPath), calibrationSource: 'console' })
+      const consoleView = viewNow(asked)
+      expect(consoleView).toEqual({ state: 'unreadable' })
+      noFigures(textFor(asked, consoleView))
+      noFigures(textFor(asked, undefined))
+      noFigures(textFor(asked, null))
+    })
+
+    it('a bad reconstructed file is unreadable (the hash cannot be measured)', () => {
+      withReconstructed()
+      const asked = h.hash()
+      const rc = (JSON.parse(readFileSync(h.cfgPath, 'utf8')) as { grantModel: { reconstructed: { path: string } } }).grantModel.reconstructed.path
+      writeFileSync(rc, REC + REC, { mode: 0o600 })
+      expect(viewNow(asked)).toEqual({ state: 'unreadable' })
+    })
+
+    it('creditGateEnforceView reads the runtime store: match, mismatch and a missing store', () => {
+      const rt = getCreditGateRuntime()
+      setCreditGateRuntime({ ...rt, storeDir: h.storeDir })
+      try {
+        expect(creditGateEnforceView(h.hash(), NOW0)).toMatchObject({ state: 'match', grantUsd: '200.00', grantDays: [15] })
+        expect(creditGateEnforceView('00'.repeat(32), NOW0)).toEqual({ state: 'mismatch' })
+        setCreditGateRuntime({ ...rt, storeDir: join(h.dir, 'nowhere') })
+        expect(creditGateEnforceView(h.hash(), NOW0)).toEqual({ state: 'unreadable' })
+      } finally {
+        setCreditGateRuntime(rt)
+      }
+    })
   })
 })
 
