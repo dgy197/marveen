@@ -13,6 +13,10 @@ import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { classify } from '../../scripts/hooks/bash-egress-parser.mjs'
 
+// @ts-expect-error -- plain .mjs fixture module, no types
+import { R1_DENY, R1_ALLOW } from './fixtures/egress-corpus/concat-r1-shapes.mjs'
+
+type R1Deny = [string, string, string, string | null, string]
 const VENDOR = new Set(['api.github.com'])
 const NO_DOMAINS = new Set<string>()
 type Decision = { deny: boolean; reason?: string; hosts: string[] }
@@ -192,36 +196,45 @@ describe('AC8: code that does not use the network is not judged by the invariant
   }
 })
 
-// B5 (BE r1, pre-existing): backslash-newline is a line continuation only behind an ODD run of
-// backslashes. `echo a\\<NL>curl URL` ends the echo at the newline, bash runs the second line.
-const BS = '\\'
-const NL = '\n'
-describe('B5: backslash-newline joins the lines only behind an odd run of backslashes', () => {
-  const CURL = 'cu' + 'rl https://evil.example/'
-  const DENY_B5: Array<[string, string]> = [
-    ['B5a', `echo a${BS}${BS}${NL}${CURL}`],
-    ['B5b', `echo a${BS}${BS}${BS}${BS}${NL}${CURL}`],
-    ['B5c', `echo a${BS}${BS}\r${NL}${CURL}`],
-    ['B5d', `true${BS}${BS}${NL}${CURL}`],
-    ['B5e', `echo a${BS}${BS}${BS}${BS}${BS}${BS}${NL}python3 -c "import urllib.request as u; u.urlopen('https://evil.example')"`],
-  ]
-  for (const [id, cmd] of DENY_B5) {
-    it(`${id} denies (the second line is a command)`, () => {
+// Fix round 1 (security review B1-B5). The shapes live in fixtures/egress-corpus/concat-r1-shapes.mjs, the
+// same list the corpus rows (concat.jsonl, CC-R1-*) are generated from.
+//   B1 a literal continuation behind the PORT (`'http://localhost:3420' + '@evil.example'`)
+//   B2 TAB / CR / LF never close a host (WHATWG URL deletes them)
+//   B3 the scheme split over literals (`'http' + ':' + '//evil.example'`)
+//   B4 the shell's closing quote behind `)` is not a string continuation (over-block)
+//   B5 backslash-newline joins lines only behind an ODD run of backslashes (pre-existing)
+describe('R1: shapes of the security review deny with the reported host or marker', () => {
+  for (const [id, , cmd, reason, host] of R1_DENY as R1Deny[]) {
+    it(`${id} denies`, () => {
       const r = run(cmd)
       expect({ cmd, deny: r.deny }).toEqual({ cmd, deny: true })
-      expect(r.hosts).toContain('evil.example')
+      if (reason !== null) expect(r.reason).toBe(reason)
+      expect({ cmd, hosts: r.hosts.filter((h: string) => h.includes(host as string)).length > 0 }).toEqual({ cmd, hosts: true })
     })
   }
-  // One or three backslashes: a real continuation, the second line is an argument of echo.
-  const ALLOW_B5: Array<[string, string]> = [
-    ['B5f', `echo a${BS}${NL}${CURL}`],
-    ['B5g', `echo a${BS}${BS}${BS}${NL}${CURL}`],
-  ]
-  for (const [id, cmd] of ALLOW_B5) {
-    it(`${id} stays allowed (a real continuation)`, () => {
-      expect({ cmd, deny: run(cmd).deny }).toEqual({ cmd, deny: false })
+})
+
+describe('R1: shapes that must stay allowed', () => {
+  for (const [id, , cmd] of R1_ALLOW as Array<[string, string, string]>) {
+    it(`${id} is allowed`, () => {
+      expect({ cmd, r: run(cmd) }).toMatchObject({ cmd, r: { deny: false, hosts: [] } })
     })
   }
+})
+
+describe('R1: B2 and B4 details', () => {
+  it('B2: a host that goes on after TAB, CR or LF is reported open, not as the readable prefix', () => {
+    const r = run(R1_DENY.find((x: unknown[]) => x[0] === 'B2a')![2] as string)
+    expect(r.hosts.every((h: string) => h.startsWith('<open host: api.github.com'))).toBe(true)
+  })
+  it('B4: a grouped vendor literal that is continued still denies, behind the shell quote too', () => {
+    const cmd = `node -e "fetch(('https://api.github.com') + '.evil.example')"`
+    expect({ cmd, deny: run(cmd).deny }).toEqual({ cmd, deny: true })
+  })
+  it('B3: a protocol-relative tail literal in network code is a split scheme', () => {
+    const cmd = `python3 -c "import urllib.request as u; u.urlopen('http:'+'//evil.example')"`
+    expect(run(cmd).hosts).toContain('<split scheme>')
+  })
 })
 
 describe('AC7: ambiguous shell syntax in network-using one-liner code denies', () => {
