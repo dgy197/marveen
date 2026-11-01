@@ -1974,6 +1974,161 @@ function nameIndependentForward(segments, toolInput) {
   return hasForwardKeyName(toolInput, !multiplexed, !plain, toolExemptions(segments, plain))
 }
 
+// A mail-writing API endpoint in the input of a tool the name classifier does not know
+// (card 31d8fc36; 1239a7ad gap 2a). A generic gateway tool (request, call_api, fetch ...)
+// of a mail server carries a raw API request, and the name says nothing about it: any
+// string value of the input (walked like hasForwardKeyName, JSON strings included, the
+// same limits) that is a path of the closed table below makes the call a send.
+// Table source: Microsoft Graph v1.0 mail API (sendMail, message send / reply / replyAll /
+// forward, messageRules, mailboxSettings), Gmail API v1 users.* (messages.send,
+// drafts.send, settings.*), JMAP RFC 8620 / 8621 and Sieve RFC 9661 (the method names).
+// Matching is on path SEGMENTS, ASCII case-insensitive; a row is "first, then": one of
+// `then` somewhere after one of `first` (no adjacency, so an inserted or dot segment
+// hides nothing); empty `first` means `then` anywhere. Class A is a send whatever the
+// method; class B (rules, settings) only with a writing request: the string's own
+// request line, else the nearest method key of the object holding it or of an ancestor,
+// else (no method anywhere) a non-empty body key there or in an ancestor. Reading methods
+// are GET, HEAD, OPTIONS only; every other value, a non-string too, writes.
+// Outside the table (accepted remainder, Q6): (a) a method in a sibling sub-object of the
+// path is not read; (b) a name-shaped parameter (separate `resource` / `action` keys) has
+// no slash and does not match; (c) a string with whitespace is prose, not a path; (d) a
+// text field that is only a table URL denies. Not covered either (Q3): Graph createReply /
+// createForward and the draft endpoints, calendar-event forward, Teams sendMessage, Gmail
+// import / insert, the dotted Google method ids. Twin: MAIL_ENDPOINT_TABLE and
+// mail_endpoint_write in scripts/hooks/email_extract.py; the rows are pinned by the
+// endpoint_write block of scripts/hooks/mail-tool-action-cases.json.
+export const MAIL_ENDPOINT_TABLE = Object.freeze([
+  Object.freeze({ id: 'A1', cls: 'A', first: Object.freeze([]), then: Object.freeze(['sendmail']) }),
+  Object.freeze({ id: 'A2', cls: 'A', first: Object.freeze(['messages', 'drafts']),
+    then: Object.freeze(['send', 'reply', 'replyall', 'forward']) }),
+  Object.freeze({ id: 'A3', cls: 'A', first: Object.freeze(['emailsubmission']), then: Object.freeze(['set']) }),
+  Object.freeze({ id: 'A3', cls: 'A', first: Object.freeze(['sievescript']), then: Object.freeze(['set']) }),
+  Object.freeze({ id: 'A3', cls: 'A', first: Object.freeze(['vacationresponse']), then: Object.freeze(['set']) }),
+  Object.freeze({ id: 'A3', cls: 'A', first: Object.freeze(['identity']), then: Object.freeze(['set']) }),
+  Object.freeze({ id: 'B1', cls: 'B', first: Object.freeze([]), then: Object.freeze(['messagerules']) }),
+  Object.freeze({ id: 'B2', cls: 'B', first: Object.freeze([]), then: Object.freeze(['mailboxsettings']) }),
+  Object.freeze({ id: 'B3', cls: 'B', first: Object.freeze(['settings']),
+    then: Object.freeze(['filters', 'forwardingaddresses', 'autoforwarding', 'sendas', 'delegates', 'vacation']) }),
+])
+const ENDPOINT_READ_METHODS = Object.freeze(['get', 'head', 'options'])
+const ENDPOINT_METHOD_KEYS = Object.freeze(['method', 'httpmethod', 'verb', 'requestmethod'])
+const ENDPOINT_BODY_KEYS = Object.freeze(['body', 'data', 'json', 'payload', 'requestbody', 'content'])
+// Explicit ASCII sets, never \s / trim() / toLowerCase(): the Python twin must agree byte for byte.
+const ENDPOINT_TRIM = /^[ \t\r\n\f\v]+|[ \t\r\n\f\v]+$/g
+const ENDPOINT_WS = /[ \t\r\n\f\v]/
+const ENDPOINT_REQ_LINE = /^(get|head|options|post|put|patch|delete|merge)[ \t]+/
+const ENDPOINT_HTTP_VER = /[ \t]+http\/[0-9.]+$/
+const ENDPOINT_SCHEME = /^[a-z][a-z0-9+.-]*:\/\/[^/\\]*/
+const ENDPOINT_PCT = /%([0-9a-fA-F]{2})/g
+const endpointLower = (s) => s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32))
+const endpointTrim = (s) => s.replace(ENDPOINT_TRIM, '')
+
+// Percent-decoding by hand (ASCII hex only; a bad escape stays), at most 3 rounds.
+function endpointDecode(s) {
+  for (let i = 0; i < 3; i++) {
+    const d = s.replace(ENDPOINT_PCT, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    if (d === s) break
+    s = d
+  }
+  return s
+}
+function endpointSegment(raw) {
+  let x = endpointLower(raw)
+  const cut = x.search(/[;(]/)
+  if (cut >= 0) x = x.slice(0, cut)
+  if (x.startsWith('microsoft.graph.')) x = x.slice(16)
+  return x
+}
+// -> null (not path-shaped or no table row) or { cls, reqMethod }
+function endpointOf(s) {
+  let t = endpointLower(endpointTrim(s))
+  let reqMethod = null
+  const m = ENDPOINT_REQ_LINE.exec(t)
+  if (m) {
+    reqMethod = m[1]
+    t = t.slice(m[0].length).replace(ENDPOINT_HTTP_VER, '')
+  }
+  if (ENDPOINT_WS.test(t) || !/[/\\]/.test(t)) return null
+  t = t.replace(ENDPOINT_SCHEME, '')
+  const q = t.search(/[?#]/)
+  if (q >= 0) t = t.slice(0, q)
+  const segs = endpointDecode(t).split(/[/\\]+/).map(endpointSegment).filter((g) => g !== '' && g !== '.' && g !== '..')
+  for (const row of MAIL_ENDPOINT_TABLE) {
+    let from = 0
+    if (row.first.length) {
+      const i = segs.findIndex((g) => row.first.includes(g))
+      if (i < 0) continue
+      from = i + 1
+    }
+    for (let j = from; j < segs.length; j++) if (row.then.includes(segs[j])) return { cls: row.cls, reqMethod }
+  }
+  return null
+}
+const endpointNonRead = (v) => typeof v !== 'string' || !ENDPOINT_READ_METHODS.includes(endpointLower(endpointTrim(v)))
+const endpointNonEmpty = (x) => x !== null && x !== undefined && x !== '' && !(typeof x === 'object' && Object.keys(x).length === 0)
+
+// True when a string value anywhere in the input is a table endpoint (class A, or class B
+// with a writing request). Walk limits as in hasForwardKeyName (the same constants):
+// too deep, too many nodes, a JSON-looking string too long to parse, or a parse that
+// blows the stack counts as a hit (fail-closed). A non-object input is false: the
+// forward rule already denies it. Pure, never throws.
+export function mailEndpointWrite(toolInput) {
+  if (typeof toolInput !== 'object' || toolInput === null) return false
+  let nodes = 0
+  // [value, depth, methods of the nearest object that has method keys (null: none), a body key seen]
+  const stack = [[toolInput, 0, null, false]]
+  while (stack.length) {
+    const [v, depth, methods, hasBody] = stack.pop()
+    if (depth > FORWARD_WALK_MAX_DEPTH) return true
+    if (typeof v === 'string') {
+      const e = endpointOf(v)
+      if (e) {
+        if (e.cls === 'A') return true
+        if (e.reqMethod !== null ? !ENDPOINT_READ_METHODS.includes(e.reqMethod)
+          : methods !== null ? methods.some(endpointNonRead) : hasBody) return true
+      }
+      if (FORWARD_JSON_START.test(v)) {
+        if (v.length > FORWARD_JSON_MAX_CHARS) return true
+        let parsed
+        try { parsed = JSON.parse(v) } catch (err) { if (err instanceof SyntaxError) continue; return true }
+        if ((typeof parsed === 'object' && parsed !== null) || typeof parsed === 'string') stack.push([parsed, depth + 1, methods, hasBody])
+      }
+      continue
+    }
+    const isArr = Array.isArray(v)
+    let ownMethods = methods
+    let body = hasBody
+    if (!isArr) {
+      const own = []
+      for (const [k, x] of Object.entries(v)) {
+        const norm = endpointLower(k).replace(/[^a-z0-9]/g, '')
+        if (ENDPOINT_METHOD_KEYS.includes(norm)) own.push(x)
+        if (ENDPOINT_BODY_KEYS.includes(norm) && endpointNonEmpty(x)) body = true
+      }
+      if (own.length) ownMethods = own
+    }
+    for (const x of isArr ? v : Object.values(v)) {
+      if (++nodes > FORWARD_WALK_MAX_NODES) return true
+      if (typeof x === 'string' || (typeof x === 'object' && x !== null)) stack.push([x, depth + 1, ownMethods, body])
+    }
+  }
+  return false
+}
+
+// The endpoint test for a call: only a name the name classifier does not know, so a
+// named class (send_email, connector send, send_draft, draft, manage_email) keeps its
+// verdict and kind (Q4). Same name scope as mailRuleForward. Pure, never throws.
+// Twin: mail_endpoint_call in scripts/hooks/email_extract.py.
+export function mailEndpointCall(toolName, toolInput = undefined) {
+  if (toolInput === undefined) return false
+  const name = typeof toolName === 'string' ? toolName : ''
+  const parts = name.split('__')
+  if (parts.length < 3 || parts[0].toLowerCase() !== 'mcp' || CHANNEL_PLUGIN_RE.test(name)) return false
+  if (NON_MAIL_SERVER_RE.test(name.slice(5))) return false
+  if (classifyMailTool(name) !== null) return false
+  return mailEndpointWrite(toolInput)
+}
+
 // A rule / filter / script / settings / automation word in a segment: such a tool is no
 // letter. A word is matched as a substring (automat: automation, automatic; auto:
 // autoreply, auto_forward).
@@ -2124,13 +2279,16 @@ export function mailRuleForward(toolName, toolInput = undefined) {
 // a draft (fail-closed). With the tool INPUT as the second argument the input-aware
 // layer lowers create_rule / create_filter to null when the input carries no
 // forwarding (hasForwardKey), and classifies a rule / filter write that forwards as
-// a send (mailRuleForward).
+// a send (mailRuleForward). A name the classifier does not know whose input holds a
+// mail-writing API endpoint is a send too (mailEndpointCall), checked after the forward
+// rule so its deny kind does not move.
 export function mailToolAction(toolName, toolInput = undefined) {
   const name = typeof toolName === 'string' ? toolName : ''
   const parts = name.split('__')
   if (parts.length < 3 || parts[0].toLowerCase() !== 'mcp' || CHANNEL_PLUGIN_RE.test(name)) return null
   if (NON_MAIL_SERVER_RE.test(name.slice(5))) return null
   if (mailRuleForward(name, toolInput)) return 'send'
+  if (mailEndpointCall(name, toolInput)) return 'send'
   const ruleOk = toolInput !== undefined && !hasForwardKey(toolInput)
   const found = new Set(parts.slice(2).map((p) => segmentAction(p, ruleOk)))
   if (found.has('send')) return 'send'
