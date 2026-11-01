@@ -178,14 +178,17 @@ def forbidden_text_char(text):
     """B6: the first character an SMS text may not carry, as a 'U+XXXX' label, or None. Same
     rule as parseSmsPayload (src/web/external-message-payload.ts), so the server and this
     consumer refuse the same texts: any format character (category Cf: bidi controls,
-    zero-width, BOM, soft hyphen), any C0 control except \\n (\\r and \\t too), DEL, C1.
+    zero-width, BOM, soft hyphen), any C0 control except \\n (\\r and \\t too), DEL, C1, and the
+    U+2028/U+2029 line and paragraph separators (a client may render them as a line break
+    that the per-line prefix never sees).
     The system python3 may carry an older Unicode table than Node's ICU (measured: 3.9.6 lacks
     the Cf of U+0890-0891 and U+13439-1343F), so those are listed by hand; the parity test
     in src/__tests__/external-message-payload.test.ts fails if the two tables drift again."""
     for ch in text:
         cp = ord(ch)
         if (unicodedata.category(ch) == "Cf" or cp in _CF_NEWER_THAN_OLD_PYTHON
-                or (cp < 0x20 and ch != "\n") or 0x7F <= cp <= 0x9F):
+                or (cp < 0x20 and ch != "\n") or 0x7F <= cp <= 0x9F
+                or cp in (0x2028, 0x2029)):
             return "U+%04X" % cp
     return None
 

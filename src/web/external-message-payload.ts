@@ -29,7 +29,7 @@ const SHA256_HEX_RE = /^[0-9a-f]{64}$/
 // the owner's notification: any format character (\p{Cf}: bidi controls, zero-width, BOM,
 // soft hyphen), any C0 control except \n (so \r, \t, ESC too), DEL and the C1 controls.
 // scripts/sms/seeme-send.py applies the same rule (unicodedata category Cf, same ranges).
-const SMS_FORBIDDEN_CHAR_RE = /[\p{Cf}\u0000-\u0009\u000b-\u001f\u007f-\u009f]/u
+const SMS_FORBIDDEN_CHAR_RE = /[\p{Cf}\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029]/u
 
 export function hasForbiddenSmsChar(text: string): boolean {
   return SMS_FORBIDDEN_CHAR_RE.test(text)
