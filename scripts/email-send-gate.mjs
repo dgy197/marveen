@@ -1655,11 +1655,14 @@ const FORWARD_JSON_START = /^[ \t\n\r]*[{["]/
 // Python takes the bare constants NaN, Infinity and -Infinity as values, JSON.parse throws on them, so a
 // string the python walker walks (and may call a send) was stepped over here (card 5e3c31c5, 1239a7ad BE B1).
 // One pass over the text, tracking whether we are inside a string (a backslash skips the next character, so
-// an escaped quote does not end it); outside strings exactly those three tokens become `null`, then
-// JSON.parse. Everything else is left alone, so anything python rejects (-NaN, +Infinity, NaNx, nan,
-// Infinity1, "- Infinity", a constant in key position) still throws SyntaxError: a replaced token is a
-// complete `null` and cannot fuse with a neighbouring character into something valid. The parsed value
-// differs from python's only in NaN / Infinity being null, which no walker reads. Twin:
+// an escaped quote does not end it); outside strings exactly those three tokens become a space-padded
+// non-finite number (NaN and Infinity: " 1e999 ", -Infinity: " -1e999 "), then JSON.parse reads it as
+// Infinity / -Infinity. The value is a non-null number like python's float (nan / inf), not null: the
+// endpoint walker tests a body key for non-empty (null is empty, a number is not), so null here would
+// let a body: NaN pass that python denies (card 5e3c31c5, review E1/B1). Everything else is left alone,
+// so anything python rejects (-NaN, +Infinity, NaNx, nan, Infinity1, "- Infinity", a constant in key
+// position) still throws SyntaxError. The spaces keep it so: "-NaN" becomes "- 1e999" (invalid), and
+// "1NaN" / "NaN1" cannot merge with a neighbouring digit into one valid number. Twin:
 // _walker_json_loads in scripts/hooks/email_extract.py.
 export function parseWalkerJson(v) {
   if (!v.includes('NaN') && !v.includes('Infinity')) return JSON.parse(v)
@@ -1679,7 +1682,7 @@ export function parseWalkerJson(v) {
     else if (c === 'I') len = v.startsWith('Infinity', i) ? 8 : 0
     else if (c === '-') len = v.startsWith('-Infinity', i) ? 9 : 0
     if (len) {
-      out.push(v.slice(from, i), 'null')
+      out.push(v.slice(from, i), c === '-' ? ' -1e999 ' : ' 1e999 ')
       i += len
       from = i
     } else i++
