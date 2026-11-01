@@ -117,6 +117,25 @@ describe('liftSubstitutions: lexer coordinates, length-preserving (N2)', () => {
   })
 })
 
+// N3 second reading: interpreter code with an odd backslash run before LF is also read with the pairs removed.
+describe('interpreter code: the second reading (N3, ellenor E2)', () => {
+  const py = (mid: string): string =>
+    `python3 - <<'PY'\nimport urllib.request as u\n${mid}\nu.urlopen("http://local${'host'}:3420/api/health")\nPY`
+  it('an EVEN backslash run before LF triggers no second reading: the result equals the single raw reading', () => {
+    const even = run(py('# note\\\\'))
+    expect(even).toEqual({ deny: false, hosts: [] })
+    // The same code without any backslash run is the single raw reading.
+    expect(even).toEqual(run(py('# note')))
+  })
+  it('the raw reading\'s open-host marker stays in hosts next to the joined external host (union kept)', () => {
+    const cmd = (DENY_ROWS as Row[]).find((r) => r[0] === 'I1-py-heredoc-host-cont')![2]
+    const r = run(cmd)
+    expect(r.deny).toBe(true)
+    expect(r.hosts).toContain(`<open host: local${'host'}\\>`)
+    expect(r.hosts).toContain(`local${'host'}.${EXTERNAL_HOST}`)
+  })
+})
+
 describe('LOOSENED: allowed on purpose, denied at a6ed3744 (E6, spec 0.5 a and b)', () => {
   for (const [id, description, cmd] of LOOSENED_ROWS as Row[]) {
     it(`${id} is allowed: ${description}`, () => {
