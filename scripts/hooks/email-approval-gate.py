@@ -1643,7 +1643,21 @@ def main():
             ledger_gate("bash", tool_input, cmd)
     else:
         if not _MAYBE_MAIL_TOOL.search(tool):
-            sys.exit(0)  # no mail kind is possible: the extractor is not needed
+            # No NAME-based mail kind is possible. A generic gateway tool of a mail server
+            # (request, call_api, fetch ...) can still carry a mail-writing API endpoint in
+            # its input (card 31d8fc36, Q2): an mcp__ name loads the extractor and leaves
+            # only when the input holds none. A load or reading failure is a send
+            # (fail-closed), as on the action branch below.
+            if tool[:5].lower() != "mcp__":
+                sys.exit(0)
+            try:
+                sys.path.insert(0, _HERE)
+                from email_extract import mail_endpoint_call
+                endpoint_call = bool(mail_endpoint_call(tool, tool_input))
+            except Exception:  # noqa: BLE001 -- cannot read the input = send
+                endpoint_call = True
+            if not endpoint_call:
+                sys.exit(0)
         kind = scope_kind(tool)
         if kind is None and tool[:5].lower() == "mcp__":
             # graph-forward N1b (G1-G5): a send under a name the classifier does not

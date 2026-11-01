@@ -1376,6 +1376,202 @@ def _name_independent_forward(segments, tool_input) -> bool:
     return _has_forward_key_name(tool_input, not multiplexed, not plain, _tool_exemptions(segments, plain))
 
 
+# A mail-writing API endpoint in the input of a tool the name classifier does not know
+# (card 31d8fc36; 1239a7ad gap 2a). A generic gateway tool (request, call_api, fetch ...) of
+# a mail server carries a raw API request, and the name says nothing about it: any string
+# value of the input (walked like _has_forward_key_name, JSON strings included, the same
+# limits) that is a path of the closed table below makes the call a send.
+# Table source: Microsoft Graph v1.0 mail API (sendMail, message send / reply / replyAll /
+# forward, messageRules, mailboxSettings), Gmail API v1 users.* (messages.send, drafts.send,
+# settings.*), JMAP RFC 8620 / 8621 and Sieve RFC 9661 (the method names).
+# Matching is on path SEGMENTS, ASCII case-insensitive; a row is (id, class, first, then):
+# one of `then` somewhere after one of `first` (no adjacency, so an inserted or dot segment
+# hides nothing); empty `first` means `then` anywhere. Class A is a send whatever the
+# method; class B (rules, settings) only with a writing request: the string's own request
+# line, else the nearest method key of the object holding it or of an ancestor, else (no
+# method anywhere) a non-empty body key there or in an ancestor. Reading methods are GET,
+# HEAD, OPTIONS only; every other value, a non-string too, writes.
+# Outside the table (accepted remainder, Q6): (a) a method in a sibling sub-object of the
+# path is not read; (b) a name-shaped parameter (separate `resource` / `action` keys) has no
+# slash and does not match; (c) a string with whitespace is prose, not a path; (d) a text
+# field that is only a table URL denies. Not covered either (Q3): Graph createReply /
+# createForward and the draft endpoints, calendar-event forward, Teams sendMessage, Gmail
+# import / insert, the dotted Google method ids.
+# Twin: MAIL_ENDPOINT_TABLE and mailEndpointWrite in scripts/email-send-gate.mjs; the rows are
+# pinned by the endpoint_write block of scripts/hooks/mail-tool-action-cases.json.
+MAIL_ENDPOINT_TABLE = (
+    ("A1", "A", (), ("sendmail",)),
+    ("A2", "A", ("messages", "drafts"), ("send", "reply", "replyall", "forward")),
+    ("A3", "A", ("emailsubmission",), ("set",)),
+    ("A3", "A", ("sievescript",), ("set",)),
+    ("A3", "A", ("vacationresponse",), ("set",)),
+    ("A3", "A", ("identity",), ("set",)),
+    ("B1", "B", (), ("messagerules",)),
+    ("B2", "B", (), ("mailboxsettings",)),
+    ("B3", "B", ("settings",),
+     ("filters", "forwardingaddresses", "autoforwarding", "sendas", "delegates", "vacation")),
+)
+_ENDPOINT_READ_METHODS = ("get", "head", "options")
+_ENDPOINT_METHOD_KEYS = ("method", "httpmethod", "verb", "requestmethod")
+_ENDPOINT_BODY_KEYS = ("body", "data", "json", "payload", "requestbody", "content")
+# Explicit ASCII sets, never str.strip() / str.lower() / \s: the JS twin must agree byte for byte.
+_ENDPOINT_WS = " \t\r\n\f\v"
+_ENDPOINT_WS_RE = re.compile(r"[ \t\r\n\f\v]")
+_ENDPOINT_REQ_LINE = re.compile(r"(get|head|options|post|put|patch|delete|merge)[ \t]+")
+_ENDPOINT_HTTP_VER = re.compile(r"[ \t]+http/[0-9.]+\Z")
+_ENDPOINT_SCHEME = re.compile(r"[a-z][a-z0-9+.\-]*://[^/\\]*")
+_ENDPOINT_PCT = re.compile(r"%([0-9a-fA-F]{2})")
+_ENDPOINT_SPLIT = re.compile(r"[/\\]+")
+_ENDPOINT_LOWER = {c: c + 32 for c in range(65, 91)}
+_ENDPOINT_KEY_DROP = re.compile(r"[^a-z0-9]")
+# The envelope reason of an endpoint send (collect_email_envelope; ASCII like the other reasons).
+_ENDPOINT_UNREADABLE = ("atjaro-hivas: a cimzett a nyers API-kerelemben van, azt a kapu nem olvassa "
+                        "-- jovahagyas nem horgonyozhato ra")
+
+
+def _endpoint_lower(s: str) -> str:
+    return s.translate(_ENDPOINT_LOWER)
+
+
+def _endpoint_decode(s: str) -> str:
+    """Percent-decoding by hand (ASCII hex only; a bad escape stays), at most 3 rounds."""
+    for _ in range(3):
+        d = _ENDPOINT_PCT.sub(lambda m: chr(int(m.group(1), 16)), s)
+        if d == s:
+            break
+        s = d
+    return s
+
+
+def _endpoint_segment(raw: str) -> str:
+    x = _endpoint_lower(raw)
+    cut = re.search(r"[;(]", x)
+    if cut:
+        x = x[:cut.start()]
+    if x.startswith("microsoft.graph."):
+        x = x[16:]
+    return x
+
+
+def _endpoint_of(s: str):
+    """None (not path-shaped or no table row) or (class, request-line method or None)."""
+    t = _endpoint_lower(s.strip(_ENDPOINT_WS))
+    req_method = None
+    m = _ENDPOINT_REQ_LINE.match(t)
+    if m:
+        req_method = m.group(1)
+        t = _ENDPOINT_HTTP_VER.sub("", t[m.end():])
+    if _ENDPOINT_WS_RE.search(t) or ("/" not in t and "\\" not in t):
+        return None
+    m = _ENDPOINT_SCHEME.match(t)
+    if m:
+        t = t[m.end():]
+    q = re.search(r"[?#]", t)
+    if q:
+        t = t[:q.start()]
+    segs = [g for g in (_endpoint_segment(p) for p in _ENDPOINT_SPLIT.split(_endpoint_decode(t)))
+            if g not in ("", ".", "..")]
+    for _row_id, cls, first, then in MAIL_ENDPOINT_TABLE:
+        start = 0
+        if first:
+            idx = next((i for i, g in enumerate(segs) if g in first), -1)
+            if idx < 0:
+                continue
+            start = idx + 1
+        if any(g in then for g in segs[start:]):
+            return cls, req_method
+    return None
+
+
+def _endpoint_non_read(v) -> bool:
+    return not isinstance(v, str) or _endpoint_lower(v.strip(_ENDPOINT_WS)) not in _ENDPOINT_READ_METHODS
+
+
+def _endpoint_non_empty(x) -> bool:
+    return x is not None and x != "" and not (isinstance(x, (dict, list)) and len(x) == 0)
+
+
+def mail_endpoint_write(tool_input) -> bool:
+    """True when a string value anywhere in the input is a table endpoint (class A, or class B
+    with a writing request). Walk limits as in _has_forward_key_name (the same constants): too
+    deep, too many nodes, a JSON-looking string too long to parse, or a parse that blows the
+    stack counts as a hit (fail-closed). A non-object input is False: the forward rule already
+    denies it. Pure, never raises. Twin: mailEndpointWrite in scripts/email-send-gate.mjs."""
+    if not isinstance(tool_input, (dict, list)):
+        return False
+    nodes = 0
+    # (value, depth, methods of the nearest object that has method keys (None: none), a body key seen)
+    stack = [(tool_input, 0, None, False)]
+    while stack:
+        v, depth, methods, has_body = stack.pop()
+        if depth > _FORWARD_WALK_MAX_DEPTH:
+            return True
+        if isinstance(v, str):
+            e = _endpoint_of(v)
+            if e is not None:
+                cls, req_method = e
+                if cls == "A":
+                    return True
+                if req_method is not None:
+                    if req_method not in _ENDPOINT_READ_METHODS:
+                        return True
+                elif methods is not None:
+                    if any(_endpoint_non_read(x) for x in methods):
+                        return True
+                elif has_body:
+                    return True
+            if _FORWARD_JSON_START.match(v):
+                if len(v) > _FORWARD_JSON_MAX_CHARS:
+                    return True
+                try:
+                    parsed = json.loads(v)
+                except RecursionError:
+                    return True
+                except ValueError:
+                    continue
+                if isinstance(parsed, (dict, list, str)):
+                    stack.append((parsed, depth + 1, methods, has_body))
+            continue
+        is_list = isinstance(v, list)
+        own_methods = methods
+        body = has_body
+        if not is_list:
+            own = []
+            for k, x in v.items():
+                norm = _ENDPOINT_KEY_DROP.sub("", _endpoint_lower(k)) if isinstance(k, str) else ""
+                if norm in _ENDPOINT_METHOD_KEYS:
+                    own.append(x)
+                if norm in _ENDPOINT_BODY_KEYS and _endpoint_non_empty(x):
+                    body = True
+            if own:
+                own_methods = own
+        for x in (v if is_list else v.values()):
+            nodes += 1
+            if nodes > _FORWARD_WALK_MAX_NODES:
+                return True
+            if isinstance(x, (str, dict, list)):
+                stack.append((x, depth + 1, own_methods, body))
+    return False
+
+
+def mail_endpoint_call(tool_name, tool_input=_NO_INPUT) -> bool:
+    """The endpoint test for a call: only a name the name classifier does not know, so a named
+    class (send_email, connector send, send_draft, draft, manage_email) keeps its verdict
+    (Q4). Same name scope as mail_rule_forward. Pure, never raises.
+    Twin: mailEndpointCall in scripts/email-send-gate.mjs."""
+    if tool_input is _NO_INPUT:
+        return False
+    name = tool_name if isinstance(tool_name, str) else ""
+    parts = name.split("__")
+    if len(parts) < 3 or parts[0].lower() != "mcp" or _CHANNEL_PLUGIN_RE.match(name):
+        return False
+    if _NON_MAIL_SERVER_RE.match(name[5:]):
+        return False
+    if classify_mail_tool(name) is not None:
+        return False
+    return mail_endpoint_write(tool_input)
+
+
 # A rule / filter / script / settings / automation word in a segment: such a tool is no
 # letter. A word is matched as a substring (automat: automation, automatic; auto:
 # autoreply, auto_forward).
@@ -1581,7 +1777,9 @@ def mail_tool_action(tool_name, tool_input=_NO_INPUT):
     Name only: create + rule / filter is a draft (fail-closed). With the tool INPUT as
     the second argument the input-aware layer lowers create_rule / create_filter to
     None when the input carries no forwarding (_has_forward_key), and classifies a
-    rule / filter write that forwards as a send (mail_rule_forward)."""
+    rule / filter write that forwards as a send (mail_rule_forward). A name the classifier
+    does not know whose input holds a mail-writing API endpoint is a send too
+    (mail_endpoint_call), checked after the forward rule."""
     name = tool_name if isinstance(tool_name, str) else ""
     parts = name.split("__")
     if len(parts) < 3 or parts[0].lower() != "mcp" or _CHANNEL_PLUGIN_RE.match(name):
@@ -1589,6 +1787,8 @@ def mail_tool_action(tool_name, tool_input=_NO_INPUT):
     if _NON_MAIL_SERVER_RE.match(name[5:]):
         return None
     if mail_rule_forward(name, tool_input):
+        return "send"
+    if mail_endpoint_call(name, tool_input):
         return "send"
     rule_ok = tool_input is not _NO_INPUT and not _has_forward_key(tool_input)
     found = {_segment_action(p, rule_ok) for p in parts[2:]}
@@ -2383,6 +2583,12 @@ def collect_email_envelope(tool_name: str, tool_input: dict):
         if not to and ti.get("messageId"):
             to = [f"messageId:{ti['messageId']}"]
         reason = reason or _stored_content_reason(tool_name, ti)
+        if mail_endpoint_call(tool_name, tool_input):
+            # card 31d8fc36 (Q1): a gateway call carries its recipients in the raw API request
+            # (toRecipients, MIME), which no collector above reads. The flat fields may not be
+            # what goes out, so no approval can be anchored to this envelope: it is unreadable
+            # and the caller refuses.
+            reason = _ENDPOINT_UNREADABLE
     elif tool_name == "Bash":
         cmd = str((tool_input or {}).get("command") or "") if isinstance(tool_input, dict) else ""
         kind, fields, why = classify_graph_mail(cmd)
