@@ -1191,36 +1191,51 @@ def _is_read_action(segments) -> bool:
 # text, content, html, snippet, query ..., or ENDS in body / text / content / html:
 # message_body, plainText): a draft body that says "looking forward" is prose. The
 # match is exact or by suffix on purpose, so `actionName` or `bodyAction` are NOT free
-# text, and a rule script (`sieveScript`) is not either. Known gap, accepted: a forward
-# word that only sits in a free-text key (`ruleContent`) is not seen; a JSON string
-# there is still walked for keys. Same bounds and fail-closed exits as _has_forward_key (too deep, too many
+# text, and a rule script (`sieveScript`) is not either. A free-text value of a tool
+# that is NOT a plain draft (rule / filter / script / settings class, or an unknown
+# name) is still read with two NARROW instruction patterns (card 3d6e5181 N4 B2): a
+# Sieve `redirect [:copy] "x@y"` and a forward word followed within ~40 non-@
+# characters by an address; a plain draft (_is_plain_draft) keeps the prose exemption.
+# Label / folder identifiers are exempt from both. A JSON string in a free-text key is
+# walked for keys. Same bounds and fail-closed exits as _has_forward_key (too deep, too many
 # nodes, a string too long to parse, a non-container input = True).
 # Twin: hasForwardKeyName in scripts/email-send-gate.mjs.
 _FREE_TEXT_KEYS = frozenset({
     "body", "htmlbody", "textbody", "plaintext", "plainbody", "bodypreview",
     "subject", "text", "content", "html", "snippet", "query", "q", "search", "keyword", "keywords",
-    "label", "labels", "title", "description", "comment", "note", "summary", "preview", "message", "name",
-    # label / folder identifiers ("Forwarded", "Forwarded Items") name a place, not an instruction
+    "title", "description", "comment", "note", "summary", "preview", "message", "name",
+})
+# label / folder identifiers ("Forwarded", "Forwarded Items") name a place, not an
+# instruction: exempt from the value words AND from the narrow patterns
+_LABEL_KEYS = frozenset({
+    "label", "labels",
     "labelids", "addlabelids", "removelabelids", "labelid", "labelname", "folder", "folderid", "foldername",
     "destinationfolder", "destinationfolderid", "parentfolderid", "mailbox",
 })
 _FREE_TEXT_SUFFIX = re.compile(r"(?:body|text|content|html)$")
-_FORWARD_WORD = re.compile(r"(?<![A-Za-z])(?:forward|redirect)", re.IGNORECASE | re.ASCII)
+_FORWARD_WORD = re.compile(r"(?<![A-Za-z])(?:forward|redirect|fwd)", re.IGNORECASE | re.ASCII)
+# narrow instruction patterns for the free text of a non-draft tool (N4 B2)
+_FORWARD_INSTRUCTIONS = (
+    re.compile(r'\bredirect\s+(?::copy\s+)?"[^"]*@', re.IGNORECASE | re.ASCII),
+    re.compile(r"\b(?:forward\w*|fwd)\b[^@]{0,40}@", re.IGNORECASE | re.ASCII),
+)
 _FORWARD_WORD_CAMEL = re.compile(r"[a-z](?:Forward|Redirect)")
 _NON_ALNUM = re.compile(r"[^a-z0-9]")
 
 
-def _has_forward_key_name(value, value_words: bool = True) -> bool:
+def _has_forward_key_name(value, value_words: bool = True, narrow_free: bool = False) -> bool:
     if not isinstance(value, (dict, list)):
         return True
     nodes = 0
-    stack = [(value, 0, False)]
+    stack = [(value, 0, 0)]  # free: 0 not free text, 1 prose, 2 label / folder identifier
     while stack:
         v, depth, free = stack.pop()
         if depth > _FORWARD_WALK_MAX_DEPTH:
             return True
         if isinstance(v, str):
             if value_words and not free and (_FORWARD_WORD.search(v) or _FORWARD_WORD_CAMEL.search(v)):
+                return True
+            if value_words and narrow_free and free == 1 and any(r.search(v) for r in _FORWARD_INSTRUCTIONS):
                 return True
             if _FORWARD_JSON_START.match(v):
                 if len(v) > _FORWARD_JSON_MAX_CHARS:
@@ -1234,7 +1249,7 @@ def _has_forward_key_name(value, value_words: bool = True) -> bool:
                 if isinstance(parsed, str):
                     stack.append((parsed, depth + 1, free))
                 elif isinstance(parsed, (dict, list)):
-                    stack.append((parsed, depth + 1, False))
+                    stack.append((parsed, depth + 1, 0))
             continue
         is_list = isinstance(v, list)
         items = [(None, x) for x in v] if is_list else list(v.items())
@@ -1242,13 +1257,18 @@ def _has_forward_key_name(value, value_words: bool = True) -> bool:
             nodes += 1
             if nodes > _FORWARD_WALK_MAX_NODES:
                 return True
-            child_free = free if is_list else False
+            child_free = free if is_list else 0
             if isinstance(k, str):
                 key = k.lower()
                 if "forward" in key or "redirect" in key:
                     return True
                 norm = _NON_ALNUM.sub("", key)
-                child_free = norm in _FREE_TEXT_KEYS or bool(_FREE_TEXT_SUFFIX.search(norm))
+                if norm in _LABEL_KEYS:
+                    child_free = 2
+                elif norm in _FREE_TEXT_KEYS or _FREE_TEXT_SUFFIX.search(norm):
+                    child_free = 1
+                else:
+                    child_free = 0
             if isinstance(x, (str, dict, list)):
                 stack.append((x, depth + 1, child_free))
     return False
@@ -1272,7 +1292,22 @@ def _name_independent_forward(segments, tool_input) -> bool:
     # branch decides those: only a forward KEY counts here, so the existing manage_email
     # verdicts do not change.
     multiplexed = any("_".join(_action_words(s)) == "manage_email" for s in segments)
-    return _has_forward_key_name(tool_input, not multiplexed)
+    return _has_forward_key_name(tool_input, not multiplexed, not _is_plain_draft(segments, classes))
+
+
+# A rule / filter / script / settings word in a segment: such a tool is no letter.
+_RULE_CLASS_WORDS = ("rule", "filter", "script", "sieve", "setting", "vacation", "forwarding", "alias")
+
+
+def _is_plain_draft(segments, classes) -> bool:
+    """A plain draft: the NAME classifier calls it a draft and no segment is of the rule /
+    filter / script / settings class. Its free-text values are prose (a body that says
+    "please forward this to x@y" is a letter, the ledger checks the recipients); every
+    other non-reader tool has its free text read with the narrow instruction patterns.
+    Twin: isPlainDraft in scripts/email-send-gate.mjs."""
+    if "draft" not in classes:
+        return False
+    return not any(r in w for s in segments for w in _action_words(s) for r in _RULE_CLASS_WORDS)
 
 
 def mail_rule_forward(tool_name, tool_input=_NO_INPUT) -> bool:
