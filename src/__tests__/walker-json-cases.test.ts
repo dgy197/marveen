@@ -54,7 +54,7 @@ print(json.dumps(res))
       try { js = { ok: true, v: JSON.parse(JSON.stringify(reader!(t))) } } catch { js = { ok: false } }
       expect(js.ok, `accept / reject: ${CORPUS[k].label}`).toBe(py[k].ok)
       expect(js.ok, `shared column: ${CORPUS[k].label}`).toBe(CORPUS[k].accept)
-      if (js.ok) expect(js.v, `structure: ${CORPUS[k].label}`).toEqual(py[k].v)
+      if (js.ok) expect(js.v, `structure: ${CORPUS[k].label}`).toEqual(JSON.parse(JSON.stringify(py[k].v))) // both sides through JSON text: -0 and 0 are one value there
     })
   })
 })
