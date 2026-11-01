@@ -318,6 +318,11 @@ export function runOracle(body, shell, opts = {}) {
   const script = ORACLE_DEFS + String(body)
   const verdict = guardOracleScript(script)
   if (!verdict.ok) throw new OracleRefused(verdict.reason)
+  // A real shell only on explicit opt-in (Brainy 6435): a normal or full vitest run, a package check or CI never
+  // launches one. The spawn spy of the self-tests is not a real spawn and stays allowed.
+  if (!opts.spawn && process.env.MARVEEN_SHELL_ORACLE !== '1') {
+    throw new OracleRefused('real shell spawn disabled: set MARVEEN_SHELL_ORACLE=1 to run the differential oracle by hand')
+  }
   const file = SHELLS[shell]
   if (!file) throw new OracleRefused(`unknown shell ${shell}`)
   let cwd = opts.cwd
