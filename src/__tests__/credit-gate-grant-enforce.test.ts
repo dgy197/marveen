@@ -1296,17 +1296,6 @@ describe('A10: a forged period row or approval is calibration_invalid (the gate 
 // =====================================================================================
 
 describe('the source dispatcher', () => {
-  it('an unreadable or throwing config falls back to the Console source, as before', () => {
-    const db = getDb()
-    let called = 0
-    const consoleSource = () => { called++; return null }
-    const broken = dispatchCalibrationSource(consoleSource, db, () => { throw new RangeError('injected') })
-    expect(broken()).toBeNull()
-    const missing = dispatchCalibrationSource(consoleSource, db, () => ({ ok: false, reason: 'missing', detail: 'x' }))
-    expect(missing()).toBeNull()
-    expect(called).toBe(2)
-  })
-
   it('R2 LOW-3: an unreadable or throwing config gives null (closed) and never calls the Console source', () => {
     const db = getDb()
     const consoleSource = () => { throw new Error('the Console source must not be read') }
