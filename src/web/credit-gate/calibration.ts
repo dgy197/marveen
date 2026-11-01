@@ -162,6 +162,8 @@ const RECONSTRUCTED_BAD = 'grant_model_reconstructed_bad'
 const BUTTON_ONLY_LATCHES: ReadonlySet<string> = new Set([
   'auth_401', 'credit_balance_too_low', 'canary_undecidable', 'calibration_error', 'disarm', 'human_stop',
 ])
+/** R1d (B4): the Bearer signals among them (human_stop is a STOP file, no signal): their audit rows outlive the gate's own reason. */
+const BUTTON_ONLY_SIGNALS = ['auth_401', 'disarm', 'credit_balance_too_low'] as const
 const PENDING_LIMIT = 500
 
 // ------------------------------------------------------------------ readings
@@ -1017,7 +1019,9 @@ export class CalibrationProcessor {
    * durable button-required flag (own transaction) -- the period boundary
    * overwrites the gate's latch reason with its own threshold latch, so a later
    * tick can no longer tell -- and while the flag is set no row is written and
-   * the source hands the gate no calibration; only enforceStep clears it. A row
+   * the source hands the gate no calibration; only enforceStep clears it. R1d: a
+   * button-only signal row after the latest enforce sets it too, whatever the
+   * gate's latch reason says now (B14 keeps a threshold latch; the tick rewrites one). A row
    * that does not verify is left to the source, which makes the gate read
    * calibration_invalid.
    */
@@ -1028,6 +1032,12 @@ export class CalibrationProcessor {
     if (!st || st.state === 'INCIDENT') return
     // R1 B1 / R1c: these closings are not lifted by a new period row, only by a new owner enforce button.
     if (grantButtonRequired(this.db) !== null) return
+    // R1d (B4): a button-only signal since the latest owner enforce counts even if the gate's own reason no longer shows it.
+    const signalled = this.buttonSignalSinceEnforce()
+    if (signalled !== null) {
+      this.markButtonRequired(signalled, nowMs, rep)
+      return
+    }
     // A latch below the newest period's id is already lifted by it (the gate lifts on a strictly larger id), only not yet re-evaluated.
     const newestId = newestPeriod(this.db)?.id ?? 0
     const latchedFor = st.latch_cal_id !== null && st.latch_cal_id >= newestId && st.latch_reason !== null && BUTTON_ONLY_LATCHES.has(st.latch_reason)
@@ -1074,6 +1084,19 @@ export class CalibrationProcessor {
       if (isBusy(err)) return
       throw err
     }
+  }
+
+  /**
+   * R1d (B4): the newest button-only signal (a kind='signal' audit row) recorded after the latest
+   * grant_enforce audit row, else null. Ordered by event id, not by the clock: a signal and the enforce
+   * in one millisecond still order exactly. No enforce row: no chain, nothing to guard.
+   */
+  private buttonSignalSinceEnforce(): string | null {
+    const r = this.db.prepare(`SELECT reason FROM credit_gate_events
+      WHERE kind = 'signal' AND reason IN (?, ?, ?)
+        AND id > (SELECT MAX(id) FROM credit_gate_events WHERE kind = 'grant_enforce')
+      ORDER BY id DESC LIMIT 1`).get(...BUTTON_ONLY_SIGNALS) as { reason: string } | undefined
+    return r?.reason ?? null
   }
 
   /** R1c: set the durable flag in its own transaction, audited once. Busy: the next tick tries again. */
