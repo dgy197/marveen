@@ -37,9 +37,9 @@ function grantBlock(over: Record<string, unknown> = {}): Record<string, unknown>
 }
 
 /** A full config object with calibrationSource grant_model and the given grantModel block. */
-function cfgObject(grantModel: Record<string, unknown> | undefined = grantBlock(), over: Record<string, unknown> = {}) {
+function cfgObject(grantModel: Record<string, unknown> | null = grantBlock(), over: Record<string, unknown> = {}) {
   const o: Record<string, unknown> = { ...configObject('/tmp/x/usage.jsonl', '/tmp/x/batch/STOP'), calibrationSource: 'grant_model' }
-  if (grantModel !== undefined) o.grantModel = grantModel
+  if (grantModel !== null) o.grantModel = grantModel
   return { ...o, ...over }
 }
 
@@ -277,7 +277,7 @@ describe('grantModelHash (spec 4: binds the model, the thresholds, the margins, 
   })
 
   it('refuses a config that has no grantModel', () => {
-    expect(() => grantModelHash(configOf(cfgObject(undefined, { calibrationSource: 'console' })), null)).toThrow()
+    expect(() => grantModelHash(configOf(cfgObject(null, { calibrationSource: 'console' })), null)).toThrow()
   })
 })
 
@@ -413,7 +413,7 @@ describe('config: calibrationSource and grantModel', () => {
   })
 
   it('grant_model selected without a grantModel block is invalid', () => {
-    expect(parse(cfgObject(undefined))).toMatchObject({ ok: false, reason: 'invalid' })
+    expect(parse(cfgObject(null))).toMatchObject({ ok: false, reason: 'invalid' })
   })
 
   it('every malformed value or unknown key rejects the whole config', () => {
