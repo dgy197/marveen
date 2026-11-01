@@ -91,6 +91,7 @@ const EXPECTED: Record<string, string[]> = {
     'memory-frontmatter-bash-gate.py @ Bash',
     // card 59d87635: main-agent-only shadow egress logger (always exits 0).
     'egress-gate-shadow.mjs @ Bash',
+    'test-run-gate.mjs @ Bash',
   ],
   Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py', 'slack_progress_clear.py'],
   StopFailure: ['ledger-turn-failure.py'],
