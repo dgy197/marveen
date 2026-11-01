@@ -399,9 +399,10 @@ describe('mail-tool fallback narrowing (card 6151bb4d)', () => {
     }
     expect(mailToolAction('mcp__gmail__create_filter')).toBe('draft') // name only
     // card 3d6e5181 N3: delete / create_label are non-readers, so a forwardTo key now forwards under
-    // any name (they were null under the closed rule/filter list); a reader stays a reader
+    // any name (they were null under the closed rule/filter list). Card 1239a7ad: a reader is a
+    // reader only while its input has no forward KEY, so get_filter with forwardTo is a send now
     expect(mailToolAction('mcp__gmail__delete_filter', { forwardTo: 'x' })).toBe('send')
-    expect(mailToolAction('mcp__gmail__get_filter', { forwardTo: 'x' })).toBe(null)
+    expect(mailToolAction('mcp__gmail__get_filter', { forwardTo: 'x' })).toBe('send')
     expect(mailToolAction('mcp__gmail__create_label', { forwardTo: 'x' })).toBe('send')
     expect(mailToolAction('mcp__gmail__create_label', { name: 'X' })).toBe(null)
     expect(mailToolAction('mcp__slack__create_rule', { forwardTo: 'x' })).toBe(null)
@@ -449,6 +450,8 @@ type Ni = {
   servers: string[]; forward_names: string[]; disguised_names: string[]; reader_names: string[]
   forward_shapes: Array<{ label: string; input: unknown }>
   reader_inputs: Array<{ label: string; input: unknown }>
+  reader_forward_key_inputs: Array<{ label: string; input: unknown; note: string }>
+  reader_benign_inputs: Array<{ label: string; input: unknown }>
   reviewer_n4: Array<{ tool: string; input: unknown; note: string }>
   clean: Array<{ tool: string; input: unknown; expected: 'draft' | null; note: string }>
 }
@@ -459,7 +462,12 @@ describe('name-independent forwarding rule (card 3d6e5181 N3): JS and python agr
   const calls: Array<[string, unknown, string]> = []
   for (const s of NI.servers) {
     for (const n of [...NI.forward_names, ...NI.disguised_names]) for (const f of NI.forward_shapes) calls.push([T(s, n), f.input, `${f.label}`])
-    for (const n of NI.reader_names) for (const f of NI.reader_inputs) calls.push([T(s, n), f.input, `reader ${f.label}`])
+    for (const n of NI.reader_names) {
+      for (const f of NI.reader_inputs) calls.push([T(s, n), f.input, `reader ${f.label}`])
+      for (const f of NI.reader_benign_inputs) calls.push([T(s, n), f.input, `reader ${f.label}`])
+      // card 1239a7ad: a reader with a forward / redirect KEY in its input is a send ('reader-fwd', not 'reader ')
+      for (const f of NI.reader_forward_key_inputs) calls.push([T(s, n), f.input, `reader-fwd ${f.label}`])
+    }
   }
   for (const c of NI.clean) calls.push([c.tool, c.input, c.note])
   const py = pythonActions(calls.map((c): [unknown, boolean, unknown] => [c[0], true, c[1]]))
@@ -483,10 +491,11 @@ print(json.dumps([mail_rule_forward(n, i) for n, i in json.load(sys.stdin)]))
     expect(n).toBe(NI.servers.length * (NI.forward_names.length + NI.disguised_names.length) * NI.forward_shapes.length)
   })
 
-  it('readers stay allowed whatever the input; the clean cases keep their class', () => {
+  it('a reader whose input has no forward KEY stays allowed (a forward word in a value is exempt); the clean cases keep their class', () => {
+    expect(NI.reader_benign_inputs).toHaveLength(10)
     calls.forEach((c, i) => {
       const [tool, input, label] = c
-      if (!label.startsWith('reader')) return
+      if (!label.startsWith('reader ')) return
       expect(mailToolAction(tool, input), `${tool} ${label}`).toBe(null)
       expect(py[i], `py ${tool} ${label}`).toBe(null)
       expect(gateDecision(tool, input, none), `${tool} ${label}`).toEqual({ deny: false })
@@ -504,6 +513,54 @@ print(json.dumps([mail_rule_forward(n, i) for n, i in json.load(sys.stdin)]))
     expect(gateDecision('mcp__outlook__manage_rules', { rules: [{ name: 'News', actions: { moveToFolder: 'F1' } }] }, none)).toEqual({ deny: false })
   })
 
+  it('card 1239a7ad AC1/AC3/AC5: a reader whose input has a forward / redirect KEY is a send and a mail-rule-forward deny, in both twins', () => {
+    expect(NI.reader_forward_key_inputs.length).toBeGreaterThanOrEqual(7)
+    let n = 0
+    calls.forEach((c, i) => {
+      const [tool, input, label] = c
+      if (!label.startsWith('reader-fwd ')) return
+      n++
+      expect(mailToolAction(tool, input), `${tool} ${label}`).toBe('send')
+      expect(py[i], `py ${tool} ${label}`).toBe('send')
+      expect(mailRuleForwardJs(tool, input), `${tool} ${label}`).toBe(true)
+      expect(ruleOut[i], `py rule ${tool} ${label}`).toBe(true)
+      expect(gateDecision(tool, input, none), `${tool} ${label}`).toEqual({ deny: true, kind: 'mail-rule-forward' })
+    })
+    expect(n).toBe(NI.servers.length * NI.reader_names.length * NI.reader_forward_key_inputs.length)
+    // the named gateway readers of the card, a gmail reader and an outlook reader among them
+    for (const t of ['mcp__outlook__fetch', 'mcp__outlook__query', 'mcp__gmail__get_filter']) {
+      for (const f of NI.reader_forward_key_inputs.slice(0, 4)) {
+        expect(mailToolAction(t, f.input), `${t} ${f.label}`).toBe('send')
+        expect(gateDecision(t, f.input, none), `${t} ${f.label}`).toEqual({ deny: true, kind: 'mail-rule-forward' })
+      }
+    }
+  })
+
+  it('card 1239a7ad AC6: on a reader name a non-object input and a walk-limit overflow fail closed; [] and {} stay allowed', () => {
+    let deep: Record<string, unknown> = { a: 1 }
+    for (let i = 0; i < 40; i++) deep = { n: deep }
+    const over: Array<[string, unknown]> = [
+      ['string input', 'x'],
+      ['too deep', deep],
+      ['too wide', { list: Array.from({ length: 6000 }, (_, i) => i) }],
+      ['over-long JSON string', { b: '{' + 'a'.repeat(100001) }],
+    ]
+    const readers = ['mcp__outlook__get_rules', 'mcp__gmail__get_filter', 'mcp__outlook__fetch']
+    const probes: Array<[unknown, boolean, unknown]> = []
+    for (const t of readers) for (const [, inp] of over) probes.push([t, true, inp])
+    const pyOver = pythonActions(probes)
+    let k = 0
+    for (const t of readers) {
+      for (const [label, inp] of over) {
+        expect(mailToolAction(t, inp), `${t} ${label}`).toBe('send')
+        expect(pyOver[k++], `py ${t} ${label}`).toBe('send')
+      }
+      expect(mailToolAction(t, {}), t).toBe(null)
+      expect(mailToolAction(t, []), t).toBe(null)
+    }
+    expect(pythonActions(readers.flatMap((t): Array<[unknown, boolean, unknown]> => [[t, true, {}], [t, true, []]]))).toEqual(readers.flatMap(() => [null, null]))
+  })
+
   it('mailRuleForward agrees between the twins on every call, and classifier edges hold', () => {
     calls.forEach((c, i) => expect(mailRuleForwardJs(c[0], c[1]), `${c[0]} ${c[2]}`).toBe(ruleOut[i]))
     // the stricter 6151bb4d rule keeps counting a bare address for rule / filter names ...
@@ -513,9 +570,10 @@ print(json.dumps([mail_rule_forward(n, i) for n, i in json.load(sys.stdin)]))
     // channel plugins and the excluded chat tools are out of scope
     expect(mailToolAction('mcp__plugin_telegram_telegram__edit_message', { forwardTo: 'x' })).toBe(null)
     expect(mailToolAction('mcp__ms365__send-chat-message', { forwardTo: 'x' })).toBe(null)
-    // a non-object input of a non-reader cannot be read: forwarding, fail-closed; a reader stays a reader
+    // a non-object input cannot be read: forwarding, fail-closed; card 1239a7ad: a reader too (it was
+    // "a reader stays a reader" under 3d6e5181 AC11; an unreadable input does not prove there is no forward key)
     expect(mailToolAction('mcp__outlook__manage_rules', 'x')).toBe('send')
-    expect(mailToolAction('mcp__outlook__get_rules', 'x')).toBe(null)
+    expect(mailToolAction('mcp__outlook__get_rules', 'x')).toBe('send')
   })
 
   it('isReadAction: closed list, a sign anywhere makes it a write, unknown verbs are writes', () => {
