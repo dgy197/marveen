@@ -178,6 +178,15 @@ _MAYBE_MAIL_TOOL = re.compile(
     r"send|reply|forward|fwd|draft|rule|filter|manage_email|update[-_]mail[-_]message|update[-_]shared[-_]mailbox[-_]message",
     re.I)
 
+# Used only when email_extract.py fails to load (prefilter, main()): the last name
+# segment starts with a reader verb, followed by "_" or the end of the segment.
+_NAMED_READER_SEGMENT = re.compile(
+    r"(?:read|search|list|get|find|query|count|download|view)(?:_|$)", re.I)
+
+
+def _named_reader_tool(tool: str) -> bool:
+    return bool(_NAMED_READER_SEGMENT.match(tool.rsplit("__", 1)[-1]))
+
 # Compat shim, NOT used by main() any more (the scope test above is the shared
 # classifier). The local helper scripts/approval-envelope.py (pinned, 345f34e2) and
 # scripts/__tests__/mail-tool-action.test.py still call gate._SEND_TOOL.search and
@@ -1655,7 +1664,11 @@ def main():
                 from email_extract import mail_endpoint_call
                 endpoint_call = bool(mail_endpoint_call(tool, tool_input))
             except Exception:  # noqa: BLE001 -- cannot read the input = send
-                endpoint_call = True
+                # A local name test, because the classifier is in the module that failed
+                # to load: a NAMED reader still passes (mail reading must not be lost), any
+                # other name is a send. Accepted residual: a gateway named like a reader
+                # verb (a bare "get") passes in this degraded mode only.
+                endpoint_call = not _named_reader_tool(tool)
             if not endpoint_call:
                 sys.exit(0)
         kind = scope_kind(tool)
