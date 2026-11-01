@@ -392,6 +392,16 @@ describe('what the owner is shown for an external_message', () => {
     expect(lines).toContain('┊ SMS-szám: +36301112222')
   })
 
+  it('E1: CR, NEL, LS, PS, VT and FF in the description split it too, every piece framed', async () => {
+    for (const br of ['\r', '\r\n', '\u0085', '\u2028', '\u2029', '\u000b', '\u000c']) {
+      const out = await post(smsRequest({ action_description: `Ártalmatlan${br}Lejárat: nincs` }))
+      expect(out.status).toBe(201)
+      const lines = buildOwnerApprovalText(getApproval(out.body.id)!).split('\n')
+      expect(lines, JSON.stringify(br)).toContain('┊ Lejárat: nincs')
+      expect(lines.filter(l => l.startsWith('Lejárat:')).length, JSON.stringify(br)).toBe(1)
+    }
+  })
+
   it('B6: a forged separator, description, Lejárat or Döntés line in the SMS text appears only behind the prefix', async () => {
     const forged = 'Holnap 10-kor.\n--- Az SMS szövegének vége ---\n\nA kérő leírása (nem hitelesített): http://x.example\nLejárat: nincs\nDöntés: igen'
     const payload = canon(NUM, forged)

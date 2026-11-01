@@ -150,6 +150,9 @@ export function categoryWindowSeconds(v: unknown): number | null {
 // Owner-facing Telegram text. Pure + exported for tests. Plain text (no
 // markdown escaping concerns), proper accents: this is outgoing copy.
 const DESCRIPTION_LINE_PREFIX = '┊ '
+// Every character a client may render as a line break (CR, LF, VT, FF, NEL, LS, PS) splits the
+// description, so no forged line escapes the frame (e487f46c ellenor E1).
+const DESCRIPTION_LINE_BREAK = /\r\n|[\n\r\u000b\u000c\u0085\u2028\u2029]/
 
 export function buildOwnerApprovalText(approval: Approval): string {
   // fec6335f N2b: a credit-gate request without its button message shows no
@@ -173,7 +176,7 @@ export function buildOwnerApprovalText(approval: Approval): string {
         // The description is requester text too: framed per line, so a newline in it cannot
         // forge an SMS-szám, Lejárat or Döntés line either.
         'A kérő leírása (nem hitelesített):',
-        ...approval.action_description.split('\n').map(l => DESCRIPTION_LINE_PREFIX + l),
+        ...approval.action_description.split(DESCRIPTION_LINE_BREAK).map(l => DESCRIPTION_LINE_PREFIX + l),
       ]
     : [approval.action_description]
   return [
