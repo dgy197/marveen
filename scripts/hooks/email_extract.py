@@ -1514,10 +1514,10 @@ def mail_endpoint_write(tool_input) -> bool:
     if not isinstance(tool_input, (dict, list)):
         return False
     nodes = 0
-    # (value, depth, methods of the nearest object that has method keys (None: none), a body key seen)
+    # (value, depth, a non-read method in the nearest object that has method keys (None: no such object; computed once per object, review B3: per-hit recomputation was quadratic), a body key seen)
     stack = [(tool_input, 0, None, False)]
     while stack:
-        v, depth, methods, has_body = stack.pop()
+        v, depth, non_read, has_body = stack.pop()
         if depth > _FORWARD_WALK_MAX_DEPTH:
             return True
         if isinstance(v, str):
@@ -1529,8 +1529,8 @@ def mail_endpoint_write(tool_input) -> bool:
                 if req_method is not None:
                     if req_method not in _ENDPOINT_READ_METHODS:
                         return True
-                elif methods is not None:
-                    if any(_endpoint_non_read(x) for x in methods):
+                elif non_read is not None:
+                    if non_read:
                         return True
                 elif has_body:
                     return True
@@ -1544,10 +1544,10 @@ def mail_endpoint_write(tool_input) -> bool:
                 except ValueError:
                     continue
                 if isinstance(parsed, (dict, list, str)):
-                    stack.append((parsed, depth + 1, methods, has_body))
+                    stack.append((parsed, depth + 1, non_read, has_body))
             continue
         is_list = isinstance(v, list)
-        own_methods = methods
+        own_non_read = non_read
         body = has_body
         if not is_list:
             own = []
@@ -1558,13 +1558,13 @@ def mail_endpoint_write(tool_input) -> bool:
                 if norm in _ENDPOINT_BODY_KEYS and _endpoint_non_empty(x):
                     body = True
             if own:
-                own_methods = own
+                own_non_read = any(_endpoint_non_read(x) for x in own)
         for x in (v if is_list else v.values()):
             nodes += 1
             if nodes > _FORWARD_WALK_MAX_NODES:
                 return True
             if isinstance(x, (str, dict, list)):
-                stack.append((x, depth + 1, own_methods, body))
+                stack.append((x, depth + 1, own_non_read, body))
     return False
 
 

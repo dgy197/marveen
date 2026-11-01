@@ -378,6 +378,30 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     ms = (time.perf_counter() - t0) * 1000
     check("E1/B1 cost: mail_tool_action on a gateway name with blanks in one field and an endpoint in another is a send in under 1000 ms",
           got == "send" and ms < 1000, f"got {got!r} in {ms:.0f} ms")
+    # review B3: the whole-input cost of the endpoint walk, per call under 1000 ms
+    nl = ee._FORWARD_WALK_MAX_NODES
+
+    def node_limit(n):
+        o = {"method": "get"}
+        for i in range(n):
+            o["k%d" % i] = "/settings/filters" + " " * 200
+        return o
+
+    for label, inp, want in [
+        ("B3: one method object, 4900 B-class strings", {"method": "get" + " " * 1000000, "items": ["/settings/filters"] * 4900}, False),
+        ("round-1 shapes in one input", {"a": "a" + N_SP + "b", "b": "get a" + N_SP + "b", "c": N_SP + "/me/sendMail" + N_SP}, True),
+        ("node limit - 10 strings", node_limit(nl - 10), False),
+        ("node limit + 10 strings (fails closed)", node_limit(nl + 10), True),
+    ]:
+        t0 = time.perf_counter()
+        got = attempt(lambda: mew(inp))
+        ms = (time.perf_counter() - t0) * 1000
+        check(f"B3 cost: mail_endpoint_write, {label} -> {want} in under 1000 ms", got is want and ms < 1000, f"got {got!r} in {ms:.0f} ms")
+        t0 = time.perf_counter()
+        got = attempt(lambda: ee.mail_tool_action(EW["names"][0], inp))
+        ms = (time.perf_counter() - t0) * 1000
+        check(f"B3 cost: mail_tool_action, {label} -> {'send' if want else 'None'} in under 1000 ms",
+              got == ("send" if want else None) and ms < 1000, f"got {got!r} in {ms:.0f} ms")
     # E2: the table is immutable
     check("E2: the python MAIL_ENDPOINT_TABLE is a tuple of tuples",
           isinstance(ee.MAIL_ENDPOINT_TABLE, tuple) and all(isinstance(r, tuple) and isinstance(r[2], tuple) and isinstance(r[3], tuple)
