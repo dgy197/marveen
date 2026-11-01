@@ -276,13 +276,18 @@ export function fileToolTargetsAllowlist(toolInput, allowlistPath = DEFAULT_ALLO
 //     opposite error is covered too (card 0bb35172): a quoted newline or `;`
 //     can also cut a dangerous pair in two (`tmux 'a<NL>' send-keys`), so the
 //     gate additionally runs maskedSegments, which cuts only where the shell
-//     does, on top of this naive list.
+//     does, on top of this naive list. Still open (accepted, spec Q2): a QUOTED
+//     command word followed by a quoted newline (`'tmux' 'a<NL>' send-keys`):
+//     the naive pass cuts it in two and the masked pass blanks the quoted word.
 //   - A $(...) or backtick substitution that assigns a scheduler result
 //     (`X=$(crontab -)`, `X=`crontab -``) is caught by SCHEDULER_RX's boundary
 //     anchor, which now includes both `(` and the backtick.
+// The shell's command separators, shared by splitSegments and anchoredSegments.
+const SEGMENT_SEPARATOR_SOURCE = '&&|\\|\\||[;&|]|\\r?\\n'
+
 export function splitSegments(command) {
   return joinShellLines(String(command ?? ''))
-    .split(/&&|\|\||[;&|]|\r?\n/)
+    .split(new RegExp(SEGMENT_SEPARATOR_SOURCE))
     // trim so a leading-separator segment (" at now") anchors at ^ correctly
     .map((s) => s.trim())
 }
@@ -337,7 +342,7 @@ export function splitSegments(command) {
 // carefully", it is "the inert text must not be there": mask it out, then let
 // the existing splitter and regexes run unchanged on what remains.
 // `heredocs` (optional): when an array is passed, every heredoc the scan resolved
-// is pushed onto it as { opStart, bodyStart, bodyEnd, end, quotedTag } in the coordinates
+// is pushed onto it as { opStart, bodyStart, bodyEnd, end, quotedTag, runsBody } in the coordinates
 // of the continuation-joined source (which has the same length as the returned
 // mask). shellSegments uses it to hand a heredoc body back to the command that
 // owns it; the scan itself is unchanged.
@@ -480,7 +485,7 @@ function anchoredSegments(masked, heredocs) {
   if (!visible.length) return splitSegments(masked)
   const segs = []
   let start = 0
-  for (const m of masked.matchAll(/&&|\|\||[;&|]|\r?\n/g)) {
+  for (const m of masked.matchAll(new RegExp(SEGMENT_SEPARATOR_SOURCE, 'g'))) {
     const newline = m[0].includes('\n')
     if (!newline && visible.some((h) => m.index >= h.bodyStart && m.index < h.bodyEnd)) continue
     segs.push(masked.slice(start, m.index).trim())
@@ -577,6 +582,9 @@ function stripFlagArguments(ctx, flagSource) {
   while ((m = rx.exec(text))) {
     const flagStart = m.index + m[1].length
     const argStart = m.index + m[0].length
+    // Only a CODE-class flag strips. KNOWN LIMIT (0bb35172 ellenor E1, accepted fail-closed): the lexer
+    // keeps a backtick run as one BQ span without quote tokens, so a payload flag inside backticks
+    // (r=`curl -d '...'`) is not stripped and its payload stays visible (it may over-deny, never under).
     const q = cls[flagStart] === CTX_CLASS.CODE ? quoteAt.get(argStart) : undefined
     // a double-quoted value that substitutes may run a command -> keep it visible
     if (!q || (q.kind === 'dq' && q.subst)) {
