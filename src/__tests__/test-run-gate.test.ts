@@ -320,6 +320,17 @@ describe('E5: wrappers decide exactly like the bare command', () => {
     ['find -exec', (c) => `find . -name x -exec ${c} \\;`],
     ['quoted pieces', (c) => c.replace(/^(\S)/, "'$1'")],
     ['backslash', (c) => `\\${c}`],
+    // N1b (Brainy D1): sandbox-style wrappers run the rest of the line as the command.
+    ['run-sandboxed.sh', (c) => `run-sandboxed.sh ${c}`],
+    ['run-sandboxed.sh by path', (c) => `/Users/x/.claude/sandbox/run-sandboxed.sh ${c}`],
+    ['sandbox-exec -f', (c) => `sandbox-exec -f p.sb ${c}`],
+    ['sandbox-exec -p -D -n', (c) => `sandbox-exec -n no-network -D A=b -p '(version 1)' ${c}`],
+    ['perl exec @ARGV', (c) => `perl -e 'exec @ARGV or die' ${c}`],
+    ['perl -e exec', (c) => `perl -e 'alarm 5; exec @ARGV' ${c}`],
+    ['script', (c) => `script -q /dev/null ${c}`],
+    ['script -t', (c) => `script -a -t 5 out.log ${c}`],
+    ['gtimeout', (c) => `gtimeout 60 ${c}`],
+    ['gtimeout -k', (c) => `gtimeout -k 5 -s KILL 60 ${c}`],
   ]
 
   describe.each(WRAPPERS)('%s', (_n, wrap) => {
@@ -350,6 +361,75 @@ describe('E5: wrappers decide exactly like the bare command', () => {
     expect(denies('${X:-vitest} run')).toBe(true)
     expect(denies('$(echo vitest) run')).toBe(true)
     expect(denies('"$HOME/bin/tool" run')).toBe(false)
+  })
+})
+
+describe('E5b (N1b, Brainy D1): the sandbox wrappers in detail', () => {
+  it('a wrapper with no command after it is not a test run', () => {
+    expect(denies('sandbox-exec -f p.sb')).toBe(false)
+    expect(denies('script -q /dev/null')).toBe(false)
+    expect(denies('script out.log')).toBe(false)
+    expect(denies("perl -e 'exec @ARGV'")).toBe(false)
+    expect(denies('gtimeout 60')).toBe(false)
+    expect(denies('run-sandboxed.sh')).toBe(false)
+  })
+  it('perl -e without exec / system does not run its argv', () => {
+    expect(denies("perl -e 'print 1' npx vitest")).toBe(false)
+  })
+  it('perl without -e runs a script file, not a command', () => {
+    expect(denies('perl tool.pl npm test')).toBe(false)
+  })
+  it('the wrapped python runner follows the /Volumes rule', () => {
+    expect(denies('run-sandboxed.sh pytest -q')).toBe(false)
+    expect(denies('run-sandboxed.sh pytest -q', volp)).toBe(true)
+    expect(denies('sandbox-exec -f p.sb python3 -m pytest', volp)).toBe(true)
+  })
+  it('ssh stays out: the command runs on the remote host', () => {
+    expect(denies('ssh host npx vitest run')).toBe(false)
+  })
+  it('wrappers nest', () => {
+    expect(denies('run-sandboxed.sh gtimeout 60 sandbox-exec -f p.sb npx vitest run')).toBe(true)
+    expect(denies('timeout 5 run-sandboxed.sh npm test')).toBe(true)
+  })
+})
+
+describe('E5c (N1b, Brainy D2): a variable interpreter running pytest is a python runner', () => {
+  it.each([
+    '"$PY" -m pytest',
+    '"$PY" -m pytest -q tests/',
+    '$PY -m unittest discover',
+    '${PY} -I a/b.test.py',
+    '"${PY}" a/b_test.py',
+    '"$PY" -I tests/test_a.py',
+    'FOO=1 "$PY" -m pytest',
+    'cd . && "$PY" -m pytest',
+  ])('allows outside /Volumes: %s', (cmd) => {
+    expect(denies(cmd)).toBe(false)
+  })
+  it.each([
+    '"$PY" -m pytest',
+    '${PY} -I a/b.test.py',
+    'cd . && "$PY" -m unittest',
+  ])('denies under /Volumes: %s', (cmd) => {
+    expect(denies(cmd, volp)).toBe(true)
+  })
+  it('a directory option under /Volumes still denies', () => {
+    expect(denies(`"$PY" -m pytest --rootdir ${volp}`)).toBe(true)
+  })
+  it.each([
+    '"$X" vitest',
+    '$X vitest run',
+    '"$X" -m npm test',
+    '"$X" npm test',
+    '"$X" node --test a.test.mjs',
+    '${X:-vitest} -m pytest',
+    '$(echo vitest) -m pytest',
+  ])('every other variable command word keeps the raw-text rule: %s', (cmd) => {
+    expect(denies(cmd)).toBe(true)
+  })
+  it('a variable command word without a runner word is fine', () => {
+    expect(denies('"$PY" script.py')).toBe(false)
+    expect(denies('"$TOOL" status')).toBe(false)
   })
 })
 
