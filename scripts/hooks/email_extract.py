@@ -1244,8 +1244,9 @@ def _is_read_action(segments) -> bool:
 #     JSON-patch `filePath: /forwardTo` stays denied.
 # Which class uses which keys: a plain draft (name: the label / folder value keys, file:
 # the attachment name keys, inert: signature); a label / folder tool (name: its NAME keys
-# and the value keys, inert: the selector keys when it applies a label to a message); a
-# move / copy tool (name: the target folder keys); a message-operation tool (name: the
+# and the value keys, plus to / from / newName / oldName on a non-apply label tool and
+# addLabels / removeLabels on both, inert: the selector keys when it applies a label
+# to a message); a move / copy tool (name: the target folder keys); a message-operation tool (name: the
 # value keys, inert: the selectors); a reply / settings tool (inert: the auto-reply text
 # keys). Any other tool (Sieve, rule, filter, B5 settings names, unknown names) has no
 # exemption at all. The class lists are closed and the name is the server's, so a miss
