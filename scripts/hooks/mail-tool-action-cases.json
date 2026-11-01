@@ -433,7 +433,7 @@
     {"tool": "mcp__gmail__set_rule", "input": {"actions": {"markAsRead": true}}, "expected": null, "note": "card 6151bb4d r2: B2: set_rule with a clean input is no letter"},
     {"tool": "mcp__gmail__update_filter", "input": {"action": {"addLabelIds": ["L1"]}}, "expected": "draft", "note": "card 6151bb4d r2: B2: update_filter with a clean input stays a draft (update verb)"},
     {"tool": "mcp__gmail__delete_filter", "input": {"forwardTo": "x"}, "expected": "send", "note": "card 3d6e5181 N3: was null (6151bb4d: delete is no rule write); delete is a non-reader and a forwardTo key forwards under any name"},
-    {"tool": "mcp__gmail__get_filter", "input": {"forwardTo": "x"}, "expected": null, "note": "card 6151bb4d r2: B2: a read is no rule write"},
+    {"tool": "mcp__gmail__get_filter", "input": {"forwardTo": "x"}, "expected": "send", "note": "card 1239a7ad: was null (6151bb4d r2: a read is no rule write; 3d6e5181 AC11: a reader never matches); a reader is a reader only while its input has no forward KEY"},
     {"tool": "mcp__outlook__createReply", "expected": "draft", "note": "card 6151bb4d r1: create + sending verb stays draft"},
     {"tool": "mcp__outlook__createReplyAll", "expected": "draft", "note": "card 6151bb4d r1"},
     {"tool": "mcp__outlook__createForward", "expected": "draft", "note": "card 6151bb4d r1"},

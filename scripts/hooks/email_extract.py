@@ -1342,9 +1342,15 @@ def _has_forward_key_name(value, value_words: bool = True, strict: bool = False,
 
 
 def _name_independent_forward(segments, tool_input) -> bool:
-    """A non-reader call whose input forwards, under any name. A name the NAME classifier
-    calls a send is left to the send branches (False here); readers never match. Every
-    other tool, the draft class included (update_settings, create_forwarding_address,
+    """A call whose input forwards, under any name. A name the NAME classifier calls a send
+    is left to the send branches (False here). A READER is a reader only while its input
+    has no forward / redirect KEY (card 1239a7ad; it narrows 3d6e5181 AC11, where a reader
+    never matched): only the KEY test runs on it (value_words off, no exemptions), so a
+    forward WORD in a value (query: "forward", a GET path, select: ["forwardTo"]) stays
+    exempt on a reader. Accepted over-block (Q3): a reader's key that merely contains the
+    word (isForwarded, includeRedirects) denies; a non-object input or a walk-limit
+    overflow on a reader name fails closed (Q4), since an unreadable input does not prove
+    there is no forward key. Every other tool, the draft class included (update_settings, create_forwarding_address,
     update_auto_forwarding: update / create are draft verbs), needs a forward / redirect
     KEY or a forward / redirect WORD in a value (decision Q4, AC10); a plain draft
     (_is_plain_draft) is read in the lenient mode, every other tool in the strict one, and
@@ -1355,8 +1361,11 @@ def _name_independent_forward(segments, tool_input) -> bool:
     value, a `type: forward` action) needs the value words for the draft class too.
     Twin: nameIndependentForward in scripts/email-send-gate.mjs."""
     classes = [_segment_action(p, False) for p in segments]
-    if "send" in classes or _is_read_action(segments):
+    if "send" in classes:
         return False
+    # a reader is a reader only while its input has no forward / redirect KEY (card 1239a7ad)
+    if _is_read_action(segments):
+        return _has_forward_key_name(tool_input, False, False, NO_EXEMPT)
     # manage_email multiplexes its operations in a VALUE (operation: "forward"), and its own
     # branch decides those: only a forward KEY counts here, so the existing manage_email
     # verdicts do not change.

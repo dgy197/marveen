@@ -1771,7 +1771,9 @@ function segmentWritesRule(segment) {
 // The rule below does not read the name's nouns at all, it asks two questions: is the
 // tool a READER (isReadAction: a closed list, fail-closed), and does its input FORWARD
 // (hasForwardKeyName)? A non-reader whose input forwards is mail-rule-forward under
-// ANY name. The 6151bb4d rule stays on top of it, unchanged (it also counts a bare
+// ANY name; a reader only when its input has a forward KEY (card 1239a7ad: a reader is a
+// reader only without a forward key; a forward word in a value is exempt on a reader;
+// 3d6e5181 AC11 narrows to this). The 6151bb4d rule stays on top of it, unchanged (it also counts a bare
 // address, but only for rule / filter names).
 //
 // READER = some word of the action segment(s) is a READ word (whole word, or the start
@@ -1942,9 +1944,15 @@ export function hasForwardKeyName(input, valueWords = true, strict = false, ex =
   return false
 }
 
-// A non-reader call whose input forwards, under any name. A name the NAME classifier
-// calls a send is left to the send branches (false here); readers never match. Every
-// other tool, the draft class included (update_settings, create_forwarding_address,
+// A call whose input forwards, under any name. A name the NAME classifier calls a send is
+// left to the send branches (false here). A READER is a reader only while its input has no
+// forward / redirect KEY (card 1239a7ad; it narrows 3d6e5181 AC11, where a reader never
+// matched): only the KEY test runs on it (valueWords off, no exemptions), so a forward WORD
+// in a value (query: "forward", a GET path, select: ["forwardTo"]) stays exempt on a reader.
+// Accepted over-block (Q3): a reader's key that merely contains the word (isForwarded,
+// includeRedirects) denies; a non-object input or a walk-limit overflow on a reader name
+// fails closed (Q4), since an unreadable input does not prove there is no forward key.
+// Every other tool, the draft class included (update_settings, create_forwarding_address,
 // update_auto_forwarding: update / create are draft verbs), needs a forward / redirect
 // KEY or a forward / redirect WORD in a value (decision Q4, AC10); a plain draft
 // (isPlainDraft) is read in the lenient mode, every other tool in the strict one, and
@@ -1955,7 +1963,9 @@ export function hasForwardKeyName(input, valueWords = true, strict = false, ex =
 // forward` action) needs the value words for the draft class too.
 function nameIndependentForward(segments, toolInput) {
   const classes = segments.map((p) => segmentAction(p, false))
-  if (classes.includes('send') || isReadAction(segments)) return false
+  if (classes.includes('send')) return false
+  // a reader is a reader only while its input has no forward / redirect KEY (card 1239a7ad)
+  if (isReadAction(segments)) return hasForwardKeyName(toolInput, false, false, NO_EXEMPT)
   // manage_email multiplexes its operations in a VALUE (operation: "forward"), and its own
   // branch below decides those (kind draft-required): only a forward KEY counts here, so the
   // kind of the existing manage_email denies does not change.
