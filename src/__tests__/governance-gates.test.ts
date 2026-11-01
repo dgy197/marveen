@@ -85,6 +85,8 @@ describe('self-pace-gate gateDecision', () => {
     expect(selfPaceDecision('Bash', { command: 'git commit -m "$(crontab -r)"' }).deny).toBe(true)
     // unquoted heredoc delimiter DOES expand -> must stay caught
     expect(selfPaceDecision('Bash', { command: 'git commit -m "$(cat <<EOF\nfix\n$(at now)\nEOF\n)"' }).deny).toBe(true)
+    // card a6422462 (review E1): the same body with a data owner (cat): only the unquoted-tag rule keeps it visible
+    expect(selfPaceDecision('Bash', { command: 'cat <<EOF\nfix\n$(at now)\nEOF' }).deny).toBe(true)
   })
   it('denies a WRITE to the self-schedule store (redirect)', () => {
     expect(selfPaceDecision('Bash', { command: 'echo "{}" > ~/.claude/scheduled_tasks.json' }).deny).toBe(true)
@@ -169,12 +171,14 @@ describe('self-pace-gate stripHeredocBodies (quoted vs unquoted marker)', () => 
   })
 
   it('KEEPS an unquoted body containing $( ) -- the shell would run it', () => {
-    const cmd = 'git commit -m "$(cat <<EOF\nfix\n$(at now)\nEOF\n)"'
+    // card a6422462 (review E1): owner tee instead of git (git is no data owner, so a git body stays visible anyway)
+    const cmd = 'tee f <<EOF\nfix\n$(at now)\nEOF'
     expect(stripHeredocBodies(cmd)).toContain('$(at now)')
   })
 
   it('KEEPS an unquoted body containing a backtick', () => {
-    const cmd = 'git commit -F - <<EOF\nfix `at now`\nEOF'
+    // card a6422462 (review E1): owner tee instead of git, see the previous test
+    const cmd = 'tee f <<EOF\nfix `at now`\nEOF'
     expect(stripHeredocBodies(cmd)).toContain('`at now`')
   })
 
@@ -189,7 +193,8 @@ describe('self-pace-gate stripHeredocBodies (quoted vs unquoted marker)', () => 
   it('the <<- variant follows the same rule', () => {
     // card a6422462 (Q5): owner tee instead of git in the first line, see the first test of this block
     expect(stripHeredocBodies(`tee f <<-'EOF'\n\t${PROSE}\n\tEOF`)).not.toContain(PROSE)
-    expect(stripHeredocBodies('git commit -F - <<-EOF\n\t$(at now)\n\tEOF')).toContain('$(at now)')
+    // card a6422462 (review E1): owner tee instead of git in the second line as well
+    expect(stripHeredocBodies('tee f <<-EOF\n\t$(at now)\n\tEOF')).toContain('$(at now)')
   })
 
   // PR #770 review (Szotasz): a QUOTED body is literal to the SHELL, but an

@@ -313,7 +313,8 @@ describe('(h) shellContext(x).substs: the frames the decision is made from (N1)'
   const all = [...ownerRows, ...limitRows, ...dataRows, ...govRows, ...listRows]
   it('E6 on the new corpus: text equals joinShellLines, exact is unchanged, the frames are valid, ordered and nested or disjoint', () => {
     // card a6422462: the data table grew by the 7 ALLOW controls (F14-F20), 13 -> 20
-    expect(all.length).toBe(42 + 2 + 20 + 22 + 24)
+    // review E1: GOV 22 -> 23 (g87-cat-owner)
+    expect(all.length).toBe(42 + 2 + 20 + 23 + 24)
     for (const row of all) {
       const info: { exact?: boolean } = {}
       const joined = lexer.joinShellLines(row.command, info) as string
@@ -439,8 +440,8 @@ describe('(k) KEEP rows (review r1): the stronger proof conditions leave a plain
 })
 
 describe('(k) GOV rows (E2): the heredoc shapes of governance-gates keep their verdict', () => {
-  it('the corpus has the 22 GOV rows', () => {
-    expect(govRows.length).toBe(22)
+  it('the corpus has the 23 GOV rows (22 of m1 + g87-cat-owner of the a6422462 review)', () => {
+    expect(govRows.length).toBe(23)
   })
   for (const row of govRows) {
     it(`${row.id}: ${row.expect}`, () => {
@@ -509,11 +510,12 @@ describe('(n) structural: heredocBodyIsData is the one rule, built on ctx.substs
 // Green guards: the ALLOW controls F14-F20.
 // =============================================================================================================
 describe('(o) a6422462: a body whose owner cannot be proved static or config-free stays visible', () => {
-  it('the corpus has the 25 BINDS, 4 PREFIX and 11 GIT rows', () => {
-    expect(bindsRows.length).toBe(25)
+  it('the corpus has the 33 BINDS (25 + 8 of the review E3), 4 PREFIX and 11 GIT rows', () => {
+    expect(bindsRows.length).toBe(33)
     expect(prefixRows.length).toBe(4)
     expect(gitRows.length).toBe(11)
   })
+  const REFUSED_MASK_IDS = new Set(['B-binder-in-dq-subst', 'P-subst-consumer-prefix'])
   for (const row of [...bindsRows, ...prefixRows, ...gitRows]) {
     it(`${row.id} [${row.why}]: gateDecision says DENY${row.note ? ` (${row.note})` : ''}`, () => {
       expect(verdictOf(row.command), JSON.stringify(row.command)).toBe('DENY')
@@ -523,11 +525,13 @@ describe('(o) a6422462: a body whose owner cannot be proved static or config-fre
     })
     it(`${row.id}: keepRunBodies:true leaves the body visible and says runsBody`, () => {
       const { masked, heredocs } = maskOf(row.command, { keepRunBodies: true })
-      // a mask the gate refuses (null, e.g. a double-quoted substitution) is a refusal, not a masked body
-      if (masked === null) return
+      // the mask refuses (null) a double-quoted substitution, so these two rows are asserted by verdict, data flag and
+      // stripper only (like F16 below); every other row must give a mask, no silent return
+      if (REFUSED_MASK_IDS.has(row.id)) return
+      expect(masked, `${row.id}: the mask is not refused`).not.toBeNull()
       expect(heredocs.length).toBe(1)
       expect(heredocs[0].runsBody).toBe(true)
-      expect(masked.includes(row.keep as string), JSON.stringify(masked)).toBe(true)
+      expect((masked as string).includes(row.keep as string), JSON.stringify(masked)).toBe(true)
     })
   }
 })
@@ -598,5 +602,6 @@ describe('(p) a6422462 structural: closed, exported, frozen name lists; git is n
     // definesFunctionOrAlias and bindsNames read the same code-level text: no private quote-stripping copy any more
     expect(fn('definesFunctionOrAlias').length, 'definesFunctionOrAlias exists').toBeGreaterThan(40)
     expect(fn('definesFunctionOrAlias')).not.toMatch(/\bplain\b/)
+    expect(fn('definesFunctionOrAlias'), 'definesFunctionOrAlias reads codeLevelText').toMatch(/\bcodeLevelText\(/)
   })
 })
