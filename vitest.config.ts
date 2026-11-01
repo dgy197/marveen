@@ -42,7 +42,10 @@ export default defineConfig({
     // global-live-install-gate: refuse the whole run ONCE, in the main process,
     // before any worker starts, when the checkout is a live install (same marker
     // list as the per-worker gate below, which stays as the second layer).
-    globalSetup: ['./src/__tests__/setup/global-live-install-gate.ts'],
+    // safe-vitest-sandbox-gate (card 9b4d8a33): refuse the run outside the scripts/safe-vitest.sh sandbox
+    // (TMPDIR run dir + a refused $HOME write); first, so nothing else starts outside it. Off darwin it is
+    // exempt (no sandbox-exec there: CI on ubuntu).
+    globalSetup: ['./src/__tests__/setup/safe-vitest-sandbox-gate.ts', './src/__tests__/setup/global-live-install-gate.ts'],
     // Hard gates, run in every worker before any test module is imported:
     //  - assert-not-live-install: refuse to run inside a live install (see that
     //    setup file's header for the 2026-07-27 incident it prevents).
