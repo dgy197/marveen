@@ -18,7 +18,7 @@ import { channelStateDir, readChannelToken } from '../../channel-provider.js'
 import { TEST_RUN_PREFIX } from '../../test-run-marker.js'
 import { sendTelegramMessage, type TelegramInlineKeyboard } from '../telegram.js'
 import { envelopeBinding, type EnvelopeUnboundReason, type EnvelopeV1 } from '../../approval-envelope.js'
-import { boundSmsEnvelope, parseSmsPayload, EXTERNAL_MESSAGE_CATEGORY } from '../external-message-payload.js'
+import { boundSmsEnvelope, parseSmsPayload, smsTextBlock, EXTERNAL_MESSAGE_CATEGORY } from '../external-message-payload.js'
 import { buildCallbackData, isCallbackNonce, newCallbackNonce, nonceHash } from '../approval-callback-data.js'
 import {
   buildBoundApprovalMessages, formatOutcomeText,
@@ -167,9 +167,7 @@ export function buildOwnerApprovalText(approval: Approval): string {
   const body = sms
     ? [
         `SMS-szám: ${sms.number}`,
-        '--- Az SMS szövege ---',
-        sms.text,
-        '--- Az SMS szövegének vége ---',
+        ...smsTextBlock(sms.text),
         `A kérő leírása (nem hitelesített): ${approval.action_description}`,
       ]
     : [approval.action_description]

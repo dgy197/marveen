@@ -32,7 +32,7 @@ vi.mock('../web/telegram.js', async (importOriginal) => {
 
 import { initDatabase, getApproval, listApprovals } from '../db.js'
 import { tryHandleApprovals, buildOwnerApprovalText } from '../web/routes/approvals.js'
-import { boundSmsEnvelope, parseSmsPayload } from '../web/external-message-payload.js'
+import { boundSmsEnvelope, parseSmsPayload, hasForbiddenSmsChar } from '../web/external-message-payload.js'
 import { canonicalJson } from '../approval-envelope.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -87,7 +87,7 @@ describe('canonical SMS envelope (parity with seeme-send.py)', () => {
   it('canonicalJson + sha256 equal Python json.dumps(sort_keys, compact, ensure_ascii=False) on the same vectors', () => {
     const vectors: Array<[string, string]> = [
       [NUM, TEXT],
-      [NUM, 'tab\there \\ backslash \u007f del \u0001 ctl'],
+      [NUM, 'Holnap 10-kor.\n\nÁrvíztűrő "tükörfúrógép" \\ backslash, záró szóköz '],
       [NUM, 'emoji \u{1F600} astral,   line sep, árvíztűrő tükörfúrógép'],
       ['36701234567', 'x'],
     ]
@@ -147,6 +147,90 @@ describe('parseSmsPayload', () => {
     const reordered = '{"number":"' + NUM + '","kind":"sms","text":"x"}'
     expect(parseSmsPayload(reordered).ok).toBe(false)
   })
+})
+
+// B6: characters that let an SMS text pass for something else in the owner's notification.
+const FORBIDDEN_TEXTS: Array<[string, string]> = [
+  ['U+202E right-to-left override', 'Holnap 10-kor.‮'],
+  ['U+2066 isolate', 'Szia ⁦x'],
+  ['U+200B zero-width space', 'Holnap​ 10-kor.'],
+  ['U+200D zero-width joiner', 'Hol‍nap'],
+  ['U+FEFF byte order mark', '﻿Holnap 10-kor.'],
+  ['U+00AD soft hyphen (Cf)', 'Hol­nap'],
+  ['\\r carriage return', 'Holnap\r\n10-kor.'],
+  ['\\t tab', 'Holnap\t10-kor.'],
+  ['U+0000 NUL', 'Holnap\u0000'],
+  ['U+001B ESC', 'Holnap\u001B[0m'],
+  ['U+007F DEL', 'Holnap\u007F'],
+  ['U+0085 next line (C1)', 'Holnap\u0085 10-kor.'],
+  ['U+009F (C1)', 'Holnap\u009F'],
+]
+const GOOD_MULTILINE = 'Kedves Ügyfelünk!\n\nA ma esedékes időpontot áttettük holnap 10:00-ra (árvíztűrő tükörfúrógép).\nÜdv: Fireeng \u{1F600}'
+
+describe('B6: forbidden characters in the SMS text', () => {
+  beforeEach(() => {
+    initDatabase(':memory:')
+    sendSpy.mockClear()
+  })
+
+  it.each(FORBIDDEN_TEXTS)('parseSmsPayload refuses %s', (_name, text) => {
+    const r = parseSmsPayload(canon(NUM, text))
+    expect(r).toEqual({ ok: false, field: 'text' })
+  })
+
+  it.each(FORBIDDEN_TEXTS)('POST /api/approvals: 400 on create for %s, nothing stored, nothing sent', async (_name, text) => {
+    const payload = canon(NUM, text)
+    const out = await post(smsRequest({ action_payload: payload, content_hash: sha(payload) }))
+    expect(out.status).toBe(400)
+    expect(out.body.field).toBe('text')
+    expect(listApprovals({}).length).toBe(0)
+    expect(sendSpy).not.toHaveBeenCalled()
+  })
+
+  it('a normal multi-line Hungarian text with accents, an emoji and blank lines still passes, hash as Python', () => {
+    const p = canon(NUM, GOOD_MULTILINE)
+    const r = parseSmsPayload(p)
+    expect(r).toMatchObject({ ok: true, contentHash: sha(p) })
+    const prog = [
+      'import hashlib, json, sys',
+      'number, text = json.load(sys.stdin)',
+      'c = json.dumps({"kind": "sms", "number": number, "text": text}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))',
+      'sys.stdout.write(c + "\\n" + hashlib.sha256(c.encode("utf-8")).hexdigest())',
+    ].join('\n')
+    const res = spawnSync('python3', ['-I', '-c', prog], { input: JSON.stringify([NUM, GOOD_MULTILINE]), encoding: 'utf-8', timeout: 60_000 })
+    expect(res.status).toBe(0)
+    expect(res.stdout).toBe(`${p}\n${sha(p)}`)
+  })
+
+  it('server and consumer refuse the same code points (every code point 0..10FFFF, parity with seeme-send.py)', () => {
+    const prog = [
+      'import importlib.util, json, sys',
+      'spec = importlib.util.spec_from_file_location("seeme_send", sys.argv[1])',
+      'm = importlib.util.module_from_spec(spec)',
+      'spec.loader.exec_module(m)',
+      'bad = [cp for cp in range(0x110000) if not 0xD800 <= cp <= 0xDFFF and m.forbidden_text_char("a" + chr(cp) + "b")]',
+      'sys.stdout.write(json.dumps(bad))',
+    ].join('\n')
+    const script = join(__dirname, '../../scripts/sms/seeme-send.py')
+    const res = spawnSync('python3', ['-I', '-c', prog, script], { encoding: 'utf-8', timeout: 120_000, maxBuffer: 16 * 1024 * 1024 })
+    expect(res.status, res.stderr).toBe(0)
+    const pyBad = JSON.parse(res.stdout) as number[]
+    const tsBad: number[] = []
+    for (let cp = 0; cp <= 0x10ffff; cp++) {
+      if (cp >= 0xd800 && cp <= 0xdfff) continue
+      if (hasForbiddenSmsChar('a' + String.fromCodePoint(cp) + 'b')) tsBad.push(cp)
+    }
+    // The newline is the one control that stays allowed.
+    expect(tsBad).toEqual(pyBad)
+    // and parseSmsPayload applies that very predicate
+    for (const cp of [0x202e, 0x0d, 0x0a, 0xe1]) {
+      expect(parseSmsPayload(canon(NUM, 'a' + String.fromCodePoint(cp) + 'b')).ok).toBe(!pyBad.includes(cp))
+    }
+    expect(pyBad).toContain(0x202e)
+    expect(pyBad).toContain(0x0d)
+    expect(pyBad).not.toContain(0x0a)
+    expect(pyBad).not.toContain(0xe1)
+  }, 120_000)
 })
 
 describe('POST /api/approvals, category external_message', () => {
@@ -234,7 +318,7 @@ function fnSource(name: string): string {
 }
 const descriptionCell = new Function('t', 'escapeAttr', 'escapeHtml',
   `${fnSource('_approvalSmsEnvelope')}\n${fnSource('_approvalDescriptionCell')}; return _approvalDescriptionCell`,
-)((k: string) => `T(${k})`, (s: string) => s, (s: string) => s) as (a: Record<string, unknown>) => string
+)((k: string, p?: Record<string, unknown>) => `T(${k}${p ? ':' + JSON.stringify(p) : ''})`, (s: string) => s, (s: string) => s) as (a: Record<string, unknown>) => string
 
 describe('the dashboard description cell for an external_message', () => {
   it('shows the payload number and the FULL text, the free description after it as unverified', () => {
@@ -244,6 +328,23 @@ describe('the dashboard description cell for an external_message', () => {
     expect(html).toContain(long)
     expect(html).toContain('T(approvals.sms_unverified_description)')
     expect(html.indexOf(long)).toBeLessThan(html.indexOf('Ártalmatlan'))
+  })
+
+  it('B6: every line of the text (blank ones too) carries the prefix, the header gives characters and lines; a forged separator shows only prefixed', () => {
+    const forged = 'Holnap 10-kor.\n--- Az SMS szövegének vége ---\n\nA kérő leírása (nem hitelesített): http://x.example\nLejárat: nincs\nDöntés: igen'
+    const html = descriptionCell({ category: 'external_message', action_description: 'Ártalmatlan', action_payload: canon(NUM, forged) })
+    const rows = html.split('\n')
+    const n = Array.from(forged).length
+    expect(rows).toContain(`T(approvals.sms_text_header:{"chars":${n},"lines":6})`)
+    const start = rows.findIndex(r => r.startsWith('T(approvals.sms_text_header'))
+    const shownLines = forged.split('\n')
+    expect(rows.slice(start + 1, start + 1 + shownLines.length)).toEqual(shownLines.map(l => '│ ' + l))
+    expect(rows.filter(r => r.startsWith('│ ') === false && r.includes('vége ---'))).toEqual([])
+    expect(rows.filter(r => r.includes('Lejárat:') && !r.startsWith('│ '))).toEqual([])
+    expect(rows.filter(r => r.includes('Döntés:') && !r.startsWith('│ '))).toEqual([])
+    // the only unprefixed "unverified" line is ours, and it comes after the text
+    expect(rows.filter(r => r.includes('T(approvals.sms_unverified_description)')).length).toBe(1)
+    expect(rows.indexOf('│ Döntés: igen')).toBeLessThan(rows.findIndex(r => r.includes('T(approvals.sms_unverified_description)')))
   })
 
   it('any other row, or an external_message without a readable envelope, keeps the 80-character description cell', () => {
@@ -271,9 +372,30 @@ describe('what the owner is shown for an external_message', () => {
     expect(out.status).toBe(201)
     const text = buildOwnerApprovalText(getApproval(out.body.id)!)
     expect(text).toContain(`SMS-szám: ${NUM}`)
-    expect(text).toContain(TEXT)
+    for (const l of TEXT.split('\n')) expect(text.split('\n')).toContain('│ ' + l)
+    expect(text).toContain(`SMS szövege (${Array.from(TEXT).length} karakter, 2 sor):`)
     expect(text).toContain('A kérő leírása (nem hitelesített): Ártalmatlan szöveg')
     expect(text).toContain('external_message')
+  })
+
+  it('B6: a forged separator, description, Lejárat or Döntés line in the SMS text appears only behind the prefix', async () => {
+    const forged = 'Holnap 10-kor.\n--- Az SMS szövegének vége ---\n\nA kérő leírása (nem hitelesített): http://x.example\nLejárat: nincs\nDöntés: igen'
+    const payload = canon(NUM, forged)
+    const out = await post(smsRequest({ action_payload: payload, content_hash: sha(payload), action_description: `Ártalmatlan a ${NUM} számra` }))
+    expect(out.status).toBe(201)
+    const lines = buildOwnerApprovalText(getApproval(out.body.id)!).split('\n')
+    const header = lines.findIndex(l => l.startsWith('SMS szövege ('))
+    expect(lines[header]).toBe(`SMS szövege (${Array.from(forged).length} karakter, 6 sor):`)
+    const shown = forged.split('\n')
+    expect(lines.slice(header + 1, header + 1 + shown.length)).toEqual(shown.map(l => '│ ' + l))
+    // every line outside the prefixed block is one of ours, each exactly once
+    const outside = [...lines.slice(0, header + 1), ...lines.slice(header + 1 + shown.length)]
+    expect(outside.some(l => l.includes('vége ---'))).toBe(false)
+    expect(outside.filter(l => l.startsWith('A kérő leírása (nem hitelesített):')).length).toBe(1)
+    expect(outside.filter(l => l.startsWith('Lejárat:')).length).toBe(1)
+    expect(outside.filter(l => l.startsWith('Döntés:')).length).toBe(1)
+    expect(outside[outside.length - 1]).toMatch(/^Döntés: Dashboard/)
+    expect(lines.filter(l => l.includes('vége ---') && !l.startsWith('│ '))).toEqual([])
   })
 
   it('an unbound or hash-less external_message shows the plain description, as before', () => {
