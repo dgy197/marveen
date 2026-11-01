@@ -955,6 +955,23 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
           {"mcp__outlook__fetch", "mcp__gmail__create_draft", "mcp__outlook__manage_email"} <= {a["tool"] for a in WJ["actions"]}
           and {"send", None} <= {a["expected"] for a in WJ["actions"]})
 
+    # --- card 5e3c31c5 R1 (review E1/B1): a B-class endpoint with body / method = NaN / Infinity / -Infinity ------
+    # The reference side: python reads the constant as a float, so a body key is non-empty and a method key is a
+    # non-read value: mail_endpoint_write True, mail_tool_action send. The JS twin (walker-json-nan.test.ts) runs
+    # the same rows and must give the same decisions, and gateDecision (JS only) must deny them.
+    ENF = WJ["endpoint_nonfinite"]
+    check("5e3c31c5 R1: the block holds body and method rows for NaN, Infinity and -Infinity, on three tools",
+          len(ENF["tools"]) == 3 and len(ENF["rows"]) == 12
+          and {k for r in ENF["rows"] for k in ("body", "method") if '"%s":' % k in r["input"]["request"]} == {"body", "method"}
+          and all(any(t in r["input"]["request"] for r in ENF["rows"]) for t in ("NaN", "Infinity", "-Infinity")))
+    bad = [r["label"] for r in ENF["rows"] if attempt(lambda: ee.mail_endpoint_write(r["input"])) is not True]
+    check(f"5e3c31c5 R1: mail_endpoint_write is True on all {len(ENF['rows'])} non-finite endpoint rows", not bad, f"{len(bad)} differ, e.g. {bad[:2]}")
+    bad = [f"{t} {r['label']}" for t in ENF["tools"] for r in ENF["rows"] if attempt(lambda: ee.mail_tool_action(t, r["input"])) != "send"]
+    check(f"5e3c31c5 R1: mail_tool_action is send on all {len(ENF['rows']) * len(ENF['tools'])} tool x row pairs", not bad, f"{len(bad)} differ, e.g. {bad[:2]}")
+    # the spaces around the replaced token (JS side) must not let a neighbour merge: python rejects these, so does JS
+    check("5e3c31c5 R1: -NaN, 1NaN, NaN1 and +Infinity are not JSON for the python reader",
+          all(str(attempt(lambda: ee._walker_json_loads(s))).startswith("JSONDecodeError") for s in ('{"a": -NaN}', '{"a": 1NaN}', '{"a": NaN1}', '{"a": +Infinity}')))
+
     # --- card 5e3c31c5 N2: the shared python reader, huge integers ------------------------------------
     import inspect
     walker_reader = getattr(ee, "_walker_json_loads", None)

@@ -67,6 +67,21 @@
       "accept": false
     },
     {
+      "label": "1NaN (a digit before the constant)",
+      "text": "{\"a\": 1NaN}",
+      "accept": false
+    },
+    {
+      "label": "NaN1 (a digit after the constant)",
+      "text": "{\"a\": NaN1}",
+      "accept": false
+    },
+    {
+      "label": "1-Infinity (a digit before the signed constant)",
+      "text": "{\"a\": 1-Infinity}",
+      "accept": false
+    },
+    {
       "label": "- Infinity",
       "text": "{\"a\": - Infinity}",
       "accept": false
