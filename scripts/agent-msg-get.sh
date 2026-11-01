@@ -19,8 +19,19 @@ TOKEN_FILE="${ROOT}/store/.dashboard-token"
 # Dashboard port: the same chain as agent-msg.sh (MARVEEN_WEB_PORT, WEB_PORT,
 # this install's .env, 3420). It was a literal 3420 (#1869). The trailing `true` keeps
 # a missing .env from ending the script under set -e/pipefail.
-PORT="${MARVEEN_WEB_PORT:-${WEB_PORT:-$(sed -n 's/^WEB_PORT=//p' "$ROOT/.env" 2>/dev/null | head -1 | tr -d ' "'"'"''; true)}}"
-PORT="${PORT:-3420}"
+# The port is checked even when MARVEEN_API_BASE is set (card d4be011e, the f137f980 B3 fix). An unset variable
+# means "next source"; a set but empty one is refused. Digits only (ASCII 0-9), 1-65535, so "1@attacker.local" or
+# "3420/x" can never end up in the URL's host.
+if [ "${MARVEEN_WEB_PORT+set}" = set ]; then PORT="$MARVEEN_WEB_PORT"
+elif [ "${WEB_PORT+set}" = set ]; then PORT="$WEB_PORT"
+elif [ -n "$(sed -n '/^WEB_PORT=/p' "$ROOT/.env" 2>/dev/null | head -1)" ]; then
+  PORT="$(sed -n 's/^WEB_PORT=//p' "$ROOT/.env" 2>/dev/null | head -1 | tr -d ' "'"'"'')"
+else PORT=3420
+fi
+case "$PORT" in ''|*[!0123456789]*) echo "FAIL: the web port must be digits only, 1-65535; nothing was sent." >&2; exit 2 ;; esac
+if [ "${#PORT}" -gt 5 ] || [ "$((10#$PORT))" -lt 1 ] || [ "$((10#$PORT))" -gt 65535 ]; then
+  echo "FAIL: the web port must be 1-65535; nothing was sent." >&2; exit 2
+fi
 [[ -r "$TOKEN_FILE" ]] || { echo "FAIL: no dashboard token at ${TOKEN_FILE}" >&2; exit 3; }
 
 # The HTTP status is checked, not assumed: a 404 body would otherwise print as an empty message.
@@ -40,7 +51,7 @@ fi
 # here too, or the fix stops at the API boundary and the reader is back to
 # acting on a possibly-revoked instruction. Above the content, because a warning
 # under a long body is a warning nobody reads.
-python3 - "$OUT" <<'PY'
+python3 -I - "$OUT" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1], encoding='utf-8'))
 print(f"# msg {m.get('id')}  {m.get('from_agent')} -> {m.get('to_agent')}  status={m.get('status')}")

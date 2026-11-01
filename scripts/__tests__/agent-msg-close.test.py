@@ -378,7 +378,8 @@ check('every python3 call in the helper is isolated (-I)',
 
 # ------------------------------------------------------------------ B3: the port is digits only, 1-65535
 for label, val in (('1@attacker.local', '1@attacker.local'), ('3420/x', '3420/x'), ('empty', ''), ('99999', '99999'),
-                   ('leading space', ' 3420'), ('zero', '0'), ('6 digits', '000001'), ('negative', '-1')):
+                   ('leading space', ' 3420'), ('zero', '0'), ('6 digits', '000001'), ('negative', '-1'),
+                   ('fullwidth digits', '３４２０'), ('Arabic-Indic digits', '٣٤٢٠')):
     for var in ('MARVEEN_WEB_PORT', 'WEB_PORT'):
         r = close(['7', 'done'], extra={var: val})
         check(f'{var}={label!r}: refused, exit 2, no request, no curl call',
