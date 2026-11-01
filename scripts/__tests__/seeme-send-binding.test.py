@@ -501,6 +501,39 @@ reset()
 rc, out = run(TEXT, NUM, "mut-two", script=mut3_path)
 check("mutation control (B2): with the exact-one-number test relaxed the two-number description IS sent", rc == 0 and "SEND" in kinds(), str(LOG) + out)
 
+# --- 12. B6: the consumer refuses the texts the server refuses (format characters, C0 other than \n, DEL, C1) ---
+GOOD_ML = "Kedves Ügyfelünk!\n\nA ma esedékes időpontot áttettük holnap 10:00-ra (árvíztűrő tükörfúrógép).\nÜdv: Fireeng \U0001F600"
+BAD_TEXTS = [
+    ("U+202E", "Holnap 10-kor.‮"), ("U+2066", "Szia ⁦x"), ("U+200B", "Holnap​ 10-kor."),
+    ("U+200D", "Hol‍nap"), ("U+FEFF", "﻿Holnap 10-kor."), ("U+00AD", "Hol­nap"),
+    ("CR", "Holnap\r10-kor."), ("CRLF", "Holnap\r\n10-kor."), ("TAB", "Holnap\t10-kor."),
+    ("NUL", "Holnap\u0000"), ("ESC", "Holnap\u001b[0m"), ("DEL", "Holnap\u007f"),
+    ("U+0085", "Holnap\u0085 10-kor."), ("U+009F", "Holnap\u009f"),
+]
+rc, out = run(GOOD_ML, "06 30 123 4567", None, extra=("--print-anchor",))
+check("B6: a normal multi-line Hungarian text with accents and an emoji still passes (--print-anchor = sha256 of its envelope)",
+      rc == 0 and out.strip() == anchor(NUM, GOOD_ML), out)
+rc, out = run(GOOD_ML, NUM, None, extra=("--print-request", "ezermester"))
+try:
+    req = json.loads(out)
+except Exception:
+    req = {}
+check("B6: --print-request for that text carries the canonical envelope and its hash",
+      rc == 0 and req.get("action_payload") == canon(NUM, GOOD_ML) and req.get("content_hash") == anchor(NUM, GOOD_ML), out)
+for name, bad_text in BAD_TEXTS:
+    # an approval that WOULD match the bad text exactly (hash and payload): only the character rule can stop it
+    approve("b6-" + name, text=bad_text)
+    reset()
+    rc, out = run(bad_text, NUM, "b6-" + name)
+    check("B6: text with %s is refused before any request: no GET, no consume, no send, one line without the text" % name,
+          rc != 0 and LOG == [] and out.count("FAIL:") == 1 and "tiltott karakter" in out and "Holnap" not in out and "Szia" not in out, str(LOG) + out)
+    for flag in (("--print-anchor",), ("--print-request", "ezermester"), ("--dry-run",)):
+        rc, out = run(bad_text, NUM, None, extra=flag)
+        check("B6: text with %s is refused for %s" % (name, flag[0]), rc != 0 and "tiltott karakter" in out and not out.lstrip().startswith("{"), out)
+    reset()
+    rc, out = run(bad_text, "36305552860", None)
+    check("B6: text with %s is refused for an internal number too: no send" % name, rc != 0 and LOG == [], str(LOG) + out)
+
 print()
 print("%d passed, %d failed" % (passed, len(failed)))
 TMPROOT.cleanup()

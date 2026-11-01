@@ -15188,7 +15188,12 @@ function _approvalSmsEnvelope(a) {
 function _approvalDescriptionCell(a) {
   const sms = _approvalSmsEnvelope(a)
   if (sms) {
-    return `<td style="max-width:280px;font-size:12px;white-space:pre-wrap">SMS ${escapeHtml(sms.number)}:\n${escapeHtml(sms.text)}\n<span style="color:var(--text-muted)">${escapeHtml(t('approvals.sms_unverified_description'))} ${escapeHtml(a.action_description)}</span></td>`
+    // B6: every line of the text (empty ones too) carries "│ ", and the header gives the
+    // character and line count, so newlines in the text cannot forge a line of the row.
+    const lines = sms.text.split('\n')
+    const header = t('approvals.sms_text_header', { chars: Array.from(sms.text).length, lines: lines.length })
+    const shown = lines.map(l => '│ ' + escapeHtml(l)).join('\n')
+    return `<td style="max-width:280px;font-size:12px;white-space:pre-wrap">SMS ${escapeHtml(sms.number)}:\n${escapeHtml(header)}\n${shown}\n<span style="color:var(--text-muted)">${escapeHtml(t('approvals.sms_unverified_description'))} ${escapeHtml(a.action_description)}</span></td>`
   }
   return `<td style="max-width:280px;font-size:12px" title="${escapeAttr(a.action_description)}">${escapeHtml(a.action_description.length > 80 ? a.action_description.slice(0, 80) + '...' : a.action_description)}</td>`
 }

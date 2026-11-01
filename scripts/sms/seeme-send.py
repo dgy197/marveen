@@ -87,7 +87,7 @@ BELSO SZAMOK: store/seeme-internal-numbers.json -> {"internal": ["36305552860", 
   A SZAMFORMATUM ITT ES A KULDESNEL IS: '+' NELKuLI nemzetkozi alak (36...), ahogy a
   SeeMe API varja -- lasd kaszap-crm/src/lib/sms.ts normalizeHungarianMobile().
 """
-import argparse, hashlib, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, hashlib, json, os, re, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ENV_FILE = os.path.join(ROOT, "store", "seeme-gateway.env")
@@ -169,6 +169,25 @@ def content_anchor(number, text):
     except UnicodeEncodeError:
         return None
     return hashlib.sha256(raw).hexdigest()
+
+
+_CF_NEWER_THAN_OLD_PYTHON = frozenset([0x0890, 0x0891] + list(range(0x13439, 0x13440)))
+
+
+def forbidden_text_char(text):
+    """B6: the first character an SMS text may not carry, as a 'U+XXXX' label, or None. Same
+    rule as parseSmsPayload (src/web/external-message-payload.ts), so the server and this
+    consumer refuse the same texts: any format character (category Cf: bidi controls,
+    zero-width, BOM, soft hyphen), any C0 control except \\n (\\r and \\t too), DEL, C1.
+    The system python3 may carry an older Unicode table than Node's ICU (measured: 3.9.6 lacks
+    the Cf of U+0890-0891 and U+13439-1343F), so those are listed by hand; the parity test
+    in src/__tests__/external-message-payload.test.ts fails if the two tables drift again."""
+    for ch in text:
+        cp = ord(ch)
+        if (unicodedata.category(ch) == "Cf" or cp in _CF_NEWER_THAN_OLD_PYTHON
+                or (cp < 0x20 and ch != "\n") or 0x7F <= cp <= 0x9F):
+            return "U+%04X" % cp
+    return None
 
 
 def numbers_in(description):
@@ -390,11 +409,19 @@ def main():
     if sys.stdin.isatty():
         die("a szoveg STDIN-rol jon, nem argumentumkent.\n"
             "      pl.: printf '%s' \"A szoveg\" | python3 scripts/sms/seeme-send.py --to 3630...")
-    text = sys.stdin.read()
+    # B6: the raw bytes, not sys.stdin.read(): text mode would turn a \r (or \r\n) into \n
+    # before the control-character check could see it.
+    try:
+        text = sys.stdin.buffer.read().decode("utf-8")
+    except UnicodeDecodeError:
+        die("a szoveg nem ervenyes UTF-8 (STDIN) -- NEM kuldok")
     if not text.strip():
         die("ures a szoveg (STDIN)")
     if len(text) > 1600:
         die(f"a szoveg {len(text)} karakter -- 1600 folott nem kuldok el vakon, ossze kell vonni")
+    bad = forbidden_text_char(text)
+    if bad:
+        die(f"a szoveg tiltott karaktert tartalmaz ({bad}) -- NEM kuldok")
 
     anchor = content_anchor(to, text)
     if anchor is None:
