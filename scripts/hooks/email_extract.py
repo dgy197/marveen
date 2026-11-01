@@ -566,6 +566,17 @@ _FORWARD_WALK_MAX_DEPTH = 12
 _FORWARD_WALK_MAX_NODES = 5000
 _FORWARD_JSON_MAX_CHARS = 100000
 _FORWARD_JSON_START = re.compile(r"[ \t\n\r]*[{\[\"]")
+
+
+def _walker_json_loads(text: str):
+    """The JSON reader of the three walkers (_has_forward_key, _has_forward_key_name, mail_endpoint_write).
+    json.loads with integers read as float: an integer literal of more than 4300 digits makes int() raise
+    ValueError on Python 3.9.14+ / 3.10.7+ (int max str digits), which the walkers would step over
+    (fail-open) while the JS twin walks it; as a float it parses on every version, like JS (Number, Infinity
+    when huge). The walkers read keys, strings and containers only, never number values (card 5e3c31c5); bool
+    and null are not affected. Bare NaN / Infinity / -Infinity are accepted, as json.loads always did; the JS
+    twin accepts the same language (parseWalkerJson in scripts/email-send-gate.mjs)."""
+    return json.loads(text, parse_int=float)
 _FORWARD_ADDRESS = re.compile(r"[^@]@[^@]")
 _GLUED_READ_VERB = re.compile(r"[a-z0-9]{1,2}(get|delete)")
 
@@ -635,7 +646,7 @@ def _has_forward_key(value) -> bool:
                 if len(v) > _FORWARD_JSON_MAX_CHARS:
                     return True
                 try:
-                    parsed = json.loads(v)
+                    parsed = _walker_json_loads(v)
                 except RecursionError:
                     return True
                 except ValueError:
@@ -1302,7 +1313,7 @@ def _has_forward_key_name(value, value_words: bool = True, strict: bool = False,
                 if len(v) > _FORWARD_JSON_MAX_CHARS:
                     return True
                 try:
-                    parsed = json.loads(v)
+                    parsed = _walker_json_loads(v)
                 except RecursionError:
                     return True
                 except ValueError:
@@ -1538,7 +1549,7 @@ def mail_endpoint_write(tool_input) -> bool:
                 if len(v) > _FORWARD_JSON_MAX_CHARS:
                     return True
                 try:
-                    parsed = json.loads(v)
+                    parsed = _walker_json_loads(v)
                 except RecursionError:
                     return True
                 except ValueError:
