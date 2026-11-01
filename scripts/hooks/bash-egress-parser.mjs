@@ -1802,10 +1802,17 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
   }
 }
 
+// Backslash-newline is a line continuation only behind an ODD run of backslashes: `a\\<NL>cmd` is an
+// escaped backslash, then a newline that ENDS the command (card 44167c0b, B5). `withText` replaces the
+// continuation (the last backslash and the newline).
+function joinContinuations(raw, withText) {
+  return raw.replace(/(\\+)(\r?\n)/g, (m, bs) => (bs.length % 2 === 1 ? bs.slice(0, -1) + withText : m))
+}
+
 // Check raw input, including feeds, before any transformation can hide an ANSI prefix.
 // Only a complete literal echo/printf command is exempt; unknown execution contexts deny.
 function rawAnsiInputDeny(raw) {
-  const joined = raw.replace(/\\\r?\n/g, '')
+  const joined = joinContinuations(raw, '')
   if (!raw.includes("$'") && !joined.includes("$'")) return false
   if (/\\\r?\n/.test(raw)) return true
   const literal = /^(?:[^\s'"\\$`;|&<>(){}*?\[\]#]|\\[^\r\n]|\$'(?:[^'\\]|\\[^\r\n])*'|'[^']*'|"(?:[^"\\$`]|\\[^\r\n]|\$\$|\$')*")+/
@@ -1830,7 +1837,7 @@ function classifyCommand(command, depth, vendorHosts, vendorDomains, stdinTainte
   if (depth === 0) fnMemo = new Map()
   const raw = String(command ?? '')
   if (rawAnsiInputDeny(raw)) return { deny: true, reason: 'raw-ansi-execution-context', hosts: [] }
-  const norm = raw.replace(/\\\r?\n/g, ' ')
+  const norm = joinContinuations(raw, ' ')
   const lifted = liftSubstitutions(norm)
   const { inners, innerAts, herestrings, bodies } = lifted
   let orig = lifted.stripped

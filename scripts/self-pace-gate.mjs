@@ -362,7 +362,10 @@ function dquoteEnd(src, from) {
 
 export function maskInertLiterals(command, heredocs, lenient = false, diagnostic = {}) {
   diagnostic.reason = null
-  const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
+  // A backslash-newline joins the lines only behind an ODD run of backslashes (`a\\<NL>b` is an escaped
+  // backslash and then a real newline); the egress parser's own join counts the same way, and a longer
+  // or shorter result here would read as an unparseable command (card 44167c0b, B5).
+  const src = String(command ?? '').replace(/(\\+)(\r?\n)/g, (m, bs) => (bs.length % 2 === 1 ? bs.slice(0, -1) + ' ' : m))
   let cur = ''
   let i = 0
 

