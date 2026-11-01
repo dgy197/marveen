@@ -30,10 +30,16 @@ export interface GateDecision {
   confidence: number
   /** Sanitised: NFKC, no Cc/Cf, no nonce, re-masked, single line, <= 200 chars. */
   reason: string
+  /** g2: set when a non-CREATE answer was turned into CREATE because its own reason says the entries do not overlap. */
+  downgraded?: 'reason_says_new'
 }
 export type ParseResult = { ok: true; decision: GateDecision } | { ok: false; error: 'bad_output' }
 
 const BAD: ParseResult = { ok: false, error: 'bad_output' }
+
+// The model's own words that the new entry is NOT the earlier one (English and Hungarian), measured on the g1
+// shadow week. Narrow on purpose: "same setting", "replaces the earlier" must not match.
+const REASON_SAYS_NEW = /\bno (?:direct |clear )?overlap\b|\bnot (?:the same|a restatement)\b|\bdoes not (?:clearly )?(?:replace|restate|confirm)\b|\b(?:concern|cover|describe)s? different\b|\bunrelated\b|nincs (?:közvetlen |egyértelmű )?átfedés|\bnem ugyanaz|\bmás(?:ik)? (?:tény|projekt|ügy)ről\b/i
 
 class Strict extends Error {}
 
@@ -181,8 +187,13 @@ export function parseGateOutput(raw: unknown, offered: readonly string[], nonce?
   const reason = obj.reason
   if (typeof reason !== 'string' || Array.from(reason).length > MAX_REASON_CHARS) return BAD
 
+  const clean = sanitiseReason(reason, nonce)
+  // g2 (card 3e9f6c28, b2): an answer whose own reason says the entries differ is a CREATE, whatever its op.
+  if (op !== 'CREATE' && REASON_SAYS_NEW.test(clean)) {
+    return { ok: true, decision: { op: 'CREATE', target: null, confidence, reason: clean, downgraded: 'reason_says_new' } }
+  }
   return {
     ok: true,
-    decision: { op: op as ModelOp, target: op === 'CREATE' ? null : (target as string), confidence, reason: sanitiseReason(reason, nonce) },
+    decision: { op: op as ModelOp, target: op === 'CREATE' ? null : (target as string), confidence, reason: clean },
   }
 }
