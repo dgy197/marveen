@@ -28,6 +28,7 @@ const T = 'tm' + 'ux'
 const S = 'send' + '-keys'
 const K = '/api/kan' + 'ban/abc/move'
 const TOK = '$(cat /Users/gyorgydecsi/marveen/store/.dashboard-token)'
+const DB = '$' + '{' // opens a brace expansion without a brace pair in the source line
 
 // 1. ATTACK: the shell runs the dangerous line, the gate must DENY. 9 of the 11 are gaps on 78b178b2
 // (H1 H2 H3 H4 D1 D2 t1 t2 t3); K1 and K6 are already DENY there and stay as regression guards.
@@ -129,7 +130,8 @@ export const FLEET_CASES = [
 // against over-fixing: a fix that stops stripping would pass every ATTACK row and break the false-positive
 // protection). `fn` names the exported stripper; `out` is its exact output (measured on 78b178b2).
 export const STRIP_CONTRACT_CASES = [
-  { id: 'S1-heredoc', fn: 'stripHeredocBodies', command: `git commit -F - <<${Q}EOF${Q}${NL}at the same time we fixed the parser${NL}EOF`, out: `git commit -F - <<${Q}EOF${Q}${NL}EOF` },
+  // card a6422462 (Q5): the owner is tee, not git (git is no data owner any more); the contract (a data body is stripped) is unchanged
+  { id: 'S1-heredoc', fn: 'stripHeredocBodies', command: `tee /tmp/f <<${Q}EOF${Q}${NL}at the same time we fixed the parser${NL}EOF`, out: `tee /tmp/f <<${Q}EOF${Q}${NL}EOF` },
   { id: 'S2-data', fn: 'stripDataPayloads', command: `curl -X POST http://localhost:3420/api/messages -d ${Q}{"to":"dev4","content":"x; tmux y"}${Q}`, out: `curl -X POST http://localhost:3420/api/messages -d ${Q}${Q}` },
   { id: 'S3-commit', fn: 'stripGitCommitMessages', command: `git commit -m "add batch endpoint + ${C} docs"`, out: 'git commit -m ""' },
   { id: 'S4-prose', fn: 'stripProseArguments', command: `gh pr create --body ${Q}runs at midnight, cron style${Q}`, out: `gh pr create --body ${Q}${Q}` },
@@ -245,14 +247,24 @@ export const HEREDOC_DATA_CASES = [
   { id: 'F3-curl-binary-stdin', command: `curl -s -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" -H "Authorization: Bearer ${TOK}" --data-binary @- <<'JSON'${NL}{"from":"ezermester","to":"brainy","content":"the ${T} ${S} path is blocked"}${NL}JSON`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'm1 FH' },
   { id: 'F4-py-script-subst', command: `python3 /Users/gyorgydecsi/marveen/scripts/x.py --note "$(cat <<'EOF'${NL}at the same time the ${T} ${S} path${NL}EOF${NL})"`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'm1 FH' },
   { id: 'F5-cat-pipe-grep', command: `cat <<'EOF' | grep -c keys${NL}${T} ${S} notes${NL}EOF`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'm1 FH' },
-  { id: 'F6-git-F', command: `git commit -F - <<'EOF'${NL}fix: the ${T} ${S} path${NL}EOF`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'm1 FH' },
+  // card a6422462 (Q5, stricter): git is no data owner any more (a hook, a filter or a signer of the repository runs on a commit), so the body stays visible: ALLOW -> DENY, data true -> false
+  { id: 'F6-git-F', command: `git commit -F - <<'EOF'${NL}fix: the ${T} ${S} path${NL}EOF`, expect: 'DENY', data: false, why: 'owner', marker: `${T} ${S}`, source: 'm1 FH', note: 'accepted over-block (a6422462): git is no data owner' },
   { id: 'F7-gh-body-subst', command: `gh pr create --title x --body "$(cat <<'EOF'${NL}## Summary${NL}- the ${T} ${S} path is blocked${NL}EOF${NL})"`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'm1 FH' },
   { id: 'F8-assign-subst', command: `MSG=$(cat <<'EOF'${NL}the ${T} ${S} path${NL}EOF${NL})`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'm1 FH' },
   { id: 'F9-agentmsg-direct-owner', command: `bash ${MSG} ezermester brainy - <<'EOF'${NL}the ${T} ${S} path${NL}EOF`, expect: 'DENY', data: false, why: 'owner', marker: `${T} ${S}`, source: 'm1 FH', note: 'pre-existing over-block on the head: a script-file interpreter as the direct owner is never provably non-executing' },
   { id: 'F10-cat-pipe-agentmsg-plain', command: `cat <<'EOF' | bash ${MSG} ezermester brainy -${NL}report: tests green, nothing blocked${NL}EOF`, expect: 'ALLOW', data: true, why: 'data', marker: 'tests green', source: 'm1 FH' },
   { id: 'F11-echo-subst', command: `echo "$(cat <<'EOF'${NL}${T} ${S} notes${NL}EOF${NL})"`, expect: 'DENY', data: false, why: 'subst', marker: `${T} ${S}`, source: 'm1 FH', note: 'accepted over-block (V2): echo is not a data owner; was ALLOW on the head' },
   { id: 'F12-cat-to-file', command: `cat > /tmp/n.md <<'EOF'${NL}the ${T} ${S} path${NL}EOF`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'm1 FH' },
-  { id: 'F13-git-commit-m-subst-at', command: `git commit -m "$(cat <<'EOF'${NL}fix${NL}${NL}at the same time we clear the cache${NL}EOF${NL})"`, expect: 'ALLOW', data: true, why: 'data', marker: 'at the same time we clear', source: 'm1 FH' },
+  // card a6422462 (Q5, stricter): git is no data command around a $( ) either, so the body is no longer blanked: data true -> false. The verdict stays ALLOW (the prose is no trigger text), only the visibility of the body changes.
+  { id: 'F13-git-commit-m-subst-at', command: `git commit -m "$(cat <<'EOF'${NL}fix${NL}${NL}at the same time we clear the cache${NL}EOF${NL})"`, expect: 'ALLOW', data: false, why: 'subst', marker: 'at the same time we clear', source: 'm1 FH', note: 'a6422462: git is no data consumer, the body stays visible (verdict unchanged)' },
+  // card a6422462 N0: ALLOW controls of the stricter rule (the new tables and prefixes must not take a plain data heredoc away)
+  { id: 'F14-cat-then-curl-brace-arg', command: `cat <<'EOF'${NL}the ${T} ${S} path${NL}EOF${NL}curl -s http://localhost:3420/api/memories/${DB}ID}`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'a6422462 control', note: 'a brace-expansion argument is one argument word, not a command position' },
+  { id: 'F15-case-pattern-star', command: `case "$1" in${NL}  a) echo a ;;${NL}  *) echo other ;;${NL}esac${NL}cat <<'EOF'${NL}the ${T} ${S} path${NL}EOF`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'a6422462 control', note: 'the case pattern *) is no command word' },
+  { id: 'F16-grep-subst-arg', command: `grep -c x "$(cat <<'EOF'${NL}the ${T} ${S} path${NL}EOF${NL})"`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'a6422462 control', note: 'a "$(cat ...)" argument of a data command' },
+  { id: 'F17-test-brackets', command: `[ -f /tmp/x ]${NL}[[ -n "$X" ]]${NL}cat <<'EOF'${NL}the ${T} ${S} path${NL}EOF`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'a6422462 control', note: '[ and [[ are tests, not name-binding words' },
+  { id: 'F18-group-pipe-grep-nontable', command: `{ cat <<'EOF'${NL}the ${T} ${S} path${NL}EOF${NL}} | grep -c keys`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'a6422462 control', note: 'sibling of K-group-pipe-grep: the grep argument is not a table name' },
+  { id: 'F19-tee-host-f6-body', command: `tee /tmp/f <<'EOF'${NL}fix: the ${T} ${S} path${NL}EOF`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'a6422462 control', note: 'sibling of F6-git-F: a data owner with the same body' },
+  { id: 'F20-pure-assignment-subst', command: `x=$(cat <<'EOF'${NL}the ${T} ${S} path${NL}EOF${NL})`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'a6422462 control', note: 'a pure assignment stays data' },
 ]
 
 // 8. GOV: the heredoc shapes of governance-gates.test.ts as m1 replays them (22 rows), gate verdict only (the 17
@@ -293,7 +305,8 @@ export const HEREDOC_LIST_CASES = [
 // 9b. KEEP (review r1): the new proof conditions must not take a plain data heredoc away. A compound whose output goes
 // on into a DATA consumer, and the fleet's own absolute-path message idiom around a `$( )` and a pipe, stay data.
 export const HEREDOC_KEEP_CASES = [
-  { id: 'K-group-pipe-grep', command: `{ cat <<'EOF'${NL}the ${T} ${S} path${NL}EOF${NL}} | grep -c path`, expect: 'ALLOW', data: true, marker: `${T} ${S}`, source: 'review r1 B1' },
+  // card a6422462 (Q5, stricter): `path` is the name of the zsh search-path array, so a bare `path` word makes the name resolution of the command unprovable: ALLOW -> DENY, data true -> false
+  { id: 'K-group-pipe-grep', command: `{ cat <<'EOF'${NL}the ${T} ${S} path${NL}EOF${NL}} | grep -c path`, expect: 'DENY', data: false, why: 'pipe', marker: `${T} ${S}`, source: 'review r1 B1', note: 'accepted over-block (a6422462): the word path is the zsh search-path table' },
   { id: 'K-loop-pipe-wc', command: `for i in 1; do cat <<'EOF'${NL}the ${T} ${S} path${NL}EOF${NL}done | wc -l`, expect: 'ALLOW', data: true, marker: `${T} ${S}`, source: 'review r1 B1' },
   { id: 'K-gh-pr-body-file', command: `gh pr create --title x --body-file - <<'EOF'${NL}the ${T} ${S} path${NL}EOF`, expect: 'ALLOW', data: true, marker: `${T} ${S}`, source: 'review r1 B3' },
   { id: 'K-usr-bin-cat', command: `/usr/bin/cat <<'EOF'${NL}the ${T} ${S} path${NL}EOF`, expect: 'ALLOW', data: true, marker: `${T} ${S}`, source: 'review r1 B3' },
@@ -327,4 +340,71 @@ export const INEXACT_CASES = [
   { id: 'X2-curl-d-open-sq', command: `curl -s -X POST http://localhost:3420/api/messages -d ${Q}{"to":"x"${NL}${C} -r` },
   { id: 'X3-gh-body-open-dq', command: `gh pr create --title x --body "fix${NL}${C} -r` },
   { id: 'X4-commit-F-open-heredoc', command: `git commit -F - <<${Q}EOF${Q}${NL}at the same time we fixed the parser${NL}no terminator line` },
+]
+
+// =============================================================================================================
+// Card a6422462, node N0: the "heredoc body is data" rule is narrowed (findings B6 and B7 of cf5732c9). A body is
+// data only when the meaning of every command word is fixed by the text of the command itself, and the owner is
+// no program that reads configuration. Rows are RED on 090d8b3f. Same rules as above: strings only, nothing here is
+// executed, no backslash in any fixture (BS builds the one ANSI-C escape that is needed).
+//
+// Every BINDS row: a data owner (cat) with a quoted heredoc whose body holds a trigger line, plus a command in the
+// same text that changes what a command word means (or runs a string, or loads code) at run time. The base gate
+// calls the body data (ALLOW); the rule requires DENY, heredocBodyIsData false, and the body kept by the stripper.
+// =============================================================================================================
+const BQ = String.fromCharCode(96)
+const BODY =`${NL}${C} -r${NL}EOF`
+const CAT = `cat <<${Q}EOF${Q}${BODY}`
+export const HEREDOC_BINDS_CASES = [
+  { id: 'B-hash-path', command: `hash -p /tmp/x cat${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-path-assign', command: `PATH=/tmp/x:$PATH${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-path-prefix', command: `PATH=/tmp/x cat <<${Q}EOF${Q}${BODY}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-export-path', command: `export PATH=/tmp/x:$PATH${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-source-file', command: `source /tmp/defs.sh${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-dot-file', command: `. /tmp/defs.sh${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-eval-var', command: `eval "$DEF"${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-trap-string', command: `trap ${Q}true${Q} DEBUG${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-zmodload', command: `zmodload zsh/files${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-enable-load', command: `enable -f /tmp/x.so cat${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-zsh-functions-elem', command: `functions[cat]=bash${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-zsh-commands-elem', command: `commands[cat]=/tmp/x${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-zsh-commands-default', command: `: ${DB}commands[cat]::=/tmp/x}${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-bash-cmds-elem', command: `BASH_CMDS[cat]=/tmp/x${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-bash-aliases-elem', command: `BASH_ALIASES[cat]=bash${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-var-command-word', command: `$RUN${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-subst-command-word', command: `$(echo ls) -l${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-ansi-command-word', command: `$${Q}${BS}x6c${BS}x73${Q} -l${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-nameref', command: `declare -n cat=other${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-printf-v', command: `printf -v x ${Q}%s${Q} y${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-indirect-assign-bash', command: `: ${DB}!ref:=y}${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-indirect-assign-zsh', command: `: ${DB}(P)ref:=y}${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-binder-in-dq-subst', command: `echo "$(hash -p /tmp/x cat)"${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-binder-in-backtick', command: `echo ${BQ}hash -p /tmp/x cat${BQ}${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'B-binder-after-body-in-loop', command: `${CAT}${NL}for i in 1; do${NL}hash -p /tmp/x cat${NL}done`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6', note: 'the order does not matter: the binder is in the same command' },
+]
+
+// An assignment in front of the command word that takes the body (owner, pipe stage, or the command around a $( ))
+// is a configuration the program reads (B6, B7): that command is no data consumer.
+export const HEREDOC_PREFIX_CASES = [
+  { id: 'P-owner-prefix', command: `X=1 cat <<${Q}EOF${Q}${BODY}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'P-env-prefix-owner', command: `env X=1 cat <<${Q}EOF${Q}${BODY}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'P-pipe-stage-prefix', command: `cat <<${Q}EOF${Q} | X=1 tee /tmp/f${BODY}`, expect: 'DENY', why: 'pipe', keep: `${C} -r`, source: 'a6422462 B6' },
+  { id: 'P-subst-consumer-prefix', command: `X=1 gh pr create --title x --body "$(cat <<${Q}EOF${Q}${NL}${C} -r${NL}EOF${NL})"`, expect: 'DENY', why: 'subst', keep: `${C} -r`, source: 'a6422462 B6' },
+]
+
+// git is no data owner, whatever the subcommand: a commit, a tag, a note, an am or an apply updates a ref or the index,
+// and the repository's hooks (reference-transaction, post-commit ...), filters and signers are programs that run
+// (B7). The globally optioned forms (-C, -c, --git-dir) were already DENY on the base and stay as guards.
+export const HEREDOC_GIT_CASES = [
+  { id: 'G-commit-F', command: `git commit -F - <<${Q}EOF${Q}${BODY}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B7' },
+  { id: 'G-tag-F', command: `git tag -a v1 -F - <<${Q}EOF${Q}${BODY}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B7' },
+  { id: 'G-notes-add-F', command: `git notes add -F - <<${Q}EOF${Q}${BODY}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B7' },
+  { id: 'G-am', command: `git am <<${Q}EOF${Q}${BODY}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B7' },
+  { id: 'G-stash-push', command: `git stash push <<${Q}EOF${Q}${BODY}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B7' },
+  { id: 'G-apply', command: `git apply - <<${Q}EOF${Q}${BODY}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B7' },
+  { id: 'G-hash-object', command: `git hash-object -w --stdin <<${Q}EOF${Q}${BODY}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B7' },
+  { id: 'G-prefix-commit', command: `GIT_EDITOR=true git commit -F - <<${Q}EOF${Q}${BODY}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B7' },
+  { id: 'G-opt-C', command: `git -C /tmp/r commit -F - <<${Q}EOF${Q}${BODY}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B7', note: 'guard: already DENY on the base' },
+  { id: 'G-opt-c', command: `git -c core.hooksPath=/tmp/h commit -F - <<${Q}EOF${Q}${BODY}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B7', note: 'guard: already DENY on the base' },
+  { id: 'G-opt-git-dir', command: `git --git-dir=/tmp/r/.git commit -F - <<${Q}EOF${Q}${BODY}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B7' },
 ]

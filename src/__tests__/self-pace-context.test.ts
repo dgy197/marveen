@@ -29,7 +29,7 @@ import * as gate from '../../scripts/self-pace-gate.mjs'
 // @ts-expect-error -- plain .mjs hook script, no types
 import * as lexer from '../../scripts/shell-line-join.mjs'
 // @ts-expect-error -- plain .mjs fixture module, no types
-import { NL, Q, ATTACK_CASES, STRIPPER_UNCHANGED_IDS, INTERP_CASES, OPLINE_CASES, FLEET_CASES, STRIP_CONTRACT_CASES, HEREDOC_OWNER_CASES, HEREDOC_LIMIT_CASES, HEREDOC_DATA_CASES, HEREDOC_GOV_CASES, HEREDOC_LIST_CASES, HEREDOC_KEEP_CASES, SUBST_CASES, COMMIT_COMMENT_CASES, INEXACT_CASES } from './fixtures/self-pace-context/cases.mjs'
+import { NL, Q, ATTACK_CASES, STRIPPER_UNCHANGED_IDS, INTERP_CASES, OPLINE_CASES, FLEET_CASES, STRIP_CONTRACT_CASES, HEREDOC_OWNER_CASES, HEREDOC_LIMIT_CASES, HEREDOC_DATA_CASES, HEREDOC_GOV_CASES, HEREDOC_LIST_CASES, HEREDOC_KEEP_CASES, SUBST_CASES, COMMIT_COMMENT_CASES, INEXACT_CASES, HEREDOC_BINDS_CASES, HEREDOC_PREFIX_CASES, HEREDOC_GIT_CASES } from './fixtures/self-pace-context/cases.mjs'
 
 type Row = { id: string; command: string; expect: 'DENY' | 'ALLOW'; note?: string; keep?: string; fn?: string; out?: string; why?: string; data?: boolean; marker?: string }
 type StripFn = 'stripHeredocBodies' | 'stripDataPayloads' | 'stripGitCommitMessages' | 'stripProseArguments'
@@ -225,6 +225,9 @@ const dataRows = HEREDOC_DATA_CASES as Row[]
 const govRows = HEREDOC_GOV_CASES as Row[]
 const listRows = HEREDOC_LIST_CASES as Row[]
 const keepRows = HEREDOC_KEEP_CASES as Row[]
+const bindsRows = HEREDOC_BINDS_CASES as Row[]
+const prefixRows = HEREDOC_PREFIX_CASES as Row[]
+const gitRows = HEREDOC_GIT_CASES as Row[]
 const substRows = SUBST_CASES as Array<{ id: string; command: string; substs: Array<{ kind: string; open: string; close: string }> }>
 const commentRows = COMMIT_COMMENT_CASES as Row[]
 const inexactRows = INEXACT_CASES as Row[]
@@ -274,7 +277,8 @@ describe('(g) heredocBodyIsData(ctx, heredoc): the decision per heredoc', () => 
   })
   // reason labels: owner (the redirect owner is no provable data consumer), pipe (a pipe stage on the operator line),
   // subst (an enclosing $( ) whose command is no data consumer), procsubst (<( ) / >( )), data (the body is data)
-  for (const row of [...ownerRows, ...dataRows, ...listRows, ...keepRows]) {
+  // card a6422462: the BINDS / PREFIX / GIT rows carry no `data` field, so the decision the rule requires is false
+  for (const row of [...ownerRows, ...dataRows, ...listRows, ...keepRows, ...bindsRows, ...prefixRows, ...gitRows]) {
     const want = row.data === true
     it(`${row.id} [${row.why}]: data=${want}`, () => {
       expect(typeof gate.heredocBodyIsData, 'heredocBodyIsData is exported').toBe('function')
@@ -308,7 +312,8 @@ describe('(h) shellContext(x).substs: the frames the decision is made from (N1)'
   }
   const all = [...ownerRows, ...limitRows, ...dataRows, ...govRows, ...listRows]
   it('E6 on the new corpus: text equals joinShellLines, exact is unchanged, the frames are valid, ordered and nested or disjoint', () => {
-    expect(all.length).toBe(42 + 2 + 13 + 22 + 24)
+    // card a6422462: the data table grew by the 7 ALLOW controls (F14-F20), 13 -> 20
+    expect(all.length).toBe(42 + 2 + 20 + 22 + 24)
     for (const row of all) {
       const info: { exact?: boolean } = {}
       const joined = lexer.joinShellLines(row.command, info) as string
@@ -406,8 +411,8 @@ describe('(j) maskInertLiterals keepRunBodies: runsBody and the visible or maske
 // (k) FH rows (E4, E5/V2): data heredocs of the fleet that mention trigger words; GOV rows (E2)
 // ---------------------------------------------------------------------------------------------------------
 describe('(k) FH rows: a data heredoc keeps its verdict, a visible one is DENY', () => {
-  it('the corpus has the 13 FH rows', () => {
-    expect(dataRows.length).toBe(13)
+  it('the corpus has the 20 FH rows (13 of card 6f27c86a + the 7 ALLOW controls F14-F20 of card a6422462)', () => {
+    expect(dataRows.length).toBe(20)
   })
   for (const row of dataRows) {
     it(`${row.id}: ${row.expect}${row.note ? ` (${row.note})` : ''}`, () => {
@@ -425,9 +430,10 @@ describe('(k) KEEP rows (review r1): the stronger proof conditions leave a plain
     expect(keepRows.length).toBe(4)
   })
   for (const row of keepRows) {
-    it(`${row.id}: ${row.expect} and the body is stripped`, () => {
+    // card a6422462 (Q5): K-group-pipe-grep is now an accepted over-block (data false): DENY and the body stays visible
+    it(`${row.id}: ${row.expect} and the body is ${row.data === false ? 'visible' : 'stripped'}`, () => {
       expect(verdictOf(row.command), JSON.stringify(row.command)).toBe(row.expect)
-      expect((gate.stripHeredocBodies(row.command) as string).includes(row.marker as string), JSON.stringify(row.command)).toBe(false)
+      expect((gate.stripHeredocBodies(row.command) as string).includes(row.marker as string), JSON.stringify(row.command)).toBe(row.data === false)
     })
   }
 })
@@ -491,5 +497,106 @@ describe('(n) structural: heredocBodyIsData is the one rule, built on ctx.substs
 
   it('the old rule is gone: no heredocOwnerRunsBody in any code line', () => {
     expect(withoutComments(src)).not.toContain('heredocOwnerRunsBody')
+  })
+})
+
+// =============================================================================================================
+// Card a6422462, node N0: the "heredoc body is data" rule is narrowed (B6 runtime redefinition, B7 git owners).
+// RED on 090d8b3f: the 25 BINDS rows, the 4 PREFIX rows and the 11 GIT rows (the globally optioned `git -C` and
+// `git -c` rows are green guards, `--git-dir=` is RED), F6-git-F and K-group-pipe-grep (Q5, now an accepted
+// over-block), F13 (data flag, git is no data consumer around a $( )), the git commit -F - governance row, the
+// structural checks.
+// Green guards: the ALLOW controls F14-F20.
+// =============================================================================================================
+describe('(o) a6422462: a body whose owner cannot be proved static or config-free stays visible', () => {
+  it('the corpus has the 25 BINDS, 4 PREFIX and 11 GIT rows', () => {
+    expect(bindsRows.length).toBe(25)
+    expect(prefixRows.length).toBe(4)
+    expect(gitRows.length).toBe(11)
+  })
+  for (const row of [...bindsRows, ...prefixRows, ...gitRows]) {
+    it(`${row.id} [${row.why}]: gateDecision says DENY${row.note ? ` (${row.note})` : ''}`, () => {
+      expect(verdictOf(row.command), JSON.stringify(row.command)).toBe('DENY')
+    })
+    it(`${row.id}: stripHeredocBodies keeps the body (${JSON.stringify(row.keep)})`, () => {
+      expect(gate.stripHeredocBodies(row.command) as string, JSON.stringify(row.command)).toContain(row.keep as string)
+    })
+    it(`${row.id}: keepRunBodies:true leaves the body visible and says runsBody`, () => {
+      const { masked, heredocs } = maskOf(row.command, { keepRunBodies: true })
+      // a mask the gate refuses (null, e.g. a double-quoted substitution) is a refusal, not a masked body
+      if (masked === null) return
+      expect(heredocs.length).toBe(1)
+      expect(heredocs[0].runsBody).toBe(true)
+      expect(masked.includes(row.keep as string), JSON.stringify(masked)).toBe(true)
+    })
+  }
+})
+
+describe('(o) a6422462: the ALLOW controls F14-F20 keep their body data', () => {
+  const controls = dataRows.filter((r) => /^F(14|15|16|17|18|19|20)-/.test(r.id))
+  it('the 7 controls are in the data table', () => {
+    expect(controls.map((r) => r.id.split('-')[0])).toEqual(['F14', 'F15', 'F16', 'F17', 'F18', 'F19', 'F20'])
+  })
+  // F16 is a double-quoted substitution: the mask refuses it on the base too (like O8 and O9 in the (j) table), so only
+  // its verdict, its data flag and the stripper are asserted (blocks (g) and (k))
+  for (const row of controls.filter((r) => !/^F16-/.test(r.id))) {
+    it(`${row.id}: ALLOW and the body is masked even with keepRunBodies:true`, () => {
+      expect(verdictOf(row.command), JSON.stringify(row.command)).toBe('ALLOW')
+      const { masked, heredocs } = maskOf(row.command, { keepRunBodies: true })
+      expect(masked, 'the mask is not refused').not.toBeNull()
+      expect(heredocs[0].runsBody).toBe(false)
+      expect((masked as string).includes(row.marker as string)).toBe(false)
+    })
+  }
+})
+
+// ---------------------------------------------------------------------------------------------------------
+// (p) structural: the two closed lists and the owner list (spec E7)
+// ---------------------------------------------------------------------------------------------------------
+describe('(p) a6422462 structural: closed, exported, frozen name lists; git is no data owner', () => {
+  const src = readFileSync(new URL('../../scripts/self-pace-gate.mjs', import.meta.url), 'utf8')
+  const code = src.split('\n').filter((line) => !/^\s*\/\//.test(line)).map((line) => line.replace(/\s\/\/\s.*$/, '')).join('\n')
+  const members = (name: string): string[] => {
+    const v = gate[name] as Iterable<string> | undefined
+    expect(v, `${name} is exported by self-pace-gate.mjs`).toBeDefined()
+    return [...(v as Iterable<string>)].sort()
+  }
+  // the verbs that bind a name, define code from a string, or load code (bash 5 and zsh 5); a function definition,
+  // alias, `printf -v` and `set -A` are covered by their own rules
+  const BINDING_WORDS = ['eval', 'source', '.', 'hash', 'enable', 'builtin', 'zmodload', 'autoload', 'functions', 'fc', 'trap', 'disable', 'emulate', 'read', 'mapfile', 'readarray', 'getopts', 'vared', 'zparseopts', 'let', 'declare', 'typeset', 'local', 'export', 'readonly']
+  // the names the command lookup or the shell's code hooks read: upper-case (bash and zsh) and the zsh tables
+  const LOOKUP = ['PATH', 'FPATH', 'BASH_CMDS', 'BASH_ALIASES', 'BASH_ENV', 'ENV', 'PS4', 'PROMPT_COMMAND', 'path', 'fpath', 'commands', 'functions', 'aliases', 'galiases', 'saliases', 'builtins', 'reswords', 'dis_aliases', 'dis_galiases', 'dis_saliases', 'dis_functions', 'dis_builtins', 'dis_reswords']
+
+  it('NAME_BINDING_WORDS is exported, frozen, and has exactly the agreed members', () => {
+    expect(members('NAME_BINDING_WORDS')).toEqual([...BINDING_WORDS].sort())
+    expect(Object.isFrozen(gate.NAME_BINDING_WORDS)).toBe(true)
+  })
+  it('LOOKUP_NAMES is exported, frozen, and has exactly the agreed members (one list, upper- and lower-case together)', () => {
+    expect(members('LOOKUP_NAMES')).toEqual([...LOOKUP].sort())
+    expect(Object.isFrozen(gate.LOOKUP_NAMES)).toBe(true)
+  })
+  it('git is no data owner: not in DATA_OWNERS, no GIT_DATA_SUBCOMMANDS, not in OPTION_SENSITIVE_OWNERS', () => {
+    const owners = /const DATA_OWNERS = new Set\(\[([^\]]*)\]\)/.exec(code)
+    expect(owners, 'DATA_OWNERS is declared').not.toBeNull()
+    expect((owners as RegExpExecArray)[1]).not.toMatch(/['"]git['"]/)
+    const optionSensitive = /const OPTION_SENSITIVE_OWNERS = new Set\(\[([^\]]*)\]\)/.exec(code)
+    expect(optionSensitive, 'OPTION_SENSITIVE_OWNERS is declared').not.toBeNull()
+    expect((optionSensitive as RegExpExecArray)[1]).not.toMatch(/['"]git['"]/)
+    expect(code).not.toContain('GIT_DATA_SUBCOMMANDS')
+  })
+  it('bindsNames is the one check of the name resolution: wholeCommandBlocksData calls it, it has no `<<` pattern and counts no brackets', () => {
+    const fn = (name: string): string => {
+      const m = new RegExp(String.raw`(?:^|\n)(?:export )?function ${name}\(`).exec(code)
+      if (!m) return ''
+      const end = code.indexOf('\n}\n', m.index + 1)
+      return code.slice(m.index, end === -1 ? code.length : end)
+    }
+    expect(fn('bindsNames').length, 'bindsNames exists in self-pace-gate.mjs').toBeGreaterThan(80)
+    expect(fn('wholeCommandBlocksData')).toMatch(/\bbindsNames\(/)
+    expect(fn('bindsNames')).not.toContain('<<')
+    expect(fn('bindsNames')).not.toMatch(/charCodeAt|\b(?:depth|level|nest\w*)\s*(?:\+\+|--|\+=|-=)/)
+    // definesFunctionOrAlias and bindsNames read the same code-level text: no private quote-stripping copy any more
+    expect(fn('definesFunctionOrAlias').length, 'definesFunctionOrAlias exists').toBeGreaterThan(40)
+    expect(fn('definesFunctionOrAlias')).not.toMatch(/\bplain\b/)
   })
 })

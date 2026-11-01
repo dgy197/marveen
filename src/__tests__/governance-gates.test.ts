@@ -151,17 +151,20 @@ describe('self-pace-gate stripHeredocBodies (quoted vs unquoted marker)', () => 
   const PROSE = 'at the same time we fixed the parser'
 
   it('blanks a QUOTED heredoc body (the false positive this strip exists for)', () => {
-    const cmd = `git commit -F - <<'EOF'\n${PROSE}\nEOF`
+    // card a6422462 (Q5): the owner is tee, not git (git is no data owner any more, so a git body stays visible); the test's intent (a data body is blanked) is unchanged
+    const cmd = `tee f <<'EOF'\n${PROSE}\nEOF`
     expect(stripHeredocBodies(cmd)).not.toContain(PROSE)
   })
 
   it('blanks a double-quoted marker too', () => {
-    const cmd = `git commit -F - <<"EOF"\n${PROSE}\nEOF`
+    // card a6422462 (Q5): owner tee instead of git, see the first test of this block
+    const cmd = `tee f <<"EOF"\n${PROSE}\nEOF`
     expect(stripHeredocBodies(cmd)).not.toContain(PROSE)
   })
 
   it('blanks an UNQUOTED body that has nothing to expand', () => {
-    const cmd = `git commit -F - <<EOF\n${PROSE}\nEOF`
+    // card a6422462 (Q5): owner tee instead of git, see the first test of this block
+    const cmd = `tee f <<EOF\n${PROSE}\nEOF`
     expect(stripHeredocBodies(cmd)).not.toContain(PROSE)
   })
 
@@ -178,12 +181,14 @@ describe('self-pace-gate stripHeredocBodies (quoted vs unquoted marker)', () => 
   it('still blanks a QUOTED body that merely mentions $( ) as text', () => {
     // Quoted marker: the shell does not expand, so the text is data even when
     // it looks like a substitution.
-    const cmd = "git commit -F - <<'EOF'\nwe replaced $(at now) with cron\nEOF"
+    // card a6422462 (Q5): owner tee instead of git, see the first test of this block
+    const cmd = "tee f <<'EOF'\nwe replaced $(at now) with cron\nEOF"
     expect(stripHeredocBodies(cmd)).not.toContain('$(at now)')
   })
 
   it('the <<- variant follows the same rule', () => {
-    expect(stripHeredocBodies(`git commit -F - <<-'EOF'\n\t${PROSE}\n\tEOF`)).not.toContain(PROSE)
+    // card a6422462 (Q5): owner tee instead of git in the first line, see the first test of this block
+    expect(stripHeredocBodies(`tee f <<-'EOF'\n\t${PROSE}\n\tEOF`)).not.toContain(PROSE)
     expect(stripHeredocBodies('git commit -F - <<-EOF\n\t$(at now)\n\tEOF')).toContain('$(at now)')
   })
 
@@ -212,8 +217,15 @@ describe('self-pace-gate stripHeredocBodies (quoted vs unquoted marker)', () => 
   })
 
   it('still blanks when a non-interpreter (git/tee) owns the redirect', () => {
-    expect(stripHeredocBodies(`git commit -F - <<'EOF'\n${RUNS}\nEOF`)).not.toContain(RUNS)
+    // card a6422462 (Q5): the first owner is cat instead of git (git is no data owner any more); tee stays the second
+    expect(stripHeredocBodies(`cat f <<'EOF'\n${RUNS}\nEOF`)).not.toContain(RUNS)
     expect(stripHeredocBodies(`tee f <<'EOF'\n${RUNS}\nEOF`)).not.toContain(RUNS)
+  })
+
+  // card a6422462 (B7): git is no data owner, whatever the subcommand: the repository's hooks, filters and signers run
+  // on a commit, so the quoted body of `git commit -F -` is visible to the scheduler checks
+  it('KEEPS a quoted heredoc body owned by git commit -F - (a hook of the repository can run it)', () => {
+    expect(stripHeredocBodies(`git commit -F - <<'EOF'\n${RUNS}\nEOF`)).toContain(RUNS)
   })
 })
 
