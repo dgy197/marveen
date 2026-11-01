@@ -1307,6 +1307,25 @@ describe('the source dispatcher', () => {
     expect(called).toBe(2)
   })
 
+  it('R2 LOW-3: an unreadable or throwing config gives null (closed) and never calls the Console source', () => {
+    const db = getDb()
+    const consoleSource = () => { throw new Error('the Console source must not be read') }
+    const broken = dispatchCalibrationSource(consoleSource, db, () => { throw new RangeError('injected') })
+    expect(broken()).toBeNull()
+    for (const reason of ['missing', 'unreadable', 'permissions', 'invalid_json', 'duplicate_key', 'schema', 'invalid'] as const) {
+      expect(dispatchCalibrationSource(consoleSource, db, () => ({ ok: false, reason, detail: 'x' }))(), reason).toBeNull()
+    }
+  })
+
+  it('R2 LOW-3: a readable console config still reaches the Console source', () => {
+    const db = getDb()
+    let called = 0
+    h.editConfig((c) => { c.calibrationSource = 'console' })
+    const src = dispatchCalibrationSource(() => { called++; return null }, db, () => loadCreditGateConfigFile(h.cfgPath))
+    expect(src()).toBeNull()
+    expect(called).toBe(1)
+  })
+
   it('grant_model never calls the Console source', () => {
     h.enforce()
     const db = getDb()

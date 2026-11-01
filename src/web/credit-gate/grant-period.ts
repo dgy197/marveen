@@ -321,8 +321,11 @@ export function grantModelCalibration(db: Database.Database, cfg: CreditGateConf
 
 /**
  * The gate's calibration source (runtime.ts): the Console source untouched
- * unless the config selects grant_model. A config that cannot be read is the
- * Console path's business, as before.
+ * when the config is readable and does not select grant_model, the grant model
+ * when it does. A config that cannot be read (not ok, or the load throws) gives
+ * null, closed (R2 LOW-3): a half-written config must not hand the gate a stale
+ * but still fresh Console calibration for a moment the gate itself reads the
+ * finished grant_model config.
  */
 export function dispatchCalibrationSource(
   consoleSource: CalibrationSource,
@@ -330,13 +333,13 @@ export function dispatchCalibrationSource(
   loadConfig: () => ConfigLoadResult,
 ): CalibrationSource {
   return (): Calibration | null => {
-    let cfg: CreditGateConfig | null = null
+    let r: ConfigLoadResult
     try {
-      const r = loadConfig()
-      cfg = r.ok && r.config.calibrationSource === 'grant_model' ? r.config : null
+      r = loadConfig()
     } catch {
-      cfg = null
+      return null
     }
-    return cfg === null ? consoleSource() : grantModelCalibration(db, cfg)
+    if (!r.ok) return null
+    return r.config.calibrationSource === 'grant_model' ? grantModelCalibration(db, r.config) : consoleSource()
   }
 }
