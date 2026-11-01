@@ -935,6 +935,26 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     code, _, err = run(g_br, s1, ME, reply_all)
     check("broken email_extract: approval gate L1 denies reply_all (exit 2)", code == 2, f"exit={code}")
 
+    # --- card 5e3c31c5 N0: bare NaN / Infinity / -Infinity in a walked JSON string -------------------
+    # Python json.loads accepts the literals, so the three walkers walk the string; the JS twin must walk it too
+    # (src/__tests__/mail-tool-action-conformance.test.ts runs the same rows). Python is the reference here.
+    print("walker JSON strings with NaN / Infinity (card 5e3c31c5)")
+    WJ = NI["walker_json"]
+    walker_fns = {
+        "hasForwardKey": lambda v: ee._has_forward_key(v),
+        "hasForwardKeyName": lambda v: ee._has_forward_key_name(v, True, False, ee.NO_EXEMPT),
+        "mailEndpointWrite": lambda v: ee.mail_endpoint_write(v),
+    }
+    bad = [r["label"] for r in WJ["direct"] if attempt(lambda: walker_fns[r["walker"]](r["input"])) is not r["expected"]]
+    check(f"5e3c31c5 N0: the {len(WJ['direct'])} direct walker rows give their expected value", not bad, f"{len(bad)} differ, e.g. {bad[:2]}")
+    check("5e3c31c5 N0: the direct rows cover all three walkers, with signal and control rows",
+          {r["walker"] for r in WJ["direct"]} == set(walker_fns) and {r["expected"] for r in WJ["direct"]} == {True, False})
+    bad = [f"{a['tool']} {a['note'][:60]}" for a in WJ["actions"] if attempt(lambda: ee.mail_tool_action(a["tool"], a["input"])) != a["expected"]]
+    check(f"5e3c31c5 N0: the {len(WJ['actions'])} action rows give their expected class", not bad, f"{len(bad)} differ, e.g. {bad[:2]}")
+    check("5e3c31c5 N0: the action rows hold a reader, a non-reader and a manage_email name, and send and null classes",
+          {"mcp__outlook__fetch", "mcp__gmail__create_draft", "mcp__outlook__manage_email"} <= {a["tool"] for a in WJ["actions"]}
+          and {"send", None} <= {a["expected"] for a in WJ["actions"]})
+
 if failed:
     print(f"\n{len(failed)} FAILED: {failed}", file=sys.stderr)
     sys.exit(1)
