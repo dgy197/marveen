@@ -1830,17 +1830,24 @@ export function isReadAction(segments) {
 //     Free text is not exempt here: a rule description or a settings message that says
 //     "forwarded" is denied (fail-closed price of the invariant, Brainy 6415).
 //   - plain draft: prose keys (FREE_TEXT_KEYS, or a key that ENDS in body / text /
-//     content / html: message_body, plainText) and file keys (FILE_KEYS: attachment
-//     names and paths such as Fwd_invoice.pdf) are letter content and exempt from the
-//     word test; every other value still gets the word test, but not `mailto:` (a link
-//     in a signature is no forwarding). The match is exact or by suffix on purpose, so
-//     `actionName` or `bodyAction` are NOT free text, and a rule script (`sieveScript`)
-//     is not either.
+//     content / html: message_body, plainText) and the file NAMES of an attachment
+//     (ATTACH_FILE_KEYS: filename, attachmentName, name, but only INSIDE an attachment
+//     container, ATTACH_KEYS: attachments, attachment, and files below one; the strings
+//     directly in the container count too: Fwd_invoice.pdf) are letter content and exempt
+//     from the word test; every other value still gets the word test, but not `mailto:`
+//     (a link in a signature is no forwarding). A bare `path`, `paths`, `file`, `files`
+//     or `filePath` key is NOT a file name (a JSON-patch `path: /forwardTo` is one),
+//     and the match is exact or by suffix on purpose, so `actionName` or `bodyAction` are
+//     NOT free text, and a rule script (`sieveScript`) is not either.
 // INERT keys are exempt in both modes: label / folder identifiers ("Forwarded") name a
-// place, a selector (`query`, `search` ..) only picks messages, and an auto-reply text
-// is stored, not executed; none of them sends a message to a third party. They
+// place, a folder target (`destination`, `target`, `targetFolder`) names a place, a
+// selector (`query`, `search` ..) only picks messages, and an auto-reply text is stored,
+// not executed; none of them sends a message to a third party. They
 // exempt the VALUE words only: a forward KEY below them (also inside a JSON string in
-// the value) still counts, in every mode. Same bounds and fail-closed exits as
+// the value) still counts, in every mode. A label / folder tool (isLabelFolderTool) is
+// strict, and only its NAME keys (LABEL_NAME_KEYS: name, displayName, label, labelName,
+// folderName, title) are inert, so a forwarding setting in any other key still denies.
+// Same bounds and fail-closed exits as
 // hasForwardKey (too deep, too many nodes, a string too long to parse, a non-object
 // input = true).
 // Twin: _has_forward_key_name in scripts/hooks/email_extract.py.
@@ -1850,16 +1857,21 @@ const FREE_TEXT_KEYS = new Set(['body', 'htmlbody', 'textbody', 'plaintext', 'pl
 const INERT_KEYS = new Set(['label', 'labels',
   'labelids', 'addlabelids', 'removelabelids', 'labelid', 'labelname', 'folder', 'folderid', 'foldername',
   'destinationfolder', 'destinationfolderid', 'parentfolderid', 'mailbox',
+  'destination', 'target', 'targetfolder',
   'signature', 'query', 'q', 'search', 'keyword', 'keywords',
   'responsebodyplaintext', 'responsebodyhtml', 'internalreplymessage', 'externalreplymessage', 'autoreplymessage'])
-const FILE_KEYS = new Set(['file', 'files', 'filename', 'filenames', 'filepath', 'path', 'paths',
-  'attachment', 'attachments', 'attachmentname', 'attachmentpath', 'attachmentpaths'])
+// the name keys of a label / folder tool: inert only for such a tool (isLabelFolderTool)
+const LABEL_NAME_KEYS = new Set(['name', 'displayname', 'label', 'labelname', 'foldername', 'title'])
+// an attachment container (and `files` below one), and the file-name keys that count inside it
+const ATTACH_KEYS = new Set(['attachments', 'attachment'])
+const ATTACH_FILE_KEYS = new Set(['filename', 'attachmentname', 'name'])
 const FREE_TEXT_SUFFIX = /(?:body|text|content|html)$/
 const FORWARD_WORD = /(?<![A-Za-z])(?:forward|redirect|fwd)/i
 const MAILTO = /mailto:/i
-// the walk's `free` flag: 0 not free text, 1 prose, 2 inert key, 3 file key
+// the walk's `free` flag: 0 not free text, 1 prose, 2 inert key, 3 attachment file name,
+// 4 attachment container (its own strings are file names, its keys are classified again)
 const FORWARD_WORD_CAMEL = /[a-z](?:Forward|Redirect)/
-export function hasForwardKeyName(input, valueWords = true, strict = false) {
+export function hasForwardKeyName(input, valueWords = true, strict = false, labelNameKeys = false) {
   if (typeof input !== 'object' || input === null) return true
   let nodes = 0
   const stack = [[input, 0, 0]]
@@ -1887,7 +1899,10 @@ export function hasForwardKeyName(input, valueWords = true, strict = false) {
         const key = k.toLowerCase()
         if (key.includes('forward') || key.includes('redirect')) return true
         const norm = key.replace(/[^a-z0-9]/g, '')
-        childFree = INERT_KEYS.has(norm) ? 2 : FILE_KEYS.has(norm) ? 3 : (FREE_TEXT_KEYS.has(norm) || FREE_TEXT_SUFFIX.test(norm)) ? 1 : 0
+        childFree = (labelNameKeys && LABEL_NAME_KEYS.has(norm)) || INERT_KEYS.has(norm) ? 2
+          : ATTACH_KEYS.has(norm) || (free === 4 && norm === 'files') ? 4
+          : free === 4 && ATTACH_FILE_KEYS.has(norm) ? 3
+          : (FREE_TEXT_KEYS.has(norm) || FREE_TEXT_SUFFIX.test(norm)) ? 1 : 0
       }
       if (typeof x === 'string' || (typeof x === 'object' && x !== null)) stack.push([x, depth + 1, childFree])
     }
@@ -1912,18 +1927,22 @@ function nameIndependentForward(segments, toolInput) {
   // branch below decides those (kind draft-required): only a forward KEY counts here, so the
   // kind of the existing manage_email denies does not change.
   const multiplexed = segments.some((s) => segmentWords(s).join('_') === 'manage_email')
-  return hasForwardKeyName(toolInput, !multiplexed && !isLabelFolderTool(segments), !isPlainDraft(segments, classes))
+  const labelFolder = isLabelFolderTool(segments)
+  return hasForwardKeyName(toolInput, !multiplexed, labelFolder || !isPlainDraft(segments, classes), labelFolder)
 }
 
 // A rule / filter / script / settings / automation word in a segment: such a tool is no
 // letter. A word is matched as a substring (automat: automation, automatic; auto:
 // autoreply, auto_forward).
 const RULE_CLASS_WORDS = ['rule', 'filter', 'script', 'sieve', 'setting', 'vacation', 'forwarding', 'alias',
-  'automat', 'flow', 'policy', 'auto', 'responder']
+  'automat', 'flow', 'policy', 'auto', 'responder', 'config', 'hook', 'trigger', 'route', 'routing', 'account',
+  'profile']
 // A mail or calendar item noun: a draft verb with no such noun in its name (create_label,
-// create_thing) is no letter either.
-const MAIL_NOUNS = ['draft', 'message', 'mail', 'reply', 'compose', 'forward', 'event', 'appointment', 'calendar',
-  'rsvp', 'response', 'answer', 'file', 'doc']
+// create_thing) is no letter either. A noun matches a WHOLE name segment word (after the
+// camelCase / _ / - split), never a substring: "profile" is not "file", "gmailbox" is not "mail".
+const MAIL_NOUNS = ['draft', 'drafts', 'message', 'messages', 'mail', 'mails', 'email', 'emails', 'reply', 'replies',
+  'compose', 'forward', 'event', 'events', 'appointment', 'appointments', 'calendar', 'calendars', 'rsvp',
+  'response', 'responses', 'answer', 'answers', 'file', 'files', 'doc', 'docs', 'document', 'documents']
 // A plain draft is identified POSITIVELY: the NAME classifier calls it a draft, a segment
 // has a mail noun, and no segment has a rule-class word (the rule word wins: compose_rule,
 // draft_filter). Its prose and file values are letter content (a body that says "please
@@ -1934,22 +1953,24 @@ const MAIL_NOUNS = ['draft', 'message', 'mail', 'reply', 'compose', 'forward', '
 // Twin: _is_plain_draft in scripts/hooks/email_extract.py.
 export function isPlainDraft(segments, classes) {
   if (!classes.includes('draft')) return false
-  if (!segments.some((s) => segmentWords(s).some((w) => MAIL_NOUNS.some((m) => w.includes(m))))) return false
+  if (!segments.some((s) => segmentWords(s).some((w) => MAIL_NOUNS.includes(w)))) return false
   return !segments.some((s) => segmentWords(s).some((w) => RULE_CLASS_WORDS.some((r) => w.includes(r))))
 }
 
-// A label / folder / category / tag / mailbox tool (create_label, update_folder, ...) names
-// a container, not a letter or a rule: its name value ("Forwarded", "Forwarded Items") is
-// not a forward. It is exempt from the free-text forward WORD test (no value is word-tested, like the
-// multiplexed manage_email), if no
-// segment has a rule-class, forward or redirect word (create_folder_rule, update_label_settings
-// stay strict); the forward KEY test still applies to it. Closed list, whole words only.
+// A label / folder / category / tag tool (create_label, update_folder, ...) names a
+// container, not a letter or a rule: its NAME ("Forwarded", "Forwarded Items") is not a
+// forward. Only that name is exempt from the free-text word test (LABEL_NAME_KEYS: name,
+// displayName, label, labelName, folderName, title); every other key of the tool keeps the
+// strict word test, and the forward KEY test applies to all of it. It needs a create /
+// update / rename / add / move verb word, and no segment may have a rule-class, forward or
+// redirect word (create_folder_rule, update_label_settings stay strict). A mailbox is NOT a
+// label: a mailbox object carries forwarding settings. Closed list, whole words only.
 // Twin: _is_label_folder_tool in scripts/hooks/email_extract.py.
-const LABEL_FOLDER_NOUNS = ['label', 'labels', 'folder', 'folders', 'category', 'categories', 'tag', 'tags',
-  'mailbox', 'mailboxes']
+const LABEL_FOLDER_NOUNS = ['label', 'labels', 'folder', 'folders', 'category', 'categories', 'tag', 'tags']
+const LABEL_FOLDER_VERBS = ['create', 'update', 'rename', 'add', 'move']
 export function isLabelFolderTool(segments) {
   const words = segments.flatMap((s) => segmentWords(s))
-  if (!words.some((w) => LABEL_FOLDER_NOUNS.includes(w))) return false
+  if (!words.some((w) => LABEL_FOLDER_NOUNS.includes(w)) || !words.some((w) => LABEL_FOLDER_VERBS.includes(w))) return false
   return !words.some((w) => [...RULE_CLASS_WORDS, 'forward', 'redirect'].some((r) => w.includes(r)))
 }
 

@@ -293,6 +293,9 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
           and not ee._is_plain_draft(["create_draft"], [None])
           and ee._is_plain_draft(["server", "create_draft"], ["nonsend", "draft"])
           and not ee._is_plain_draft(["rules", "create_draft"], ["nonsend", "draft"]))
+    check("R1 B1: _is_label_folder_tool needs a label / folder noun AND a create / update / rename / add / move verb; a mailbox, a delete / get and a rule / settings / forward word are not",
+          all(ee._is_label_folder_tool([s]) for s in INV["label_segments"])
+          and not any(ee._is_label_folder_tool([s]) for s in INV["not_label_segments"]))
     prose = {"to": ["known@example.com"], "subject": "Fwd: x", "body": "please forward this to x@y.example", "html": '<a href="mailto:x@y.example">x</a>'}
     check("T4: a plain draft keeps its prose (a forward instruction in a body is a letter, the ledger checks the recipients)",
           all(ee.mail_tool_action(n, prose) == "draft" and ee.mail_rule_forward(n, prose) is False for n in INV["plain_names"]))
@@ -300,10 +303,21 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
            if ee.mail_tool_action(a["tool"], a["input"]) != a["expected"] or ee.mail_rule_forward(a["tool"], a["input"]) is not False]
     check("T5 T6: the plain draft file keys, the inert selector / auto-reply keys and the calendar prose stay allowed", not bad, f"{bad}")
     plain_mode = lambda v: ee._has_forward_key_name(v, True, False)
-    files = [{"attachments": [{"filename": "fwd_invoice.pdf"}]}, {"attachments": ["/tmp/Fwd_ajanlat.pdf"]}, {"fileName": "Fwd_invoice.pdf"},
-             {"path": "Forwarded_invoice.pdf"}, {"filePath": "/tmp/redirect.txt"}, {"attachmentPaths": ["fwd.pdf"]}]
-    check("T9 file keys are exempt in a plain draft only; a header value is not a file key",
-          all(not plain_mode(v) and strict(v) for v in files) and plain_mode({"headers": {"X-Tag": "fwd"}}))
+    files = [{"attachments": [{"filename": "fwd_invoice.pdf"}]}, {"attachments": ["/tmp/Fwd_ajanlat.pdf"]},
+             {"attachments": [{"fileName": "Fwd_invoice.pdf"}]}, {"attachment": {"attachmentName": "Forwarded_invoice.pdf"}},
+             {"attachments": {"files": [{"name": "fwd.pdf"}]}}]
+    bare = [{"fileName": "Fwd_invoice.pdf"}, {"path": "Forwarded_invoice.pdf"}, {"filePath": "/tmp/redirect.txt"},
+            {"attachmentPaths": ["fwd.pdf"]}, {"file": "fwd.pdf"}, {"files": ["fwd.pdf"]}, {"patch": [{"op": "add", "path": "/forwardTo"}]},
+            {"attachments": [{"path": "/forwardTo"}]}, {"files": {"filename": "fwd.pdf"}}]
+    check("T9 B2: attachment file names are exempt inside an attachment container of a plain draft only; a header value and a bare path / file key are not",
+          all(not plain_mode(v) and strict(v) for v in files) and plain_mode({"headers": {"X-Tag": "fwd"}})
+          and all(plain_mode(v) and strict(v) for v in bare))
+    label_mode = lambda v: ee._has_forward_key_name(v, True, True, True)
+    check("T9 B1: a label / folder tool frees only the name keys, every other key keeps the strict word test, the forward KEY test stays",
+          not label_mode({"name": "Forwarded", "displayName": "Forwarded Items", "label": "Fwd", "labelName": "Fwd", "folderName": "Fwd", "title": "redirect"})
+          and label_mode({"parameters": {"command": "set forwarding to x"}}) and label_mode({"name": "x", "action": "redirect"})
+          and label_mode({"name": "x", "forwardTo": "a"}) and label_mode({"name": {"forwardTo": "a"}}) and label_mode({"description": "Forwarded"})
+          and not strict({"name": "x"}) and strict({"name": "Forwarded"}))
     check("T9 mailto: is a forward sign in strict mode only (outside the inert keys)",
           strict({"html": '<a href="mailto:a@b.hu">a</a>'}) and not plain_mode({"html": '<a href="mailto:a@b.hu">a</a>'})
           and strict({"x": "mailto:a@b.hu"}) and not plain_mode({"x": "mailto:a@b.hu"})

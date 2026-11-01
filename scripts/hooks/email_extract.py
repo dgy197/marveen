@@ -1203,17 +1203,24 @@ def _is_read_action(segments) -> bool:
 #     Free text is not exempt here: a rule description or a settings message that says
 #     "forwarded" is denied (fail-closed price of the invariant, Brainy 6415).
 #   - plain draft: prose keys (_FREE_TEXT_KEYS, or a key that ENDS in body / text /
-#     content / html: message_body, plainText) and file keys (_FILE_KEYS: attachment
-#     names and paths such as Fwd_invoice.pdf) are letter content and exempt from the
-#     word test; every other value still gets the word test, but not `mailto:` (a link
-#     in a signature is no forwarding). The match is exact or by suffix on purpose, so
-#     `actionName` or `bodyAction` are NOT free text, and a rule script (`sieveScript`)
-#     is not either.
+#     content / html: message_body, plainText) and the file NAMES of an attachment
+#     (_ATTACH_FILE_KEYS: filename, attachmentName, name, but only INSIDE an attachment
+#     container, _ATTACH_KEYS: attachments, attachment, and files below one; the strings
+#     directly in the container count too: Fwd_invoice.pdf) are letter content and exempt
+#     from the word test; every other value still gets the word test, but not `mailto:`
+#     (a link in a signature is no forwarding). A bare `path`, `paths`, `file`, `files`
+#     or `filePath` key is NOT a file name (a JSON-patch `path: /forwardTo` is one),
+#     and the match is exact or by suffix on purpose, so `actionName` or `bodyAction` are
+#     NOT free text, and a rule script (`sieveScript`) is not either.
 # INERT keys are exempt in both modes: label / folder identifiers ("Forwarded") name a
-# place, a selector (`query`, `search` ..) only picks messages, and an auto-reply text
-# is stored, not executed; none of them sends a message to a third party. They
+# place, a folder target (`destination`, `target`, `targetFolder`) names a place, a
+# selector (`query`, `search` ..) only picks messages, and an auto-reply text is stored,
+# not executed; none of them sends a message to a third party. They
 # exempt the VALUE words only: a forward KEY below them (also inside a JSON string in
-# the value) still counts, in every mode. Same bounds and fail-closed exits as
+# the value) still counts, in every mode. A label / folder tool (_is_label_folder_tool)
+# is strict, and only its NAME keys (_LABEL_NAME_KEYS: name, displayName, label,
+# labelName, folderName, title) are inert, so a forwarding setting in any other key
+# still denies. Same bounds and fail-closed exits as
 # _has_forward_key (too deep, too many nodes, a string too long to parse, a
 # non-container input = True).
 # Twin: hasForwardKeyName in scripts/email-send-gate.mjs.
@@ -1226,13 +1233,15 @@ _INERT_KEYS = frozenset({
     "label", "labels",
     "labelids", "addlabelids", "removelabelids", "labelid", "labelname", "folder", "folderid", "foldername",
     "destinationfolder", "destinationfolderid", "parentfolderid", "mailbox",
+    "destination", "target", "targetfolder",
     "signature", "query", "q", "search", "keyword", "keywords",
     "responsebodyplaintext", "responsebodyhtml", "internalreplymessage", "externalreplymessage", "autoreplymessage",
 })
-_FILE_KEYS = frozenset({
-    "file", "files", "filename", "filenames", "filepath", "path", "paths",
-    "attachment", "attachments", "attachmentname", "attachmentpath", "attachmentpaths",
-})
+# the name keys of a label / folder tool: inert only for such a tool (_is_label_folder_tool)
+_LABEL_NAME_KEYS = frozenset({"name", "displayname", "label", "labelname", "foldername", "title"})
+# an attachment container (and `files` below one), and the file-name keys that count inside it
+_ATTACH_KEYS = frozenset({"attachments", "attachment"})
+_ATTACH_FILE_KEYS = frozenset({"filename", "attachmentname", "name"})
 _FREE_TEXT_SUFFIX = re.compile(r"(?:body|text|content|html)$")
 _FORWARD_WORD = re.compile(r"(?<![A-Za-z])(?:forward|redirect|fwd)", re.IGNORECASE | re.ASCII)
 _MAILTO = re.compile(r"mailto:", re.IGNORECASE | re.ASCII)
@@ -1240,11 +1249,13 @@ _FORWARD_WORD_CAMEL = re.compile(r"[a-z](?:Forward|Redirect)")
 _NON_ALNUM = re.compile(r"[^a-z0-9]")
 
 
-def _has_forward_key_name(value, value_words: bool = True, strict: bool = False) -> bool:
+def _has_forward_key_name(value, value_words: bool = True, strict: bool = False, label_name_keys: bool = False) -> bool:
     if not isinstance(value, (dict, list)):
         return True
     nodes = 0
-    stack = [(value, 0, 0)]  # free: 0 not free text, 1 prose, 2 inert key, 3 file key
+    # free: 0 not free text, 1 prose, 2 inert key, 3 attachment file name,
+    # 4 attachment container (its own strings are file names, its keys are classified again)
+    stack = [(value, 0, 0)]
     while stack:
         v, depth, free = stack.pop()
         if depth > _FORWARD_WALK_MAX_DEPTH:
@@ -1281,9 +1292,11 @@ def _has_forward_key_name(value, value_words: bool = True, strict: bool = False)
                 if "forward" in key or "redirect" in key:
                     return True
                 norm = _NON_ALNUM.sub("", key)
-                if norm in _INERT_KEYS:
+                if (label_name_keys and norm in _LABEL_NAME_KEYS) or norm in _INERT_KEYS:
                     child_free = 2
-                elif norm in _FILE_KEYS:
+                elif norm in _ATTACH_KEYS or (free == 4 and norm == "files"):
+                    child_free = 4
+                elif free == 4 and norm in _ATTACH_FILE_KEYS:
                     child_free = 3
                 elif norm in _FREE_TEXT_KEYS or _FREE_TEXT_SUFFIX.search(norm):
                     child_free = 1
@@ -1314,19 +1327,25 @@ def _name_independent_forward(segments, tool_input) -> bool:
     # branch decides those: only a forward KEY counts here, so the existing manage_email
     # verdicts do not change.
     multiplexed = any("_".join(_action_words(s)) == "manage_email" for s in segments)
+    label_folder = _is_label_folder_tool(segments)
     return _has_forward_key_name(
-        tool_input, not multiplexed and not _is_label_folder_tool(segments), not _is_plain_draft(segments, classes))
+        tool_input, not multiplexed, label_folder or not _is_plain_draft(segments, classes), label_folder)
 
 
 # A rule / filter / script / settings / automation word in a segment: such a tool is no
 # letter. A word is matched as a substring (automat: automation, automatic; auto:
 # autoreply, auto_forward).
 _RULE_CLASS_WORDS = ("rule", "filter", "script", "sieve", "setting", "vacation", "forwarding", "alias",
-                     "automat", "flow", "policy", "auto", "responder")
+                     "automat", "flow", "policy", "auto", "responder", "config", "hook", "trigger", "route",
+                     "routing", "account", "profile")
 # A mail or calendar item noun: a draft verb with no such noun in its name (create_label,
-# create_thing) is no letter either.
-_MAIL_NOUNS = ("draft", "message", "mail", "reply", "compose", "forward", "event", "appointment", "calendar",
-               "rsvp", "response", "answer", "file", "doc")
+# create_thing) is no letter either. A noun matches a WHOLE name segment word (after the
+# camelCase / _ / - split), never a substring: "profile" is not "file", "gmailbox" is not "mail".
+_MAIL_NOUNS = frozenset({
+    "draft", "drafts", "message", "messages", "mail", "mails", "email", "emails", "reply", "replies",
+    "compose", "forward", "event", "events", "appointment", "appointments", "calendar", "calendars", "rsvp",
+    "response", "responses", "answer", "answers", "file", "files", "doc", "docs", "document", "documents",
+})
 
 
 def _is_plain_draft(segments, classes) -> bool:
@@ -1340,25 +1359,27 @@ def _is_plain_draft(segments, classes) -> bool:
     Twin: isPlainDraft in scripts/email-send-gate.mjs."""
     if "draft" not in classes:
         return False
-    if not any(m in w for s in segments for w in _action_words(s) for m in _MAIL_NOUNS):
+    if not any(w in _MAIL_NOUNS for s in segments for w in _action_words(s)):
         return False
     return not any(r in w for s in segments for w in _action_words(s) for r in _RULE_CLASS_WORDS)
 
 
-_LABEL_FOLDER_NOUNS = frozenset({"label", "labels", "folder", "folders", "category", "categories", "tag", "tags",
-                                 "mailbox", "mailboxes"})
+_LABEL_FOLDER_NOUNS = frozenset({"label", "labels", "folder", "folders", "category", "categories", "tag", "tags"})
+_LABEL_FOLDER_VERBS = frozenset({"create", "update", "rename", "add", "move"})
 
 
 def _is_label_folder_tool(segments) -> bool:
-    """A label / folder / category / tag / mailbox tool (create_label, update_folder, ...)
-    names a container, not a letter or a rule: its name value ("Forwarded", "Forwarded
-    Items") is not a forward. It is exempt from the free-text forward WORD test (no value is
-    word-tested, like the multiplexed manage_email), if no segment has a rule-class, forward or redirect word (create_folder_rule,
-    update_label_settings stay strict); the forward KEY test still applies to it. Closed
-    list, whole words only.
+    """A label / folder / category / tag tool (create_label, update_folder, ...) names a
+    container, not a letter or a rule: its NAME ("Forwarded", "Forwarded Items") is not a
+    forward. Only that name is exempt from the free-text word test (_LABEL_NAME_KEYS: name,
+    displayName, label, labelName, folderName, title); every other key of the tool keeps
+    the strict word test, and the forward KEY test applies to all of it. It needs a create /
+    update / rename / add / move verb word, and no segment may have a rule-class, forward
+    or redirect word (create_folder_rule, update_label_settings stay strict). A mailbox is
+    NOT a label: a mailbox object carries forwarding settings. Closed list, whole words only.
     Twin: isLabelFolderTool in scripts/email-send-gate.mjs."""
     words = [w for s in segments for w in _action_words(s)]
-    if not any(w in _LABEL_FOLDER_NOUNS for w in words):
+    if not any(w in _LABEL_FOLDER_NOUNS for w in words) or not any(w in _LABEL_FOLDER_VERBS for w in words):
         return False
     return not any(r in w for w in words for r in _RULE_CLASS_WORDS + ("forward", "redirect"))
 
