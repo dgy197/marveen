@@ -663,13 +663,20 @@ export function stripDataPayloads(seg) {
 //   0. the command defines no function and no alias, and has no `<(`, `>(` or exec redirection at code level
 //      anywhere (a redefined `cat`, an output sent to a process or to the shell's own descriptors: nothing about
 //      where the text goes can be proved);
-//   1. the command word that owns the redirect is in the closed DATA_OWNERS list (cat, tee, grep, jq ...; git only
-//      for commit/tag/notes/stash/hash-object/apply/am; gh and glab only for the API subcommands; curl; no option
-//      that names a program or a config file: git -c, curl -K/--config, sort --compress-program; option tokens are
-//      compared after their quotes and backslashes are removed), after skipping assignments, shell keywords (do,
-//      then ...) and the pass-through prefixes (sudo, env ...) -- a prefix WITH an option (`env -i`, `sudo -u x`,
-//      `nice -n 5`, `timeout 5`, `command -p`) is an unknown owner, and so is a path-qualified word outside the
-//      system bin directories;
+//   1. the command word that owns the redirect is in the closed DATA_OWNERS list (cat, tee, grep, jq ...; gh and
+//      glab only for the API subcommands; curl; no option that names a program or a config file: curl -K/--config,
+//      sort --compress-program; option tokens are compared after their quotes and backslashes are removed), after
+//      skipping shell keywords (do, then ...) and the pass-through prefixes (sudo, env ...) -- a prefix WITH an
+//      option (`env -i`, `sudo -u x`, `nice -n 5`, `timeout 5`, `command -p`) is an unknown owner, and so is a
+//      path-qualified word outside the system bin directories. An ASSIGNMENT in front of the command word (`X=1 cat`,
+//      `env X=1 cat`, `GIT_EDITOR=x git ..`) makes it an unknown consumer in every role (owner, pipe stage, the
+//      command around a `$( )`): the program reads its environment, and what a variable configures is not known
+//      here (card a6422462, B6/B7). A pure assignment (`x=$(cat <<'EOF' ..)`) stays data. git is NO data owner
+//      (card a6422462, B7): a commit, a tag, a note, a stash, an am or an apply updates a ref or the index, so the
+//      repository's hooks (reference-transaction, prepare-commit-msg, post-commit, post-index-change), its filters
+//      and its signer run, and no subcommand option turns them off (`--no-verify` skips only pre-commit and
+//      commit-msg); only `-c core.hooksPath=..` or a `GIT_CONFIG_*` variable would, and those are a global option
+//      and an assignment prefix, which make the owner unknown anyway;
 //   2. every code-level `|` stage on the operator line (`cat <<'EOF' | stage`) is a data command too, and so is every
 //      `|` stage that follows a closer after the terminator (`{ cat <<'EOF' .. EOF }`, `( .. )`, `done`, `fi`,
 //      `esac`, the `)` of a `$( )`): the output of the whole compound goes on to that stage;
@@ -678,7 +685,7 @@ export function stripDataPayloads(seg) {
 //      data command; a `<( )`, `>( )`, a backtick run or a frame the lexer could not close is never data.
 // A script-running interpreter (bash x.sh, python3 x.py, node x.js ...) counts as a data CONSUMER in 2. and 3. only
 // (`cat <<'EOF' | bash /abs/agent-msg.sh .. -`, `bash /abs/agent-msg.sh .. "$(cat <<'EOF' ..)"`, the fleet's own
-// message idiom), and only with NO assignment prefix (`BASH_ENV=x bash ..`) and when its first argument is an
+// message idiom), and only with NO assignment prefix (`BASH_ENV=x bash ..`, see 1.) and when its first argument is an
 // ABSOLUTE plain path that is not the stdin of the shell itself (/dev/stdin, /dev/fd/N, /proc/*/fd/N, anything
 // under /dev or /proc, `..` segments, quotes, `$`): `bash /dev/stdin`, `bash -s`, `bash -c`, `python3 -` run the
 // body. As the direct owner (`bash /abs/agent-msg.sh .. - <<'EOF'`) it stays visible.
@@ -695,13 +702,12 @@ export function stripDataPayloads(seg) {
 // never newly allow. A backtick run keeps its own limit: a heredoc or a quoted payload inside backticks is always
 // visible, and the lexer does not tokenise quotes inside a backtick run (0bb35172 E1: `r=`curl -d '..' ..``
 // denies where the `$( )` form allows).
-const DATA_OWNERS = new Set(['cat', 'tee', 'wc', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'sort', 'uniq', 'tr', 'base64', 'diff', 'cmp', 'shasum', 'sha256sum', 'md5', 'jq', 'gh', 'glab', 'git', 'curl'])
-const GIT_DATA_SUBCOMMANDS = new Set(['commit', 'tag', 'notes', 'stash', 'hash-object', 'apply', 'am'])
+const DATA_OWNERS = new Set(['cat', 'tee', 'wc', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'sort', 'uniq', 'tr', 'base64', 'diff', 'cmp', 'shasum', 'sha256sum', 'md5', 'jq', 'gh', 'glab', 'curl'])
 // gh / glab talk to the hosting API with these; an alias, an extension or an unknown word runs a program
 const FORGE_DATA_SUBCOMMANDS = new Set(['api', 'pr', 'mr', 'issue', 'release', 'repo', 'run', 'workflow', 'gist', 'label', 'search', 'status', 'secret', 'variable', 'ci', 'snippet'])
 // long options that name a program to run, per data owner (GNU getopt takes any unique prefix of them)
 const PROGRAM_OPTIONS = { sort: ['compress-program'], curl: ['config'] }
-const OPTION_SENSITIVE_OWNERS = new Set(['git', 'curl', 'sort', 'gh', 'glab'])
+const OPTION_SENSITIVE_OWNERS = new Set(['curl', 'sort', 'gh', 'glab'])
 // a path-qualified command word is only the data command if it lives in a system bin directory
 const DATA_COMMAND_BIN_DIRS = new Set(['/bin', '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'])
 const PASS_THROUGH_PREFIXES = new Set(['sudo', 'env', 'nice', 'time', 'exec', 'command', 'nohup', 'stdbuf'])
@@ -782,8 +788,10 @@ function consumesAsData(command, role) {
   if (!command) return false
   const { word, rest, assigned } = command
   if (word === '') return role === 'subst' && assigned > 0 // x=$(cat <<EOF ..) stores the text; a bare $(..) runs it
-  // an interpreter consumes a body as data only as `bash /abs/script ..` with no assignment prefix (BASH_ENV=..)
-  if (role !== 'owner' && SCRIPT_INTERPRETER_RX.test(word)) return assigned === 0 && isPlainScriptFile(rest[0])
+  // an assignment prefix configures the program (BASH_ENV=.., GIT_EDITOR=.., LESSOPEN=..): unknown, in every role
+  if (assigned > 0) return false
+  // an interpreter consumes a body as data only as `bash /abs/script ..`
+  if (role !== 'owner' && SCRIPT_INTERPRETER_RX.test(word)) return isPlainScriptFile(rest[0])
   if (!DATA_OWNERS.has(word)) return false
   if (rest.some((t) => /[<>]\(/.test(t))) return false // a process substitution can hand the text to a command
   const opts = optionWords(rest)
@@ -791,10 +799,6 @@ function consumesAsData(command, role) {
   // an option spelled through a variable (`$K`) or a first argument that is one cannot be read: unknown
   if (OPTION_SENSITIVE_OWNERS.has(word) && rest.some((t) => t.startsWith('$'))) return false
   if (opts.some((t) => namesProgramOption(word, t))) return false
-  if (word === 'git') {
-    if (opts.some((t) => t === '-c' || t.startsWith('--exec-path') || t.startsWith('--config-env'))) return false
-    return GIT_DATA_SUBCOMMANDS.has(opts.find((t) => !t.startsWith('-')))
-  }
   if (word === 'gh' || word === 'glab') return FORGE_DATA_SUBCOMMANDS.has(opts.find((t) => !t.startsWith('-')))
   if (word === 'curl') return !opts.some((t) => /^-[A-Za-z]*K/.test(t))
   return true
