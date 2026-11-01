@@ -16,7 +16,7 @@ import { join } from 'node:path'
 // the reader SEES, not what the source contains.
 function render(response: unknown): string {
   const script = readFileSync(new URL('../../scripts/agent-msg-get.sh', import.meta.url), 'utf-8')
-  const m = script.match(/python3 - "\$OUT" <<'PY'\n([\s\S]*?)\nPY/)
+  const m = script.match(/python3 -I - "\$OUT" <<'PY'\n([\s\S]*?)\nPY/)
   expect(m, 'the python rendering block must still be recognizable').not.toBeNull()
 
   const dir = mkdtempSync(join(tmpdir(), 'msgget-'))
