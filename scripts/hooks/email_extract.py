@@ -1137,7 +1137,9 @@ _NO_INPUT = object()
 # update_auto_forwarding ...) passed. The rule below does not read the name's nouns at
 # all, it asks two questions: is the tool a READER (_is_read_action: a closed list,
 # fail-closed), and does its input FORWARD (_has_forward_key_name)? A non-reader whose
-# input forwards is a send under ANY name. The 6151bb4d rule stays on top of it,
+# input forwards is a send under ANY name; a reader only when its input has a forward
+# KEY (card 1239a7ad: a reader is a reader only without a forward key; a forward word
+# in a value is exempt on a reader; 3d6e5181 AC11 narrows to this). The 6151bb4d rule stays on top of it,
 # unchanged (it also counts a bare address, but only for rule / filter names).
 #
 # READER = some word of the action segment(s) is a READ word (whole word, or the start
