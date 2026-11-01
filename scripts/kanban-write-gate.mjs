@@ -11,7 +11,10 @@
 // (agentGetsKanbanWriteGate in agent-scaffold.ts) -- every other agent's
 // kanban-first workflow REQUIRES board writes.
 //
-// What is blocked (per command segment, data payloads stripped first):
+// What is blocked (per command segment, data payloads stripped first; each
+// check runs over the naive segment list AND the masked one -- the naive pass
+// catches heredoc SQL, the masked pass catches a pair split by a quoted
+// newline):
 //   - SQL writes naming a kanban table (INSERT INTO / UPDATE..SET /
 //     DELETE FROM / REPLACE INTO / DROP TABLE / ALTER TABLE kanban_*),
 //     whatever binary runs them (sqlite3 CLI, python, node). Heredoc SQL
@@ -29,7 +32,7 @@
 
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { splitSegments, stripDataPayloads } from './self-pace-gate.mjs'
+import { splitSegments, maskedSegments, stripDataPayloads } from './self-pace-gate.mjs'
 
 // SQL-shaped write patterns anchored on the kanban tables. Anchoring on the
 // verb+table pair (not on the binary name) is what catches heredoc bodies and
@@ -64,7 +67,13 @@ export function gateDecision(toolName, toolInput) {
   // quoted SQL text would then lack the -d prefix and could never be blanked
   // (the same `<bar>` trap self-pace-gate documents on splitSegments).
   const stripped = stripDataPayloads(command)
-  for (const seg of splitSegments(stripped)) {
+  // Two passes, the second only ADDS segments (no early allow on either):
+  //   - splitSegments (naive): sees INSIDE literals, so a heredoc SQL body is
+  //     caught, but it also cuts at a quoted newline;
+  //   - maskedSegments: cuts only where the shell does, so a quoted newline
+  //     (`curl -X 'POST<NL>' /api/kanban`) can no longer split the method
+  //     from the URL and hide the pair.
+  for (const seg of [...splitSegments(stripped), ...maskedSegments(stripped)]) {
     if (KANBAN_SQL_WRITE_PATTERNS.some((rx) => rx.test(seg))) {
       return { deny: true, reason: 'kanban-sql-write' }
     }
