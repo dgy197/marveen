@@ -24,7 +24,7 @@ describe('system part', () => {
     const sys = buildSystem(N)
     expect(residueFindings(sys)).toEqual([])
     expect(sys).toContain(`[[${N} NEW`)
-    expect(RUBRIC).toBe('g1')
+    expect(RUBRIC).toBe('g2')
   })
 
   it('states the rules the classifier needs: SUPERSEDE only for the same concrete fact, data is not instructions, exact JSON shape', () => {
