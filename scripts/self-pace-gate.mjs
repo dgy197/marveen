@@ -662,7 +662,25 @@ export function stripDataPayloads(seg) {
 // "visible", and a body is data only when ALL of these hold (heredocBodyIsData, the one place that decides):
 //   0. the command defines no function and no alias, and has no `<(`, `>(` or exec redirection at code level
 //      anywhere (a redefined `cat`, an output sent to a process or to the shell's own descriptors: nothing about
-//      where the text goes can be proved);
+//      where the text goes can be proved); and the meaning of every command word is FIXED BY THE TEXT (card
+//      a6422462, B6; bindsNames). Read on the code-level text of the whole command (codeLevelText: heredoc bodies
+//      and comments out, quote characters and backslashes gone, so `e'v'al` is eval), the command has none of:
+//      a. a command word that is not literal: one with `$` (a variable, a `$( )`, an ANSI-C `$'..'`), a backtick
+//         run or a brace expansion in it, past assignments, keywords, redirections and the precommand words with
+//         their options (a `${..}` argument is one argument word; `[` and `[[` are tests);
+//      b. a builtin that binds a name, runs a string as code or loads code (NAME_BINDING_WORDS: eval, source, `.`,
+//         hash, typeset, read ..., bash 5 and zsh 5), `printf -v` / `print -v`, `set` with a/A/k or allexport
+//         (`setopt allexport` too);
+//      c. a name the command lookup or the shell's code hooks read (LOOKUP_NAMES): the upper-case PATH, FPATH,
+//         BASH_CMDS ... as a whole identifier anywhere, the zsh tables (path, commands, functions, aliases ...) as a
+//         bare word or followed by `[`, `=`, `+=` or `:`, and any `${..}` expansion of one of them, quoted or not;
+//      d. an assignment to a computed name: an indirect expansion that assigns (bash `${!x:=..}`, zsh `${(P)x::=..}`)
+//         or an arithmetic assignment with a `$` in it.
+//      Whether a builtin binds a name is a property of bash and zsh, not of the text, so the two lists are closed
+//      and pinned by a test: a new member is a decision, and a longer list only blocks more. KNOWN LIMITS (Q4, not
+//      in the text): the state before the command (aliases and functions of the shell snapshot, variables an
+//      earlier command exported: a plain `X=..` then rewrites the environment), a file that runs later (O14), and
+//      a glob in a command word (it reads the file system, the same O14 class);
 //   1. the command word that owns the redirect is in the closed DATA_OWNERS list (cat, tee, grep, jq ...; gh and
 //      glab only for the API subcommands; curl; no option that names a program or a config file: curl -K/--config,
 //      sort --compress-program; option tokens are compared after their quotes and backslashes are removed), after
@@ -698,7 +716,8 @@ export function stripDataPayloads(seg) {
 // (`$K`) is not resolved, a data owner whose first argument starts with `$` is unknown instead. The rule only ever
 // ADDS visible text, so it can over-block (a body that mentions a trigger word inside `echo "$(cat <<'EOF' ..)"`,
 // F11; any `)`, `}`, `done`, `fi` or `esac` after the terminator that is piped on to a non-data stage, even one
-// that closes an unrelated compound; any function, alias, `<(` or exec redirection in the same command) but
+// that closes an unrelated compound; any function, alias, name binding, `<(` or exec redirection in the same
+// command; the bare word `path` anywhere at code level) but
 // never newly allow. A backtick run keeps its own limit: a heredoc or a quoted payload inside backticks is always
 // visible, and the lexer does not tokenise quotes inside a backtick run (0bb35172 E1: `r=`curl -d '..' ..``
 // denies where the `$( )` form allows).
@@ -727,6 +746,110 @@ function codeOnlyText(ctx, from, to) {
     out += code || !NOT_CODE_BLANK_RX.test(text[k]) ? text[k] : '_'
   }
   return out
+}
+
+// Rule 0, fixed name resolution (card a6422462, B6): the two closed lists. A member is a property of bash 5 or zsh 5
+// that the text cannot show; a new member is a decision, and the structural test pins the exact membership.
+// Frozen arrays (an exported Set stays writable through add even when frozen); the checks use the Sets below.
+export const NAME_BINDING_WORDS = Object.freeze([
+  'eval', // bash, zsh: runs a string as code (and so any definition in it)
+  'source', // bash, zsh: runs a file in this shell (its definitions stay)
+  '.', // bash, zsh: the same as source
+  'hash', // bash: `hash -p /x cat` binds cat to a path; zsh: writes the commands table
+  'enable', // bash: `enable -f lib.so cat` loads a builtin, `-n` turns one off; zsh: turns builtins on
+  'builtin', // bash, zsh: reaches a builtin past a function (`builtin eval ..`)
+  'zmodload', // zsh: loads a module and its builtins
+  'autoload', // zsh, bash 5 loadables: makes a name a function loaded from fpath
+  'functions', // zsh: defines and copies functions (`functions -c`), the builtin as well as the table
+  'fc', // bash, zsh: runs edited history lines as code
+  'trap', // bash, zsh: a string that runs on a signal, on DEBUG, ERR or EXIT
+  'disable', // zsh: turns off a builtin, an alias or a function, so the name resolves elsewhere
+  'emulate', // zsh: switches the option set (alias and function behaviour), `-c` runs a string
+  'read', // bash, zsh: assigns a named variable (`read -A path`, a name from input)
+  'mapfile', // bash: assigns a named array, `-C` runs a callback
+  'readarray', // bash: the same as mapfile
+  'getopts', // bash, zsh: assigns a named variable
+  'vared', // zsh: assigns a named variable
+  'zparseopts', // zsh: assigns named arrays
+  'let', // bash, zsh: arithmetic assignment, the target may be computed
+  'declare', // bash: assigns, exports, and binds a nameref (`-n`)
+  'typeset', // bash, zsh: the same as declare (zsh `-T` ties a scalar to an array)
+  'local', // bash, zsh: the declare family inside a function
+  'export', // bash, zsh: assigns and puts the name into the environment of every later command
+  'readonly', // bash, zsh: the declare family
+])
+export const LOOKUP_NAMES = Object.freeze([
+  'PATH', // bash, zsh: the command search path
+  'FPATH', // zsh, bash 5 loadables: the function search path for autoload
+  'BASH_CMDS', // bash: the hash table of the command lookup, writable
+  'BASH_ALIASES', // bash: the alias table, writable
+  'BASH_ENV', // bash: a file every non-interactive bash child runs first
+  'ENV', // sh, bash --posix, zsh in sh emulation: the same for an interactive shell
+  'PS4', // bash, zsh: expanded (and its $( ) run) before every traced command
+  'PROMPT_COMMAND', // bash: code that runs before a prompt
+  'path', // zsh: the array tied to PATH
+  'fpath', // zsh: the array tied to FPATH
+  'commands', // zsh: the command hash table, writable
+  'functions', // zsh: the function table, writable
+  'aliases', // zsh: the alias table, writable
+  'galiases', // zsh: the global alias table
+  'saliases', // zsh: the suffix alias table
+  'builtins', // zsh: the builtin table (read only, but listed with the others)
+  'reswords', // zsh: the reserved word table
+  'dis_aliases', // zsh: the disabled-entry twins of the tables above
+  'dis_galiases',
+  'dis_saliases',
+  'dis_functions',
+  'dis_builtins',
+  'dis_reswords',
+])
+const BINDING_WORD_SET = new Set(NAME_BINDING_WORDS)
+const LOOKUP_LOWER_SET = new Set(LOOKUP_NAMES.filter((n) => /^[a-z]/.test(n)))
+// an upper-case lookup name as a whole identifier, anywhere (`PATH=..`, `$PATH`, `BASH_CMDS[cat]=..`)
+const LOOKUP_UPPER_RX = new RegExp(String.raw`(?<![A-Za-z0-9_])(?:${LOOKUP_NAMES.filter((n) => /^[A-Z]/.test(n)).join('|')})(?![A-Za-z0-9_])`)
+// a `${..}` expansion of any lookup name, with zsh flags or modifiers in front (`${commands[cat]::=x}`, `${=path}`)
+const LOOKUP_EXPANSION_RX = new RegExp(String.raw`\$\{(?:\([^)]*\))?[#=~^+!]*(?:${LOOKUP_NAMES.join('|')})(?![A-Za-z0-9_])`)
+// the precommand words that are skipped on the way to the command word, with their own `-` options
+const NAME_SCAN_PREFIXES = new Set([...PASS_THROUGH_PREFIXES, 'noglob', 'nocorrect', '-', 'coproc'])
+
+// The code-level text of the whole command (card a6422462), read once per reading: the heredoc bodies with their
+// terminator lines and the comments are blanked (a newline stays a newline), the quote characters and backslashes
+// are gone (a code-level backslash-newline joins, an escaped character is a letter), so a quoted or escaped word
+// reads as the word the shell hands over (`al'i'as` is alias, `e\val` is eval, `$'\x65'` is `$x65`, still a `$`
+// word). Two spellings: words, where a blank or a separator inside a quote (or escaped) is `_`, so a quoted
+// `; eval` is no command position; literal, where they stay, so a quoted `"${commands[cat]::=x}"` keeps its braces.
+const CODE_LEVEL_TEXT = new WeakMap()
+function codeLevelText(ctx) {
+  let read = CODE_LEVEL_TEXT.get(ctx)
+  if (read !== undefined) return read
+  const { text, cls, heredocs } = ctx
+  const out = new Uint8Array(text.length)
+  for (const h of heredocs) out.fill(1, h.bodyStart, Math.max(h.bodyStart, h.termEnd))
+  let words = ''
+  let literal = ''
+  for (let k = 0; k < text.length; k++) {
+    const c = text[k]
+    const kind = cls[k]
+    if (out[k] || kind === CTX_CLASS.COMMENT || kind === CTX_CLASS.HEREDOC_Q || kind === CTX_CLASS.HEREDOC_U) {
+      words += c === '\n' ? '\n' : ' '
+      literal += c === '\n' ? '\n' : ' '
+      continue
+    }
+    const code = kind === CTX_CLASS.CODE || kind === CTX_CLASS.BQ
+    if (c === '\\' && code && k + 1 < text.length) {
+      const next = text[++k]
+      if (next === '\n' || next === '\\' || next === "'" || next === '"') continue
+      words += NOT_CODE_BLANK_RX.test(next) ? '_' : next
+      literal += next
+      continue
+    }
+    if (c === '\\' || c === "'" || c === '"') continue
+    words += code || !NOT_CODE_BLANK_RX.test(c) ? c : '_'
+    literal += c
+  }
+  read = { words, literal }
+  CODE_LEVEL_TEXT.set(ctx, read)
+  return read
 }
 
 // The command segment that ends at `pos`: back to the last code-level separator, but never into an earlier heredoc
@@ -833,7 +956,7 @@ const WHOLE_COMMAND_BLOCKS = new WeakMap()
 function wholeCommandBlocksData(ctx) {
   let blocked = WHOLE_COMMAND_BLOCKS.get(ctx)
   if (blocked === undefined) {
-    blocked = redirectsOutputElsewhere(ctx) || definesFunctionOrAlias(ctx)
+    blocked = redirectsOutputElsewhere(ctx) || definesFunctionOrAlias(ctx) || bindsNames(ctx)
     WHOLE_COMMAND_BLOCKS.set(ctx, blocked)
   }
   return blocked
@@ -847,18 +970,70 @@ function redirectsOutputElsewhere(ctx) {
 }
 
 function definesFunctionOrAlias(ctx) {
-  const { text, cls, heredocs } = ctx
+  const { text, cls } = ctx
   for (const m of text.matchAll(/(?<![$<>])\(\s*\)|(?<![\w$.-])function\s/g)) if (isCodeAt(cls, m.index)) return true
-  // alias is a builtin and stays the alias command through quotes (`al'i'as cat=bash`): read the text without
-  // quote and backslash characters, and without the heredoc bodies (prose)
-  let plain = ''
-  let last = 0
-  for (const h of heredocs) {
-    plain += text.slice(last, h.bodyStart)
-    last = h.bodyEnd
+  // alias is a builtin and stays the alias command through quotes (`al'i'as cat=bash`): read the code-level text
+  // (no quote and backslash characters, no heredoc bodies, no comments), the same text bindsNames reads
+  return /(?<![\w$.-])alias\s[^;&|\n]*?[\w.+-]+=/.test(codeLevelText(ctx).words)
+}
+
+// Rule 0 a-d (card a6422462, B6): true when the meaning of some command word is not fixed by the text, so no body
+// of the command can be proved to be data. Only ever blocks: a false here changes nothing.
+function bindsNames(ctx) {
+  const { words, literal } = codeLevelText(ctx)
+  // c. the lookup names: upper case anywhere, the zsh tables as a bare word or before `[`, `=`, `+=`, `:`, and any
+  //    `${..}` of one of them, also inside double quotes (the literal spelling keeps the braces there)
+  if (LOOKUP_UPPER_RX.test(words) || LOOKUP_EXPANSION_RX.test(literal)) return true
+  for (const token of words.split(/[\s;|&(){}`]/)) {
+    const m = /^([a-z_]+)(?:$|\[|\+?=|:)/.exec(token)
+    if (m && LOOKUP_LOWER_SET.has(m[1])) return true
   }
-  plain = (plain + text.slice(last)).replace(/[\\'"]/g, '')
-  return /(?<![\w$.-])alias\s[^;&|\n]*?[\w.+-]+=/.test(plain)
+  // d. an assignment to a computed name: an indirect expansion that assigns, an arithmetic assignment through `$`
+  if (/\$\{(?:!|\([^)]*P)[^}]*=/.test(literal)) return true
+  if (/\(\([^)]*\$[^)]*=|\$\[[^\]]*\$[^\]]*=/.test(literal)) return true
+  // a. and b. at every command position. A `${..}` is one argument word (collapsed innermost first, a bounded number
+  // of rounds: what is left only splits into more positions, which blocks more); a `{` that opens no group is a
+  // brace expansion and makes its word non-literal; a backtick run marks the word in front of it as `$`; every
+  // redirection operator is one `>` token that takes its target with it.
+  let scan = words
+  for (let round = 0; round < 8 && scan.includes('${'); round++) scan = scan.replace(/\$\{[^{}]*\}/g, '$V')
+  scan = scan
+    .replace(/(?<!\$)\{(?![\s}])/g, '$')
+    .replace(/`/g, () => '$`') // a function: in a replacement string `$` + backtick means "the text before"
+    .replace(/>\|/g, '>')
+    .replace(/(?<=[<>])&|&(?=>)/g, '')
+    .replace(/[<>]+-?/g, ' > ')
+  for (const segment of scan.split(/[\n;|&(){}`]/)) {
+    const tokens = segment.split(/\s+/).filter(Boolean)
+    let i = 0
+    while (i < tokens.length) {
+      const t = tokens[i]
+      // the precommand words first: `time` is a keyword too, and `time -p eval ..` must skip its option
+      if (NAME_SCAN_PREFIXES.has(t)) {
+        i++
+        while (i < tokens.length && tokens[i].startsWith('-') && tokens[i] !== '-') i++
+        continue
+      }
+      if (/^[A-Za-z_]\w*(?:\[[^\]]*\])?\+?=/.test(t) || SHELL_KEYWORDS.has(t)) { i++; continue }
+      if (t === '>') { i += 2; continue } // a redirection and its target
+      if (/^\d+$/.test(t) && tokens[i + 1] === '>') { i++; continue } // the descriptor of `2>f`
+      if (t === 'repeat') { i += 2; continue } // zsh: repeat N command
+      if (t === '[' || t === '[[') { // a test; in zsh a command may follow its closer (`if [[ .. ]] cmd`)
+        const close = tokens.indexOf(t === '[' ? ']' : ']]', i + 1)
+        i = close === -1 ? tokens.length : close + 1
+        continue
+      }
+      break
+    }
+    if (i >= tokens.length) continue
+    const word = tokens[i]
+    const args = tokens.slice(i + 1)
+    if (/[$`]/.test(word)) return true // a. not literal
+    if (BINDING_WORD_SET.has(word)) return true // b.
+    if ((word === 'printf' || word === 'print') && args.some((x) => /^-[A-Za-z]*v/.test(x))) return true
+    if ((word === 'set' || word === 'setopt' || word === 'unsetopt') && args.some((x) => (word === 'set' && /^[-+][A-Za-z]*[aAk]/.test(x)) || /allexport|keyword/i.test(x.replace(/_/g, '')))) return true
+  }
+  return false
 }
 
 const PIPE_SCAN_LIMIT = 1500
