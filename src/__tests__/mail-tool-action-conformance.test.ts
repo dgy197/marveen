@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { FILE_SHAPE, NAME_SHAPE, exemptionClass, gateDecision, hasForwardKey, hasForwardKeyName, isLabelFolderTool, isPlainDraft, isReadAction, mailEndpointWrite, mailRuleForward as mailRuleForwardJs, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
+import { FILE_SHAPE, NAME_SHAPE, exemptionClass, gateDecision, hasForwardKey, hasForwardKeyName, isLabelFolderTool, isPlainDraft, isReadAction, MAIL_ENDPOINT_TABLE, mailEndpointWrite, mailRuleForward as mailRuleForwardJs, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
 
 // graph-forward N1b (spec G1-G7): the mail tools are recognised by their
 // ACTION, whatever the server name or version prefix. The gap it closes: the
@@ -777,6 +777,50 @@ describe('mail-writing endpoint table (card 31d8fc36 N0): JS and python agree on
     EW.residual.forEach((p) => check(`residual ${p.label}`, p.expected === 'send'))
     // walk limits fail closed (true); a non-object input is false here (mailRuleForward already denies it)
     EW.limits.forEach((l) => check(`limits ${l.label}`, l.kind !== 'string_input'))
+  })
+
+  it('E1/B1: a long run of blanks does not make the endpoint normalisation quadratic (each call under 1000 ms)', () => {
+    const N = ' '.repeat(200000)
+    const timed = <T>(f: () => T): [T, number] => { const t0 = performance.now(); const r = f(); return [r, performance.now() - t0] }
+    const cases: Array<[string, string, boolean]> = [
+      ['blanks inside a word', 'a' + N + 'b', false],
+      ['request line, blanks inside', 'get a' + N + 'b', false],
+      ['request line, blanks before the HTTP version (A1)', 'post /me/sendMail' + N + 'http/1.1', true],
+      ['blanks on both ends (A1)', N + '/me/sendMail' + N, true],
+    ]
+    for (const [label, s, want] of cases) {
+      const [got, ms] = timed(() => mailEndpointWrite({ path: s }))
+      expect(got, label).toBe(want)
+      expect(ms, `${label} took ${ms} ms`).toBeLessThan(1000)
+    }
+    const input = { path: 'a' + N + 'b', x: '/me/sendMail' }
+    const [d, ms] = timed(() => gateDecision(EW.names[0], input, () => false))
+    expect(d.deny).toBe(true)
+    expect(d.kind).toBe('mail-tool-send')
+    expect(ms, `gateDecision took ${ms} ms`).toBeLessThan(1000)
+    const [a, ms2] = timed(() => mailToolAction(EW.names[0], input))
+    expect(a).toBe('send')
+    expect(ms2, `mailToolAction took ${ms2} ms`).toBeLessThan(1000)
+  })
+
+  it('E2: the JS and python MAIL_ENDPOINT_TABLE are equal, and both are immutable', () => {
+    const out = execFileSync('python3', ['-I', '-c', `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(EXTRACT_DIR)})
+import email_extract as e
+t = e.MAIL_ENDPOINT_TABLE
+frozen = isinstance(t, tuple) and all(isinstance(r, tuple) and isinstance(r[2], tuple) and isinstance(r[3], tuple) for r in t)
+print(json.dumps({'frozen': frozen, 'rows': [[r[0], r[1], list(r[2]), list(r[3])] for r in t]}))
+`], { encoding: 'utf-8' })
+    const py = JSON.parse(out.trim()) as { frozen: boolean; rows: Array<[string, string, string[], string[]]> }
+    expect(py.frozen, 'python table is a tuple of tuples').toBe(true)
+    expect(MAIL_ENDPOINT_TABLE.map((r: { id: string; cls: string; first: readonly string[]; then: readonly string[] }) => [r.id, r.cls, [...r.first], [...r.then]])).toEqual(py.rows)
+    expect(Object.isFrozen(MAIL_ENDPOINT_TABLE), 'JS table').toBe(true)
+    for (const r of MAIL_ENDPOINT_TABLE) {
+      expect(Object.isFrozen(r), `row ${r.id}`).toBe(true)
+      expect(Object.isFrozen(r.first), `first ${r.id}`).toBe(true)
+      expect(Object.isFrozen(r.then), `then ${r.id}`).toBe(true)
+    }
   })
 
   it('AC5/Q4: the tools the classifier names keep their class and deny kind, with an endpoint form in the input', () => {

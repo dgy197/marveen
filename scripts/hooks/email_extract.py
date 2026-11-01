@@ -1418,7 +1418,6 @@ _ENDPOINT_BODY_KEYS = ("body", "data", "json", "payload", "requestbody", "conten
 _ENDPOINT_WS = " \t\r\n\f\v"
 _ENDPOINT_WS_RE = re.compile(r"[ \t\r\n\f\v]")
 _ENDPOINT_REQ_LINE = re.compile(r"(get|head|options|post|put|patch|delete|merge)[ \t]+")
-_ENDPOINT_HTTP_VER = re.compile(r"[ \t]+http/[0-9.]+\Z")
 _ENDPOINT_SCHEME = re.compile(r"[a-z][a-z0-9+.\-]*://[^/\\]*")
 _ENDPOINT_PCT = re.compile(r"%([0-9a-fA-F]{2})")
 _ENDPOINT_SPLIT = re.compile(r"[/\\]+")
@@ -1431,6 +1430,21 @@ _ENDPOINT_UNREADABLE = ("atjaro-hivas: a cimzett a nyers API-kerelemben van, azt
 
 def _endpoint_lower(s: str) -> str:
     return s.translate(_ENDPOINT_LOWER)
+
+
+def _endpoint_strip_http_version(t: str) -> str:
+    """Drops a trailing "<space/tab run>http/<digits and dots>" (t is lower-case). A loop, not a regex:
+    the regex backtracks quadratically on a long run of blanks (review E1/B1)."""
+    i = t.rfind("http/")
+    if i <= 0 or t[i - 1] not in " \t":
+        return t
+    tail = t[i + 5:]
+    if not tail or tail.strip("0123456789."):
+        return t
+    j = i
+    while j > 0 and t[j - 1] in " \t":
+        j -= 1
+    return t[:j]
 
 
 def _endpoint_decode(s: str) -> str:
@@ -1460,7 +1474,7 @@ def _endpoint_of(s: str):
     m = _ENDPOINT_REQ_LINE.match(t)
     if m:
         req_method = m.group(1)
-        t = _ENDPOINT_HTTP_VER.sub("", t[m.end():])
+        t = _endpoint_strip_http_version(t[m.end():])
     if _ENDPOINT_WS_RE.search(t) or ("/" not in t and "\\" not in t):
         return None
     m = _ENDPOINT_SCHEME.match(t)

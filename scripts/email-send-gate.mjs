@@ -2014,14 +2014,29 @@ const ENDPOINT_READ_METHODS = Object.freeze(['get', 'head', 'options'])
 const ENDPOINT_METHOD_KEYS = Object.freeze(['method', 'httpmethod', 'verb', 'requestmethod'])
 const ENDPOINT_BODY_KEYS = Object.freeze(['body', 'data', 'json', 'payload', 'requestbody', 'content'])
 // Explicit ASCII sets, never \s / trim() / toLowerCase(): the Python twin must agree byte for byte.
-const ENDPOINT_TRIM = /^[ \t\r\n\f\v]+|[ \t\r\n\f\v]+$/g
 const ENDPOINT_WS = /[ \t\r\n\f\v]/
 const ENDPOINT_REQ_LINE = /^(get|head|options|post|put|patch|delete|merge)[ \t]+/
-const ENDPOINT_HTTP_VER = /[ \t]+http\/[0-9.]+$/
 const ENDPOINT_SCHEME = /^[a-z][a-z0-9+.-]*:\/\/[^/\\]*/
 const ENDPOINT_PCT = /%([0-9a-fA-F]{2})/g
 const endpointLower = (s) => s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32))
-const endpointTrim = (s) => s.replace(ENDPOINT_TRIM, '')
+const ENDPOINT_WS_SET = ' \t\r\n\f\v'
+// Index loops, not regexes: a trailing-blank regex backtracks quadratically on a long run (review E1/B1).
+function endpointTrim(s) {
+  let a = 0
+  let b = s.length
+  while (a < b && ENDPOINT_WS_SET.includes(s[a])) a++
+  while (b > a && ENDPOINT_WS_SET.includes(s[b - 1])) b--
+  return s.slice(a, b)
+}
+// Drops a trailing "<space/tab run>http/<digits and dots>" (t is lower-case); a loop for the same reason.
+function endpointStripHttpVersion(t) {
+  const i = t.lastIndexOf('http/')
+  if (i <= 0 || (t[i - 1] !== ' ' && t[i - 1] !== '\t')) return t
+  if (!/^[0-9.]+$/.test(t.slice(i + 5))) return t
+  let j = i
+  while (j > 0 && (t[j - 1] === ' ' || t[j - 1] === '\t')) j--
+  return t.slice(0, j)
+}
 
 // Percent-decoding by hand (ASCII hex only; a bad escape stays), at most 3 rounds.
 function endpointDecode(s) {
@@ -2046,7 +2061,7 @@ function endpointOf(s) {
   const m = ENDPOINT_REQ_LINE.exec(t)
   if (m) {
     reqMethod = m[1]
-    t = t.slice(m[0].length).replace(ENDPOINT_HTTP_VER, '')
+    t = endpointStripHttpVersion(t.slice(m[0].length))
   }
   if (ENDPOINT_WS.test(t) || !/[/\\]/.test(t)) return null
   t = t.replace(ENDPOINT_SCHEME, '')

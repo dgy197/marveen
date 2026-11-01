@@ -360,6 +360,28 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     check("mail_endpoint_write is False on every benign row", not fn_ben, f"{len(fn_ben)} differ, e.g. {fn_ben[:2]}")
     check("mail_endpoint_write follows the residual class", not fn_res, f"{len(fn_res)} differ, e.g. {fn_res[:2]}")
     check("mail_endpoint_write: a walk-limit overflow is True, a non-object input is False (the forward rule already denies it)", not fn_lim, f"{len(fn_lim)} differ: {fn_lim}")
+    # review E1/B1: a long run of blanks must not make the normalisation quadratic (the hook timeout is 8-10 s)
+    import time
+    N_SP = " " * 200000
+    for label, s, want in [
+        ("blanks inside a word", "a" + N_SP + "b", False),
+        ("request line, blanks inside", "get a" + N_SP + "b", False),
+        ("request line, blanks before the HTTP version (A1)", "post /me/sendMail" + N_SP + "http/1.1", True),
+        ("blanks on both ends (A1)", N_SP + "/me/sendMail" + N_SP, True),
+    ]:
+        t0 = time.perf_counter()
+        got = attempt(lambda: mew({"path": s}))
+        ms = (time.perf_counter() - t0) * 1000
+        check(f"E1/B1 cost: {label} -> {want} in under 1000 ms", got is want and ms < 1000, f"got {got!r} in {ms:.0f} ms")
+    t0 = time.perf_counter()
+    got = attempt(lambda: ee.mail_tool_action(EW["names"][0], {"path": "a" + N_SP + "b", "x": "/me/sendMail"}))
+    ms = (time.perf_counter() - t0) * 1000
+    check("E1/B1 cost: mail_tool_action on a gateway name with blanks in one field and an endpoint in another is a send in under 1000 ms",
+          got == "send" and ms < 1000, f"got {got!r} in {ms:.0f} ms")
+    # E2: the table is immutable
+    check("E2: the python MAIL_ENDPOINT_TABLE is a tuple of tuples",
+          isinstance(ee.MAIL_ENDPOINT_TABLE, tuple) and all(isinstance(r, tuple) and isinstance(r[2], tuple) and isinstance(r[3], tuple)
+                                                             for r in ee.MAIL_ENDPOINT_TABLE))
     # AC5 / Q4: the tools the classifier names keep their class, with an endpoint form in the input
     for c in EW["named_unchanged"]:
         got = attempt(lambda: ee.mail_tool_action(c["tool"], c["input"]))
