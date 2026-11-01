@@ -292,6 +292,130 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
           and not hk({"to": "x@y.hu", "id": "<a@b>"}) and not hk({"x": "forward"}, False))
     check("_has_forward_key_name: not a container = forwarding", hk("x") is True and hk(None) is True)
 
+    # --- 1b2. card 31d8fc36 N0 (RED first): the mail-writing API endpoint table ------------
+    # A gateway tool of a mail server (a name the classifier does not know) that carries a raw API request in ANY
+    # string of its input - a sending endpoint (A1-A3, any method) or a rule / settings endpoint with a writing
+    # request (B1-B3) - is a send (Q1: the approval gate then REFUSES it, the real recipient sits in the raw request).
+    # The rows are the `name_independent.endpoint_write` block of the shared fixture; the JS twin runs the same block
+    # in src/__tests__/mail-tool-action-conformance.test.ts. Before N1/N2 the positive rows, the function and the gate
+    # rows fail; the benign, residual (a-c), limits and named_unchanged rows are green.
+    print("mail-writing endpoint table")
+    EW = NI["endpoint_write"]
+
+    def ew_limit(l):
+        if l["kind"] == "deep":
+            d = {"a": 1}
+            for _ in range(l["depth"]):
+                d = {"n": d}
+            return d
+        if l["kind"] == "wide":
+            return {"list": list(range(l["n"]))}
+        if l["kind"] == "long_json":
+            return {"b": "{" + "a" * l["chars"]}
+        return l["value"]
+
+    mew = getattr(ee, "mail_endpoint_write", None)
+    check("mail_endpoint_write exists in email_extract", callable(mew))
+    check("the endpoint_write block is non-trivial: every table row A1-B3, 17 names, benign >= 18, residual with a send and a null",
+          {p["row"] for p in EW["positive"]} == {"A1", "A2", "A3", "B1", "B2", "B3"} and len(EW["names"]) >= 17
+          and len(EW["benign"]) >= 18 and {r["expected"] for r in EW["residual"]} == {"send", None} and len(EW["limits"]) == 4
+          and len(EW["named_unchanged"]) >= 7)
+
+    def ew_differs(rows, want_of, inp_of=lambda r: r["input"]):
+        """The gateway names on which mail_tool_action differs from want_of(row); one entry per name."""
+        out = []
+        for t in EW["names"]:
+            got = attempt(lambda: ee.mail_tool_action(t, inp_of(rows)))
+            if got != want_of(rows):
+                out.append(f"{t}: {got!r}")
+        return out
+
+    # AC1/AC2: every positive row is a send on every gateway name, and the forward rule keeps its place (AC5)
+    for p in EW["positive"]:
+        bad = ew_differs(p, lambda r: "send")
+        check(f"AC1/AC2 {p['row']} {p['label']}: a send on all {len(EW['names'])} gateway names", not bad, f"{len(bad)} differ, e.g. {bad[:2]}")
+    # AC3: the benign corpus is no send on any gateway name
+    for b in EW["benign"]:
+        bad = ew_differs(b, lambda r: None)
+        check(f"AC3 benign {b['label']}: not a send on any gateway name", not bad, f"{len(bad)} differ, e.g. {bad[:2]}")
+    # Q6: the accepted remainder
+    for r in EW["residual"]:
+        bad = ew_differs(r, lambda x: x["expected"])
+        check(f"Q6 residual {r['label']}: {r['expected']!r} on every gateway name", not bad, f"{len(bad)} differ, e.g. {bad[:2]}")
+    # AC4: walk-limit overflow and a non-object fail closed (green already: the forward rule denies them first)
+    for l in EW["limits"]:
+        bad = ew_differs(l, lambda x: "send", inp_of=ew_limit)
+        check(f"AC4 limits {l['label']}: a send on every gateway name", not bad, f"{len(bad)} differ, e.g. {bad[:2]}")
+    # AC5: mail_rule_forward is decided by forward keys / words alone, the table adds nothing to it: a row that declares
+    # the endpoint kind (no forward word in it) is not a rule forward on any gateway name
+    bad = [f"{t} {p['label']}" for t in EW["names"] for p in EW["positive"]
+           if p.get("kind") == "mail-tool-send" and attempt(lambda: ee.mail_rule_forward(t, p["input"])) is not False]
+    check("AC5: mail_rule_forward stays False on every endpoint row without a forward word", not bad, f"{len(bad)} differ, e.g. {bad[:2]}")
+    # the function twin (AC4, AC11)
+    fn_pos = [p["label"] for p in EW["positive"] if attempt(lambda: mew(p["input"])) is not True]
+    fn_ben = [b["label"] for b in EW["benign"] if attempt(lambda: mew(b["input"])) is not False]
+    fn_res = [r["label"] for r in EW["residual"] if attempt(lambda: mew(r["input"])) is not (r["expected"] == "send")]
+    fn_lim = [l["label"] for l in EW["limits"] if attempt(lambda: mew(ew_limit(l))) is not (l["kind"] != "string_input")]
+    check("mail_endpoint_write is True on every positive row", not fn_pos, f"{len(fn_pos)} differ, e.g. {fn_pos[:2]}")
+    check("mail_endpoint_write is False on every benign row", not fn_ben, f"{len(fn_ben)} differ, e.g. {fn_ben[:2]}")
+    check("mail_endpoint_write follows the residual class", not fn_res, f"{len(fn_res)} differ, e.g. {fn_res[:2]}")
+    check("mail_endpoint_write: a walk-limit overflow is True, a non-object input is False (the forward rule already denies it)", not fn_lim, f"{len(fn_lim)} differ: {fn_lim}")
+    # AC5 / Q4: the tools the classifier names keep their class, with an endpoint form in the input
+    for c in EW["named_unchanged"]:
+        got = attempt(lambda: ee.mail_tool_action(c["tool"], c["input"]))
+        check(f"Q4 {c['tool']}: {c['note']} (class {c['action']!r})", got == c["action"], f"got {got!r}")
+    # AC6(b)/Q1: the envelope of an endpoint send is unreadable (not the "not a mail tool" reason of an unknown name)
+    bad = []
+    for t in EW["names"]:
+        for p in EW["positive"]:
+            env = attempt(lambda: ee.collect_email_envelope(t, p["input"]))
+            reason = env.get("unreadable_reason") if isinstance(env, dict) else None
+            if not reason or "nem email-kuldo" in str(reason):
+                bad.append(f"{t} {p['label']}")
+    check("AC6(b) Q1: collect_email_envelope names an unreadable_reason for every endpoint send (it is a send, not 'nem email-kuldo tool')",
+          not bad, f"{len(bad)} differ, e.g. {bad[:2]}")
+    # AC6(a)/Q1/Q2: the approval gate does not leave through the name prefilter, it refuses; a benign read passes
+    ew1 = make_store(os.path.join(td, "ew1"), 1)
+    ew2 = make_store(os.path.join(td, "ew2"), 2)
+    ew3 = make_store(os.path.join(td, "ew3"), 3)
+    gate_names = ("mcp__outlook__request", "mcp__ms365__call_api", "mcp__gmail__graph_request", "mcp__outlook__fetch")
+    first_of = {}
+    for p in EW["positive"]:
+        first_of.setdefault(p["row"], p)
+    for row_id, p in first_of.items():
+        for t in gate_names:
+            code, _, err = run(GATE, ew1, t, p["input"])
+            check(f"AC6(a) approval gate L1: {t} + {row_id} {p['label']} is a send, DENIED", code == 2 and "szint 1" in err, f"exit={code} err={err[:120]!r}")
+            code, _, err = run(GATE, ew2, t, p["input"])
+            check(f"AC6(a) approval gate L2: {t} + {row_id} {p['label']} is REFUSED (the envelope is unreadable, Q1)", code == 2, f"exit={code} err={err[:120]!r}")
+    for t in gate_names:
+        code, _, err = run(GATE, ew3, t, EW["positive"][0]["input"])
+        check(f"approval gate L3 passes an endpoint send, as it passes every send ({t})", code == 0, f"exit={code} err={err[:120]!r}")
+    for b in EW["benign"][:6]:
+        for t in gate_names:
+            code, _, err = run(GATE, ew2, t, b["input"])
+            check(f"AC3 approval gate L2: {t} + benign {b['label']} passes", code == 0, f"exit={code} err={err[:120]!r}")
+    # AC6(c): the copy gate audits an endpoint send (a send with no readable text blocks; an em dash in the body blocks);
+    # the draft log does not write it, and a draft-class tool with a table URL is still a draft for it (Q4)
+    for t in gate_names:
+        code, _, err = run(COPY, ew1, t, EW["positive"][0]["input"])
+        check(f"AC6(c) copy gate: {t} endpoint send with no readable text is blocked (exit 2)", code == 2, f"exit={code} err={err[:120]!r}")
+        probe = dict(EW["positive"][0]["input"])
+        probe["body"] = "Próba " + EM_DASH + " vége."
+        code, _, err = run(COPY, ew1, t, probe)
+        check(f"AC6(c) copy gate: {t} endpoint send with an em dash in the body is audited (exit 2)", code == 2, f"exit={code} err={err[:120]!r}")
+        code, _, err = run(COPY, ew1, t, EW["benign"][0]["input"])
+        check(f"AC3 copy gate: {t} benign read passes (exit 0)", code == 0, f"exit={code} err={err[:120]!r}")
+    dlog = attempt(lambda: load("mta_draft_log", os.path.join(HOOKS, "email-draft-log.py")))
+    if isinstance(dlog, str):
+        check("AC6(c) email-draft-log loads", False, dlog)
+    else:
+        named_draft = [c for c in EW["named_unchanged"] if c["tool"] == "mcp__gmail__create_draft"][0]
+        check("AC6(c) email-draft-log: an endpoint send is not a draft call",
+              all(attempt(lambda: dlog._is_draft_call(gate, t, p["input"])) is False for t in gate_names for p in EW["positive"][:6]))
+        check("AC6(c) Q4 email-draft-log: a draft-class tool with a table URL in a field is still a draft call",
+              attempt(lambda: dlog._is_draft_call(gate, named_draft["tool"], named_draft["input"])) is True)
+
     # --- 1c. card 61fcac1e N1: the free-text invariant ------------------------
     # The prose exemption belongs to a POSITIVELY identified mail tool (_is_plain_draft: draft class, a mail noun in a
     # segment, no rule / filter / script / settings / automation word); every other non-reader, non-send tool has the
