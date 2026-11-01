@@ -14,7 +14,8 @@ import { formatUsd, type PricingFileResult } from './gate.js'
 import { newestGrantCanary, rowCost, windowSince } from './grant-canary.js'
 import { currentPeriod, grantRemaining, priorCharge } from './grant-model.js'
 import { measureGrantInputs, readChain } from './grant-period.js'
-import type { Micro, PricingTable } from './types.js'
+import type { EnforceConfigView } from '../approval-telegram-text.js'
+import type { Factor, Micro, PricingTable } from './types.js'
 
 export interface GrantModelStatus {
   readonly source: 'grant_model'
@@ -34,6 +35,50 @@ export interface GrantModelStatus {
 
 function iso(ms: number): string {
   return new Date(ms).toISOString()
+}
+
+/** A multiplier as a decimal (4 places, trailing zeros trimmed); "~" marks a rounded-down figure. */
+function formatFactor(f: Factor): string {
+  const whole = f.num / f.den
+  const rem = f.num % f.den
+  const scaled = (rem * 10000n) / f.den
+  const frac = scaled.toString().padStart(4, '0').replace(/0+$/, '')
+  const exact = scaled * f.den === rem * 10000n
+  return `${exact ? '' : '~'}${whole.toString()}${frac === '' ? '' : `.${frac}`}`
+}
+
+/**
+ * Card 40e03382, R2 MED-1: the grant-model figures the enforce button's text
+ * shows, from the config as it is NOW. `match` only when that config hashes
+ * (the reconstructed file measured) to `expectedHash`, the payload's
+ * grant_model_hash; a config that cannot be read, is not grant_model, or whose
+ * file is not good is `unreadable`; any other hash is `mismatch`. The remaining
+ * is grantModelStatus's remaining_usd (the grant less the prior charge at the
+ * period's start) -- no formula of its own.
+ */
+export function enforceConfigView(
+  cfgR: ConfigLoadResult,
+  expectedHash: string,
+  loadPricing: (nowMs: number) => PricingFileResult,
+  nowMs: number,
+): EnforceConfigView {
+  const status = grantModelStatus(null, cfgR, loadPricing, nowMs)
+  if (status === null || !cfgR.ok || status.config_hash === null) return { state: 'unreadable' }
+  if (status.config_hash !== expectedHash) return { state: 'mismatch' }
+  const gm = cfgR.config.grantModel as NonNullable<typeof cfgR.config.grantModel>
+  const period = currentPeriod(gm, nowMs)
+  const rc = gm.reconstructed
+  return {
+    state: 'match',
+    grantUsd: formatUsd(gm.grantUsd),
+    grantDays: [...gm.grantDays],
+    periodLbMs: period.lbMs,
+    periodExpiresMs: period.expiresMs,
+    boundaryLeadH: gm.boundaryLeadH,
+    multiplier: rc === null ? null : formatFactor(rc.multiplier),
+    gapChargeUsd: rc === null ? null : formatUsd(rc.gap.chargeUsd),
+    remainingUsd: status.remaining_usd,
+  }
 }
 
 /** The block, or null when the config does not select the grant model (or cannot be read). */

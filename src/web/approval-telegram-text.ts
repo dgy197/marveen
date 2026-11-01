@@ -261,7 +261,30 @@ export interface CreditGateApprovalMeta {
   timeoutAt: number | null
   // Incident clear only: the gate's own event row; null/absent = not found.
   incident?: CreditGateIncidentView | null
+  // Enforce only (card 40e03382, R2 MED-1): what the credit-gate config says NOW,
+  // read by the caller. null/absent reads as unreadable: the text then claims nothing.
+  grantModel?: EnforceConfigView | null
 }
+
+// The grant-model config as the enforce button's text shows it. `match` only when
+// the config, read now, hashes to the payload's grant_model_hash -- the hash is
+// what binds these values; any other state shows no value as bound.
+export type EnforceConfigView =
+  | {
+      state: 'match'
+      grantUsd: string
+      grantDays: readonly number[]
+      periodLbMs: number
+      periodExpiresMs: number
+      boundaryLeadH: number
+      // null: the config has no reconstructed block.
+      multiplier: string | null
+      gapChargeUsd: string | null
+      // null: the remaining cannot be computed now (pricing or rows unusable).
+      remainingUsd: string | null
+    }
+  | { state: 'mismatch' }
+  | { state: 'unreadable' }
 
 // The outcome line of a request the press closed because its content changed
 // after the button message went out (BE-3b LOW-2).
@@ -322,13 +345,40 @@ function canaryLines(p: CanaryPayload): string[] {
 }
 
 // Card 40e03382: the one button of the grant_model calibration. The owner sees
-// what the press binds: the config hash, enforce, and the canary's terms.
-function enforceLines(p: EnforcePayload): string[] {
+// what the press binds: the config hash, enforce, the grant model's numbers
+// (R2 MED-1: read from the config at render time, shown only when it still
+// hashes to the payload's grant_model_hash) and the canary's terms.
+function grantModelLines(view: EnforceConfigView | null | undefined): string[] {
+  if (!view || view.state === 'unreadable') {
+    return [
+      'FIGYELEM: a kredit-kapu konfigurációja most nem olvasható (vagy nem grant-modell), ' +
+        'ezért nem ellenőrizhető, mit nyit meg a gomb. Ne hagyd jóvá, kérj új gombot.',
+    ]
+  }
+  if (view.state === 'mismatch') {
+    return [
+      'FIGYELEM: a kredit-kapu konfigurációja a kérés óta megváltozott, nem egyezik a gomb hash-ével. ' +
+        'A gomb NEM azt nyitja meg, amit a konfiguráció most mutat. Ne hagyd jóvá, kérj új gombot.',
+    ]
+  }
+  return [
+    `Grant összege: ${cgVisible(view.grantUsd)} USD`,
+    `Grant napjai (a hónap napja): ${cgVisible(view.grantDays.join(', '))}`,
+    `Mostani periódus (Budapest): ${formatBudapest(Math.floor(view.periodLbMs / 1000))} - ${formatBudapest(Math.floor(view.periodExpiresMs / 1000))}`,
+    `Periódushatár előrehozása: ${cgVisible(String(view.boundaryLeadH))} óra`,
+    `Szorzó: ${view.multiplier === null ? 'nincs helyreállított blokk' : cgVisible(view.multiplier)}`,
+    `Hézag-terhelés: ${view.gapChargeUsd === null ? 'nincs helyreállított blokk' : `${cgVisible(view.gapChargeUsd)} USD`}`,
+    `Várt maradék a periódus elején: ${view.remainingUsd === null ? 'most nem számolható' : `${cgVisible(view.remainingUsd)} USD`}`,
+  ]
+}
+
+function enforceLines(p: EnforcePayload, grantModel: EnforceConfigView | null | undefined): string[] {
   const c = p.canary
   const lines = [
     'Kredit-kapu: grant-modell bekapcsolása (enforce + kanári, egy gomb)',
     `Grant-modell hash: ${cgVisible(p.grant_model_hash)}`,
     `Üzemmód: ${cgVisible(p.mode)}`,
+    ...grantModelLines(grantModel),
     'Kanári-futás (ugyanebből a jóváhagyásból indulhat):',
     `Modell: ${cgVisible(c.model)}`,
     `Költségplafon: ${cgVisible(c.budget_usd)} USD`,
@@ -367,7 +417,7 @@ export function buildCreditGateApprovalText(payload: CreditGatePayload, meta: Cr
   const body =
     payload.kind === 'credit_gate_calibration' ? calibrationLines(payload)
       : payload.kind === 'credit_gate_canary' ? canaryLines(payload)
-        : payload.kind === 'credit_gate_enforce' ? enforceLines(payload)
+        : payload.kind === 'credit_gate_enforce' ? enforceLines(payload, meta.grantModel)
           : incidentClearLines(payload, meta.incident)
   const expires = meta.timeoutAt != null ? formatBudapest(meta.timeoutAt) : 'nincs'
   return [

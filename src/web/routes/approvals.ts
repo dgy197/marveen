@@ -24,8 +24,11 @@ import {
   buildBoundApprovalMessages, formatOutcomeText,
   buildCreditGateApprovalText, buildCreditGatePlainText, formatCreditGateOutcomeText,
   CREDIT_GATE_CHANGED_OUTCOME,
-  type CreditGateIncidentView, type EnvelopeView,
+  type CreditGateIncidentView, type EnforceConfigView, type EnvelopeView,
 } from '../approval-telegram-text.js'
+import { CONFIG_FILE, CREDIT_GATE_DIR, loadCreditGateConfigFile, PRICING_FILE } from '../credit-gate/config.js'
+import { enforceConfigView } from '../credit-gate/grant-status.js'
+import { getCreditGateRuntime, loadPricingFile } from '../credit-gate/runtime.js'
 import {
   CREDIT_GATE_REQUESTER_RE, claimsCreditGatePrefix, creditGateBinding, isCreditGateCategory, parseCreditGatePayload,
   type CreditGateUnboundReason,
@@ -526,6 +529,22 @@ export function creditGateIncidentEvent(eventId: number): CreditGateIncidentView
   return { reason: r.reason, atMs: r.at }
 }
 
+// Card 40e03382 (R2 MED-1): the grant-model config as it is now, for the enforce
+// button's text; an unreadable config (or any throw) is `unreadable`, never a guess.
+export function creditGateEnforceView(grantModelHash: string, nowMs: number = Date.now()): EnforceConfigView {
+  try {
+    const dir = join(getCreditGateRuntime().storeDir, CREDIT_GATE_DIR)
+    return enforceConfigView(
+      loadCreditGateConfigFile(join(dir, CONFIG_FILE)),
+      grantModelHash,
+      (t) => loadPricingFile(join(dir, PRICING_FILE), t),
+      nowMs,
+    )
+  } catch {
+    return { state: 'unreadable' }
+  }
+}
+
 function planCreditGateButtons(approval: Approval, sendToken: string, ownerChat: string): ButtonPlan {
   const binding = creditGateBinding(approval)
   if (!binding.bound) return { ok: false, reason: binding.reason }
@@ -538,6 +557,7 @@ function planCreditGateButtons(approval: Approval, sendToken: string, ownerChat:
   }
   const refusal = buttonPreconditionRefusal(sendToken, ownerChat)
   if (refusal) return { ok: false, reason: refusal }
+  const grantModel = binding.payload.kind === 'credit_gate_enforce' ? creditGateEnforceView(binding.payload.grant_model_hash) : null
   const message = buildCreditGateApprovalText(binding.payload, {
     agentId: approval.agent_id,
     category: approval.category,
@@ -545,6 +565,7 @@ function planCreditGateButtons(approval: Approval, sendToken: string, ownerChat:
     hash16: (approval.content_hash ?? '').slice(0, 16),
     timeoutAt: approval.timeout_at,
     incident,
+    grantModel,
   })
   if (message.length + APPROVAL_OUTCOME_RESERVE > TELEGRAM_TEXT_LIMIT - TEST_RUN_PREFIX.length) return { ok: false, reason: 'too_long' }
   return { ok: true, message }
