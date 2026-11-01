@@ -2017,9 +2017,10 @@ export function isPlainDraft(segments, classes) {
 // Tool CLASSES for the exemptions (card ea9215f6). The class is picked from the tool NAME
 // in this order, the first that fits wins: plain draft, label / folder tool, move / copy
 // tool, message-operation tool, reply / settings tool, none. All lists are closed and
-// whole-word (a rule-class, forward, redirect or fwd word in any segment word, as a
-// substring, keeps a tool out of the first four classes), so a miss only makes a tool
-// stricter. A version or one-letter prefix glued to a VERB (v2modify, 2move, xcreate) is cut
+// whole-word (a rule-class word in any segment word, as a substring, keeps a tool out of
+// the first four classes; a forward, redirect or fwd word keeps it out of the label, move
+// and message-operation classes, while in the plain class `forward` stays a mail noun, so
+// createForward is a plain draft), so a miss only makes a tool stricter. A version or one-letter prefix glued to a VERB (v2modify, 2move, xcreate) is cut
 // off for the verb test only; the excluding words always count as substrings.
 //   label / folder tool (create_label, update_folder, delete_label, modify_labels,
 //     create_mailbox ...): names a container, not a letter or a rule; its NAME ("Forwarded",
