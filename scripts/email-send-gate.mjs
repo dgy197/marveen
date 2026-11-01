@@ -1840,7 +1840,8 @@ export function isReadAction(segments) {
 //     and the match is exact or by suffix on purpose, so `actionName` or `bodyAction` are
 //     NOT free text, and a rule script (`sieveScript`) is not either.
 // INERT keys are exempt in both modes: label / folder identifiers ("Forwarded") name a
-// place, a folder target (`destination`, `target`, `targetFolder`) names a place, a
+// place (a bare `destination` / `target` / `targetFolder` is NOT inert: a global exemption
+// there let a script or redirect value through in strict mode, 61fcac1e BE r2 B4), a
 // selector (`query`, `search` ..) only picks messages, and an auto-reply text is stored,
 // not executed; none of them sends a message to a third party. They
 // exempt the VALUE words only: a forward KEY below them (also inside a JSON string in
@@ -1857,7 +1858,6 @@ const FREE_TEXT_KEYS = new Set(['body', 'htmlbody', 'textbody', 'plaintext', 'pl
 const INERT_KEYS = new Set(['label', 'labels',
   'labelids', 'addlabelids', 'removelabelids', 'labelid', 'labelname', 'folder', 'folderid', 'foldername',
   'destinationfolder', 'destinationfolderid', 'parentfolderid', 'mailbox',
-  'destination', 'target', 'targetfolder',
   'signature', 'query', 'q', 'search', 'keyword', 'keywords',
   'responsebodyplaintext', 'responsebodyhtml', 'internalreplymessage', 'externalreplymessage', 'autoreplymessage'])
 // the name keys of a label / folder tool: inert only for such a tool (isLabelFolderTool)
