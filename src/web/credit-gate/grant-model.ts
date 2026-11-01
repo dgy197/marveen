@@ -26,7 +26,7 @@ import type { Micro, PricingTable } from './types.js'
 
 const HOUR_MS = 3_600_000
 /** The version of the hashed shape; bump it if the hashed parts change. */
-const HASH_VERSION = 1
+const HASH_VERSION = 2
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/
 
 export interface GrantPeriod {
@@ -114,9 +114,12 @@ export function grantRemaining(cfg: GrantModelConfig, prior: Micro): Micro {
 /**
  * sha256 of everything the grant model's calibration rests on (spec 4): the
  * grantModel block, the thresholds, the expiry margin, the batch horizon, the
- * ledger sources, and the reconstructed file's sha256 as MEASURED (`fileSha`,
- * null when the config has no reconstructed block). A change to any of them is
- * a different hash, so the approval that bound the old one stops matching.
+ * ledger sources, the reservation factor, the ledger age limit, and the
+ * reconstructed file's sha256 as MEASURED (`fileSha`, null when the config has
+ * no reconstructed block). A change to any of them is a different hash, so the
+ * approval that bound the old one stops matching.
+ * The spec keeps refreshS, calibrationMaxAgeH, canaryCloseMaxH, stopFile and
+ * protected outside the button binding (they are not hashed on purpose).
  */
 export function grantModelHash(config: CreditGateConfig, fileSha: string | null): string {
   const gm = config.grantModel
@@ -149,6 +152,9 @@ export function grantModelHash(config: CreditGateConfig, fileSha: string | null)
     },
     expiryMarginH: config.expiryMarginH,
     batchHorizonH: config.batchHorizonH,
+    // R2 LOW-2: the reserve's inflation and the ledger's staleness limit move what the gate admits.
+    reservationFactor: { num: config.reservationFactor.num.toString(), den: config.reservationFactor.den.toString() },
+    maxLedgerAgeS: config.maxLedgerAgeS,
     ledgerSources: config.ledgerSources.map((s) => ({ id: s.id, path: s.path, format: s.format })),
     reconstructedFileSha256: fileSha ?? '',
   }
