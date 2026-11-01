@@ -670,6 +670,7 @@ describe('R1 (review round 1): bypasses found by the review', () => {
       `bash -c 'cd @VOLP@'; pytest`,
       `x=$(cd @VOLP@; pwd); pytest`,
       `cd @VOLP@ | cat; pytest`,
+      `cd @VOLP@ & pytest`,
     ])('and a cd into the volume inside a scope does not poison the outer cwd: %s', (cmd) => {
       expect(denies(fx(cmd), ok)).toBe(false)
     })
@@ -677,7 +678,6 @@ describe('R1 (review round 1): bypasses found by the review', () => {
       `(cd @VOLP@ && pytest)`,
       `bash -c 'cd @VOLP@ && pytest'`,
       `x=$(cd @VOLP@; pytest)`,
-      `cd @VOLP@ & pytest`,
     ])('a runner inside the scope still sees the scope cwd: %s', (cmd) => {
       expect(denies(fx(cmd), ok)).toBe(true)
     })
@@ -685,6 +685,15 @@ describe('R1 (review round 1): bypasses found by the review', () => {
       expect(denies(`cd ${ok} && pytest`, volp)).toBe(false)
       expect(denies(`cd ${volp} && pytest`, ok)).toBe(true)
       expect(denies(`{ cd ${volp}; }; pytest`, ok)).toBe(true)
+    })
+    it('a cd in the LAST pipeline element leaves the cwd unknown (zsh runs it in the current shell, bash does not)', () => {
+      expect(denies(`ls | cd ${base}; pytest`, ok)).toBe(true)
+      expect(denies(`ls | cd ${ok}; ls`, ok)).toBe(false)
+    })
+    it('a subshell inside a subshell restores one level at a time', () => {
+      expect(denies(`(cd ${volp}; (cd ${ok}); pytest)`, ok)).toBe(true)
+      expect(denies(`(cd ${volp}; (cd ${ok}; pytest))`, ok)).toBe(false)
+      expect(denies(`(cd ${ok}); (cd ${volp}); pytest`, ok)).toBe(false)
     })
   })
 

@@ -12,14 +12,20 @@
 //      (env, bash -c, sh -c, eval, command, exec, time, nice, timeout, gtimeout, run-sandboxed.sh,
 //      sandbox-exec, perl -e 'exec @ARGV', script, xargs, find -exec, subshell, substitution, heredoc /
 //      here-string fed shell, a function or alias the text itself defines). ssh is not unwrapped (remote).
+//      Also (review R1): npm|pnpm it / cit / sit / install-test ..., node --run test*, bun <runner file>,
+//      env -S '<cmd>', code on the command line (node -e|-p, python -c, osascript -e, perl -e) that holds a
+//      runner word, and a shell reading its program from a pipe / file when the text holds a runner word.
 //      A plain variable as the command word with a python test shape (`"$PY" -m pytest`, `${PY} a.test.py`)
 //      is a Python runner (Brainy N1b D2); any other computed command word stays "unknown".
 //   R2 except safe-vitest.sh: the one under the live root (derived from this file's place, like
 //      egress-gate.mjs REPO_ROOT), or a copy whose safe-vitest.sh AND sibling safe-vitest.sb are
 //      byte-identical (sha256) to the live ones. Unreadable -> deny.
 //   R3 any test run (R1, R2, Python: pytest, python -m pytest|unittest, python <x>.test.py | *_test.py |
-//      test_*.py) is denied when the effective cwd is under /Volumes: the hook cwd followed through the
-//      cd / pushd steps of the command, symlinks resolved. The same for --root / --dir / --prefix / -C /
+//      test_*.py) is denied when the effective cwd is under /Volumes (compared case-insensitively): the hook
+//      cwd followed through the cd / pushd steps of the command, symlinks resolved. A cd inside a subshell,
+//      a pipeline element, a background job, a substitution or `bash -c` does not move the outer cwd; an
+//      assigned HOME / CDPATH makes ~, $HOME, a bare cd and a relative cd unresolvable; a missing or
+//      relative hook cwd is unresolvable too. The same for --root / --dir / --prefix / -C /
 //      --cwd / --rootdir pointing there. A cwd that cannot be resolved (variable, missing path) next to
 //      a runner denies. A Python runner is otherwise allowed (Brainy decision D2).
 //   R4 fail-closed inside its own class only: when the parser throws (or the text is unparseable), the
@@ -54,14 +60,24 @@ const MAX_DEPTH = 8
 const MAX_COMMAND_LENGTH = 200000
 
 // The runner words of the R4 fallback (raw text, no parsing). Not global: no lastIndex state.
-export const RUNNER_WORD_RE = new RegExp([
-  '\\b(?:vitest|jest|mocha|pytest|unittest)\\b',
-  '\\bnode\\b[^\\n;&|]*\\s--test\\b',
-  '\\b(?:npm|pnpm|yarn|bun)\\b[^\\n;&|]*?\\b(?:test|t|tst)\\b',
+// The gaps between words are bounded ({0,500}): an unbounded `[^\n;&|]*` made a 200k-char run of
+// "node node node ..." quadratic (measured 5-8 s, review N1).
+const JS_RUNNER_PARTS = [
+  '\\b(?:vitest|jest|mocha)\\b',
+  '\\bnode\\b[^\\n;&|]{0,500}\\s--test\\b',
+  '\\bnode\\b[^\\n;&|]{0,500}\\s--run[=\\s]+(?:test|t|tst)\\b',
+  '\\b(?:npm|pnpm|yarn|bun)\\b[^\\n;&|]{0,500}?\\b(?:test|t|tst)\\b',
+  '\\b(?:npm|pnpm)\\s+(?:-\\S+\\s+)*(?:it|cit|sit)\\b',
+]
+const PY_RUNNER_PARTS = [
+  '\\b(?:pytest|unittest)\\b',
   '\\.test\\.py\\b',
   '_test\\.py\\b',
   '\\btest_[\\w.-]*\\.py\\b',
-].join('|'))
+]
+const JS_RUNNER_RE = new RegExp(JS_RUNNER_PARTS.join('|'))
+const PY_RUNNER_RE = new RegExp(PY_RUNNER_PARTS.join('|'))
+export const RUNNER_WORD_RE = new RegExp([...JS_RUNNER_PARTS, ...PY_RUNNER_PARTS].join('|'))
 
 const MSG_JS = 'Teszt-kapu: JS tesztfuttató csak a scripts/safe-vitest.sh-n keresztül indítható (write-korlátozott sandbox). ' +
   'Futtasd egy belső lemezes worktree gyökeréből: bash scripts/safe-vitest.sh <tesztfájl>. (card d6d2d686)'
@@ -73,7 +89,9 @@ const MSG_SAFE = 'Teszt-kapu: a safe-vitest.sh másolata nem egyezik az élővel
   'vagy nem olvasható. Csak az élő scripts/safe-vitest.sh vagy bájtra azonos másolata futhat. (card d6d2d686)'
 const MSG_UNKNOWN = 'Teszt-kapu: a parancsszó futásidőben számolódik, és a szöveg tesztfuttató szót tartalmaz; nem ellenőrizhető. ' +
   'Írd ki a parancsot szó szerint. (card d6d2d686)'
-const MSG_PARSE = 'Teszt-kapu: a parancs nem elemezhető, és tesztfuttató szót tartalmaz (fail-closed). (card d6d2d686)'
+const MSG_STDIN = 'Teszt-kapu: egy shell a programját stdin-ről olvassa, és a szöveg tesztfuttató szót tartalmaz; nem ellenőrizhető. ' +
+  'Írd ki a parancsot szó szerint, vagy futtasd a scripts/safe-vitest.sh-t. (card d6d2d686)'
+const MSG_PARSE ='Teszt-kapu: a parancs nem elemezhető, és tesztfuttató szót tartalmaz (fail-closed). (card d6d2d686)'
 
 const ALLOW = Object.freeze({ deny: false })
 const deny = (reason) => ({ deny: true, reason })
@@ -86,6 +104,9 @@ const PYTEST_NAME = /^py\.?test(?:-?\d+(?:\.\d+)*)?$/
 const NODE_NAME = /^(?:node|nodejs|tsx|ts-node)$/
 const JS_BINS = new Set(['vitest', 'jest', 'mocha', '_mocha', 'jest-cli'])
 const TEST_VERB = /^(?:t|tst|test(?:[:-].*)?)$/
+// npm | pnpm: install, then run the test script (`npm it` = install-test, `cit` = install-ci-test, `sit` = clean-install-test).
+const INSTALL_TEST_VERB = /^(?:it|cit|sit|install-test|install-ci-test|clean-install-test)$/
+const NODE_EVAL_OPT = /^(?:-e|-p|-pe|-ep|--eval|--print)$/
 const LAUNCHERS = new Set(['npx', 'pnpx', 'bunx'])
 const PM_NAMES = new Set(['npm', 'pnpm', 'yarn', 'bun'])
 const SIMPLE_WRAPPERS = new Set(['caffeinate', 'arch', 'ionice', 'unbuffer', 'doas', 'corepack'])
@@ -117,16 +138,19 @@ function blankRanges(text, ranges) {
 
 // Command separators over the masked text (the parser's own spans() is not exported). A lone `&` ends a
 // command, the `&` of a redirection does not; a backslash-escaped separator is a literal character.
+// Each span is [start, end, pipeBefore, pipeAfter, background]: a pipeline element and a background job run
+// in their own process (the `&` of `|&` belongs to the pipe).
 function spans(masked) {
-  const out = []; let start = 0
+  const out = []; let start = 0; let prev = ''
   const re = /&&|\|\||;|(?<!>)\||\n|(?<![<>])&(?!>)/g; let m
   while ((m = re.exec(masked))) {
     let bs = 0
     while (m.index - bs > 0 && masked[m.index - bs - 1] === '\\') bs++
     if (bs % 2 === 1 && m[0] !== '\n') { re.lastIndex = m.index + 1; continue }
-    out.push([start, m.index]); start = m.index + m[0].length
+    if (m[0] === '&' && prev === '|' && m.index === start) { start = m.index + 1; continue }
+    out.push([start, m.index, prev === '|', m[0] === '|', m[0] === '&']); start = m.index + m[0].length; prev = m[0]
   }
-  out.push([start, masked.length])
+  out.push([start, masked.length, prev === '|', false, false])
   return out
 }
 
@@ -142,15 +166,27 @@ function stripRedirections(words) {
 }
 
 // A path word as the shell would hand it over, or null where it is only known at run time.
-function expandPath(word) {
+// homeTainted: the command text assigns HOME, so ~ and $HOME are no longer the home of this process (B8).
+function expandPath(word, homeTainted = false) {
   if (typeof word !== 'string' || word === '') return null
   let s = word
-  if (s === '~' || s.startsWith('~/')) s = homedir() + s.slice(1)
-  else if (s.startsWith('~')) return null
-  s = s.replace(/^\$\{HOME\}|^\$HOME(?![A-Za-z0-9_])/, homedir())
+  if (s === '~' || s.startsWith('~/')) {
+    if (homeTainted) return null
+    s = homedir() + s.slice(1)
+  } else if (s.startsWith('~')) return null
+  if (!homeTainted) s = s.replace(/^\$\{HOME\}|^\$HOME(?![A-Za-z0-9_])/, homedir())
   if (/[$`*?[{]/.test(s)) return null
   return s
 }
+
+// The text itself assigns HOME / CDPATH (`HOME=x`, `export HOME=x`, `CDPATH+=x`): from there on ~, $HOME,
+// a bare cd and (CDPATH) a relative cd cannot be resolved without running the text (B8).
+const ASSIGNS_HOME = /(?:^|[^A-Za-z0-9_])HOME\+?=/
+const ASSIGNS_CDPATH = /(?:^|[^A-Za-z0-9_])CDPATH\+?=/
+
+// A command list that runs in its own process (a subshell, a pipeline element, a substitution, bash -c):
+// a cd inside it does not move the cwd of what follows.
+const scope = (steps, last = false) => ({ type: 'scope', steps, last })
 
 // ---------------------------------------------------------------- parser: text -> ordered steps
 //
@@ -186,6 +222,7 @@ function parseSteps(text, ctx, depth) {
     orig = blankRanges(orig, ranges); masked = blankRanges(masked, ranges)
   }
   const parens = subshellParens(masked)
+  const parenKinds = parens.map((k) => masked[k]) // '(' opens a subshell, ')' closes it
   if (parens.length) {
     const ranges = parens.map((k) => [k, k + 1])
     orig = blankRanges(orig, ranges); masked = blankRanges(masked, ranges)
@@ -195,24 +232,38 @@ function parseSteps(text, ctx, depth) {
   const wordSource = bodies.length ? blankRanges(orig, bodies) : orig
 
   const steps = []
-  for (const [a, b] of spans(masked)) {
-    // Substitutions run before the command they sit in.
-    for (const [n, inner] of inners.entries()) {
-      if (innerAts[n] < a || innerAts[n] >= b || inDef(innerAts[n])) continue
+  let pi = 0 // parens are in ascending order: a moving index, not a filter per span
+  let ii = 0
+  const innerOrder = inners.map((_, n) => n).sort((x, y) => innerAts[x] - innerAts[y])
+  for (const [a, b, pipeBefore, pipeAfter, background] of spans(masked)) {
+    let opens = 0; let closes = 0
+    while (pi < parens.length && parens[pi] < b) { if (parenKinds[pi] === '(') opens++; else closes++; pi++ }
+    const own = []
+    // Substitutions run (in a subshell) before the command they sit in; a moving index over them, in
+    // text order, keeps this linear (a filter per span was quadratic: 39000 spans x 39000 substitutions).
+    while (ii < innerOrder.length && innerAts[innerOrder[ii]] < a) ii++
+    for (; ii < innerOrder.length && innerAts[innerOrder[ii]] < b; ii++) {
+      const n = innerOrder[ii]; const inner = inners[n]
+      if (inDef(innerAts[n])) continue
       if (/^\(.*\)$/s.test(inner)) { // $(( ... )) is arithmetic: only the substitutions inside it run
-        for (const t of liftSubstitutions(inner.slice(1, -1)).inners) steps.push(...parseSteps(t, ctx, depth + 1))
+        for (const t of liftSubstitutions(inner.slice(1, -1)).inners) own.push(scope(parseSteps(t, ctx, depth + 1)))
         continue
       }
-      steps.push(...parseSteps(inner, ctx, depth + 1))
+      own.push(scope(parseSteps(inner, ctx, depth + 1)))
     }
     const words = shellWords(wordSource.slice(a, b))
-    if (!words.length) continue
-    const extra = {
-      heredocs: heredocs.filter((h) => h.opStart >= a && h.opStart < b && !inDef(h.opStart))
-        .map((h) => stripped.slice(h.bodyStart, h.bodyEnd)),
-      herestring: herestrings.some((p) => p >= a && p < b),
+    if (words.length) {
+      const extra = {
+        heredocs: heredocs.filter((h) => h.opStart >= a && h.opStart < b && !inDef(h.opStart))
+          .map((h) => stripped.slice(h.bodyStart, h.bodyEnd)),
+        herestring: herestrings.some((p) => p >= a && p < b),
+      }
+      analyzeWords(words, extra, ctx, depth, own)
     }
-    analyzeWords(words, extra, ctx, depth, steps)
+    for (let n = 0; n < opens; n++) steps.push({ type: 'enter' })
+    if (pipeBefore || pipeAfter || background) steps.push(scope(own, pipeBefore && !pipeAfter && !background))
+    else steps.push(...own)
+    for (let n = 0; n < closes; n++) steps.push({ type: 'exit' })
   }
   return steps
 }
@@ -225,7 +276,7 @@ function peelLauncherOptions(args, steps, ctx, depth) {
     const w = args[k]
     if (w === '--') { k++; continue }
     if (!(w.startsWith('-') && w.length > 1)) break
-    if (w === '-c' || w === '--call') { if (args[k + 1] !== undefined) steps.push(...parseSteps(args[k + 1], ctx, depth + 1)); k += 2; continue }
+    if (w === '-c' || w === '--call') { if (args[k + 1] !== undefined) steps.push(scope(parseSteps(args[k + 1], ctx, depth + 1))); k += 2; continue }
     k += PM_VALUE_OPTS.has(w) ? 2 : 1
   }
   return args.slice(k)
@@ -248,6 +299,16 @@ function analyzeWords(rawWords, extra, ctx, depth, steps) {
   if (depth > MAX_DEPTH) throw new Error('nesting-too-deep')
   const words = stripRedirections(rawWords)
   const i = commandIndex(words)
+  // B5: `env -S 'cmd args'` / `env --split-string=...` is a command line of its own; commandIndex skips it
+  // as an option value, so it is read here, before the (possibly empty) command word is looked at.
+  for (let k = words.findIndex((p) => baseName(p) === 'env') + 1; k > 0 && k < i; k++) {
+    const w = words[k]
+    let value
+    if (/^-[A-Za-z]*S$/.test(w) || w === '--split-string') { value = words[k + 1]; k++ }
+    else if (/^-S[\s\S]+$/.test(w)) value = w.slice(2)
+    else if (w.startsWith('--split-string=')) value = w.slice('--split-string='.length)
+    if (value !== undefined) steps.push(scope(parseSteps(value, ctx, depth + 1)))
+  }
   if (i >= words.length) return
   const prefix = words.slice(0, i)
   const cmd = words[i]
@@ -301,15 +362,18 @@ function analyzeWords(rawWords, extra, ctx, depth, steps) {
 
   if (SHELL_NAME.test(name)) {
     const inv = shellInvocation(args)
-    if (inv.body !== undefined) { steps.push(...parseSteps(inv.body, ctx, depth + 1)); return }
+    if (inv.body !== undefined) { steps.push(scope(parseSteps(inv.body, ctx, depth + 1))); return }
     if (inv.script !== undefined && baseName(inv.script) === 'safe-vitest.sh' && !extra.herestring) {
       steps.push({ type: 'run', kind: 'safe', script: inv.script, args: args.filter((w) => w !== inv.script) })
       return
     }
     // A shell reading its program from stdin: the heredoc / here-string body is that program.
     if (inv.script === undefined || args.includes('-s') || extra.herestring) {
-      for (const body of extra.heredocs) steps.push(...parseSteps(body, ctx, depth + 1))
-      if (extra.herestring && args.length) steps.push(...parseSteps(args[args.length - 1], ctx, depth + 1))
+      for (const body of extra.heredocs) steps.push(scope(parseSteps(body, ctx, depth + 1)))
+      if (extra.herestring && args.length) steps.push(scope(parseSteps(args[args.length - 1], ctx, depth + 1)))
+      // B3: no heredoc / here-string of its own -- the program comes from a pipe or a file redirect
+      // (`echo 'npx vitest' | bash`): the text of the producer is not read, the raw text decides.
+      if (!extra.heredocs.length && !extra.herestring) steps.push({ type: 'stdin-shell' })
     }
     return
   }
@@ -337,6 +401,15 @@ function analyzeWords(rawWords, extra, ctx, depth, steps) {
     while (k < args.length && args[k].startsWith('-')) k++
     analyzeWords(args.slice(k), { heredocs: [], herestring: false }, ctx, depth + 1, steps)
     return
+  }
+  // B4: code on the command line of an interpreter that can start a process.
+  if (name === 'osascript') {
+    for (let k = 0; k < args.length; k++) if (args[k] === '-e') embeddedCode(args[++k], steps)
+    return
+  }
+  if (name === 'perl') {
+    const { code } = perlParts(args)
+    if (/\b(?:exec|system|qx|popen|open)\b|`/.test(code)) embeddedCode(code, steps)
   }
   // D1: sandbox-style wrappers run the rest of the line; judge it like a bare command. ssh is NOT here (remote).
   const wrapped = wrappedCommand(name, args)
@@ -378,16 +451,8 @@ function wrappedCommand(name, args) {
     return args.slice(k)
   }
   if (name === 'perl') {
-    let k = 0
-    let code = ''
-    while (k < args.length) {
-      const w = args[k]
-      if (w === '--') { k++; break }
-      if (!w.startsWith('-') || w === '-') break
-      if (/^-[A-Za-z]*[eE]$/.test(w)) { code += `${args[k + 1] ?? ''}\n`; k += 2; continue }
-      k += w === '-I' ? 2 : 1
-    }
-    return /\b(?:exec|system)\b/.test(code) ? args.slice(k) : []
+    const { code, rest } = perlParts(args)
+    return /\b(?:exec|system)\b/.test(code) ? rest : []
   }
   if (name === 'script') {
     let k = 0
@@ -404,18 +469,50 @@ function wrappedCommand(name, args) {
   return null
 }
 
+// `perl [-I dir] -e CODE [args...]`: the code, and the words after the options (what `exec @ARGV` would run).
+function perlParts(args) {
+  let k = 0
+  let code = ''
+  while (k < args.length) {
+    const w = args[k]
+    if (w === '--') { k++; break }
+    if (!w.startsWith('-') || w === '-') break
+    if (/^-[A-Za-z]*[eE]$/.test(w)) { code += `${args[k + 1] ?? ''}\n`; k += 2; continue }
+    k += w === '-I' ? 2 : 1
+  }
+  return { code, rest: args.slice(k) }
+}
+
+// B4: code string of an interpreter's command line (node -e, python -c, osascript -e, perl -e). A JS runner
+// word in it is a JS runner; a Python runner word (pytest.main, unittest.main) is a Python runner, so the
+// /Volumes cwd rule applies to it. The code is not parsed any further (a computed name stays a residual).
+function embeddedCode(code, steps) {
+  if (typeof code !== 'string' || code === '') return
+  if (JS_RUNNER_RE.test(code)) steps.push({ type: 'run', kind: 'js', args: [] })
+  else if (PY_RUNNER_RE.test(code)) steps.push({ type: 'run', kind: 'py', args: [] })
+}
+
+// A JS file that is a test runner: `vitest.mjs`, `node_modules/vitest/...`, `.bin/jest`.
+const isJsRunnerFile = (w) => isJsBin(String(w).replace(/\.(?:m?js|cjs)$/, '')) || /node_modules\/(?:vitest|jest|jest-cli|mocha)\//.test(w)
+
 function nodeRun(args, steps) {
   for (let k = 0; k < args.length; k++) {
     const w = args[k]
     if (w.startsWith('-')) {
       if (w === '--test' || w.startsWith('--test-')) { steps.push({ type: 'run', kind: 'js', args }); return }
-      if (w === '-e' || w === '-p' || w === '--eval' || w === '--print') return
+      // B2: node --run <script> / --run=<script> runs the package.json script, like `npm run <script>`.
+      if (w === '--run' || w.startsWith('--run=')) {
+        const script = w === '--run' ? args[k + 1] : w.slice('--run='.length)
+        if (script !== undefined && (TEST_VERB.test(script) || isJsBin(script))) steps.push({ type: 'run', kind: 'js', args })
+        return
+      }
+      const ev = /^(--eval|--print)=([\s\S]*)$/.exec(w)
+      if (ev) { embeddedCode(ev[2], steps); return }
+      if (NODE_EVAL_OPT.test(w)) { embeddedCode(args[k + 1], steps); return }
       if (NODE_VALUE_OPTS.has(w)) k++
       continue
     }
-    if (isJsBin(w.replace(/\.(?:m?js|cjs)$/, '')) || /node_modules\/(?:vitest|jest|jest-cli|mocha)\//.test(w)) {
-      steps.push({ type: 'run', kind: 'js', args })
-    }
+    if (isJsRunnerFile(w)) steps.push({ type: 'run', kind: 'js', args })
     return
   }
 }
@@ -423,7 +520,8 @@ function nodeRun(args, steps) {
 function pythonRun(args, steps) {
   for (let k = 0; k < args.length; k++) {
     const w = args[k]
-    if (w === '-c') return
+    if (/^-[A-Za-z]*c$/.test(w)) { embeddedCode(args[k + 1], steps); return } // B4: python -c CODE / -Ic CODE
+    if (/^-c./.test(w)) { embeddedCode(w.slice(2), steps); return }
     let mod
     if (/^-[A-Za-z]*m$/.test(w)) mod = args[k + 1]
     else if (/^-m./.test(w)) mod = w.slice(2)
@@ -443,7 +541,7 @@ function packageManagerRun(pm, args, steps, ctx, depth) {
     const w = args[k]
     if (w === '--') continue
     if (w.startsWith('-') && w.length > 1) {
-      if (w === '-c' || w === '--call') { if (args[k + 1] !== undefined) steps.push(...parseSteps(args[k + 1], ctx, depth + 1)); k++; continue }
+      if (w === '-c' || w === '--call') { if (args[k + 1] !== undefined) steps.push(scope(parseSteps(args[k + 1], ctx, depth + 1))); k++; continue }
       if (PM_VALUE_OPTS.has(w)) k++
       continue
     }
@@ -458,25 +556,32 @@ function packageManagerRun(pm, args, steps, ctx, depth) {
     }
     if (p === 'run' || p === 'run-script') {
       const q = pos[j + 1]?.w
-      if (q !== undefined && (TEST_VERB.test(q) || isJsBin(q))) steps.push({ type: 'run', kind: 'js', args })
+      if (q !== undefined && (TEST_VERB.test(q) || isJsBin(q) || isJsRunnerFile(q))) steps.push({ type: 'run', kind: 'js', args })
       return
     }
     if (p === 'workspace') { j++; continue }
     if (p === 'workspaces' || p === 'foreach' || p === 'recursive') continue
-    if (TEST_VERB.test(p) || isJsBin(p)) steps.push({ type: 'run', kind: 'js', args })
+    // B1: npm | pnpm `it` / `cit` / `sit` / `install-test` ... install, then run the test script.
+    // B4: `bun <file>` runs the file like node does.
+    if (TEST_VERB.test(p) || isJsBin(p) || ((pm === 'npm' || pm === 'pnpm') && INSTALL_TEST_VERB.test(p)) ||
+        (pm === 'bun' && isJsRunnerFile(p))) steps.push({ type: 'run', kind: 'js', args })
     return
   }
 }
 
 // ---------------------------------------------------------------- decision
 
+// realpath(3) (the .native form) returns the on-disk spelling on a case-insensitive volume; the JS
+// implementation keeps the case it was given (B7).
 function realOrNull(p) {
-  try { return realpathSync(p) } catch { return null }
+  try { return realpathSync.native(p) } catch { return null }
 }
+// Compared case-insensitively: /volumes and /VOLUMES are the same directory on APFS / HFS+ (B7).
 function isUnder(p, root) {
   if (!root) return false
-  const r = root.length > 1 && root.endsWith('/') ? root.slice(0, -1) : root
-  return p === r || p.startsWith(`${r}/`)
+  const r = (root.length > 1 && root.endsWith('/') ? root.slice(0, -1) : root).toLowerCase()
+  const q = p.toLowerCase()
+  return q === r || q.startsWith(`${r}/`)
 }
 // The textual path AND its realpath are both judged: a symlink into the volume, or a path written under
 // it that resolves elsewhere, is stopped either way.
@@ -492,8 +597,8 @@ function underVolumes(p, volumesRoot) {
 
 const sha256File = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
 
-function safeVitestMatchesLive(script, cwd, liveRoot) {
-  const wanted = expandPath(script)
+function safeVitestMatchesLive(script, cwd, liveRoot, homeTainted) {
+  const wanted = expandPath(script, homeTainted)
   if (wanted === null) return false
   try {
     const abs = resolve(cwd, wanted)
@@ -528,28 +633,66 @@ export function gateDecision(command, cwd, opts = {}) {
     return fallbackDecision(raw, e?.message)
   }
   try {
-    return evaluate(steps, raw, typeof cwd === 'string' && isAbsolute(cwd) ? cwd : process.cwd(), liveRoot, volumesRoot)
+    // A missing or relative hook cwd is unknown: a Python / safe-vitest runner is then denied (unresolvable),
+    // a command without a runner is not affected (an absolute cd in the text gives it a cwd of its own).
+    return evaluate(steps, raw, typeof cwd === 'string' && isAbsolute(cwd) ? cwd : null, liveRoot, volumesRoot)
   } catch (e) {
     return fallbackDecision(raw, e?.message)
   }
 }
 
 function evaluate(steps, raw, startCwd, liveRoot, volumesRoot) {
-  let cur = startCwd // null = not resolvable
+  const st = {
+    cur: startCwd, // null = not resolvable
+    stack: [], // cwds saved by '(' and restored by ')'
+    raw, liveRoot, volumesRoot,
+    homeTainted: ASSIGNS_HOME.test(raw),
+    cdpathTainted: ASSIGNS_CDPATH.test(raw),
+  }
+  return evalSteps(steps, st) ?? ALLOW
+}
+
+// The raw-text rule of R4 for one decision, computed once (a 150k-char text with 30000 `bash` words
+// scanned the whole text per step: 5 s).
+function rawHasRunner(st) {
+  st.rawRunner ??= RUNNER_WORD_RE.test(st.raw)
+  return st.rawRunner
+}
+
+// The decision for the steps in order, or null when nothing in them is denied. st.cur follows the cd steps.
+function evalSteps(steps, st) {
+  const { raw, liveRoot, volumesRoot } = st
   for (const step of steps) {
+    if (step.type === 'scope') { // B6: its own process: what a cd does inside stays inside
+      const saved = st.cur
+      const verdict = evalSteps(step.steps, st)
+      if (verdict) return verdict
+      // The last element of a pipeline runs in the current shell in zsh and in a subshell in bash: unknown.
+      st.cur = step.last && st.cur !== saved ? null : saved
+      continue
+    }
+    if (step.type === 'enter') { st.stack.push(st.cur); continue }
+    if (step.type === 'exit') { if (st.stack.length) st.cur = st.stack.pop(); continue }
     if (step.type === 'cd') {
-      if (step.kind === 'popd' || (step.kind === 'pushd' && step.target === undefined) || step.target === '-') { cur = null; continue }
-      const target = step.target === undefined ? homedir() : expandPath(step.target)
-      cur = target === null ? null : (isAbsolute(target) ? resolve(target) : (cur === null ? null : resolve(cur, target)))
+      if (step.kind === 'popd' || (step.kind === 'pushd' && step.target === undefined) || step.target === '-') { st.cur = null; continue }
+      let target = step.target === undefined ? (st.homeTainted ? null : homedir()) : expandPath(step.target, st.homeTainted)
+      // B8: with an assigned CDPATH a relative target (not ./ or ../) may be found elsewhere.
+      if (target !== null && st.cdpathTainted && !isAbsolute(target) && !/^\.\.?(?:\/|$)/.test(target)) target = null
+      st.cur = target === null ? null : (isAbsolute(target) ? resolve(target) : (st.cur === null ? null : resolve(st.cur, target)))
       continue
     }
     if (step.type === 'unknown') {
-      if (RUNNER_WORD_RE.test(raw)) return deny(MSG_UNKNOWN)
+      if (rawHasRunner(st)) return deny(MSG_UNKNOWN)
+      continue
+    }
+    if (step.type === 'stdin-shell') { // B3
+      if (rawHasRunner(st)) return deny(MSG_STDIN)
       continue
     }
     if (step.type !== 'run') continue
     if (step.kind === 'js') return deny(MSG_JS)
     // From here on: safe-vitest.sh or a Python runner. Both must not start under /Volumes.
+    const cur = st.cur
     if (cur === null || realOrNull(cur) === null) return deny(MSG_CWD)
     if (underVolumes(cur, volumesRoot)) return deny(MSG_VOLUMES)
     for (let k = 0; k < step.args.length; k++) {
@@ -563,13 +706,13 @@ function evaluate(steps, raw, startCwd, liveRoot, volumesRoot) {
         else continue
       }
       if (val === undefined) continue
-      const p = expandPath(val)
+      const p = expandPath(val, st.homeTainted)
       if (p === null) return deny(MSG_CWD)
       if (underVolumes(resolve(cur, p), volumesRoot)) return deny(MSG_VOLUMES)
     }
-    if (step.kind === 'safe' && !safeVitestMatchesLive(step.script, cur, liveRoot)) return deny(MSG_SAFE)
+    if (step.kind === 'safe' && !safeVitestMatchesLive(step.script, cur, liveRoot, st.homeTainted)) return deny(MSG_SAFE)
   }
-  return ALLOW
+  return null
 }
 
 // ---------------------------------------------------------------- hook entry (stdin JSON -> exit 0 / 2)
