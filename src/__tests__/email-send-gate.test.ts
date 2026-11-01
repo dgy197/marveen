@@ -383,9 +383,10 @@ describe('injectEmailSendGate', () => {
     expect(matcher).toBe(EMAIL_GATE_MATCHER)
     // Pinned independently of the constant, so dropping an alternative goes red:
     // 36 name-keyed alternatives + the 5 verb alternatives (reply, fwd, forward, send, draft)
-    // + the 14 mail-server word alternatives of card 3d6e5181 (every tool of a mail-like server).
+    // + the 14 mail-server word alternatives of card 3d6e5181 (every tool of a mail-like server)
+    // + 1 mail-word-in-the-tool-name alternative (3d6e5181 N4 B1: google_workspace, gws, zoho).
     const alts = matcher.split('|')
-    expect(alts).toHaveLength(55)
+    expect(alts).toHaveLength(56)
     for (const w of ['mail', 'outlook', 'exchange', 'ms365', 'm365', 'office365', 'o365', 'imap', 'smtp', 'jmap', 'sieve', 'proton', 'msgraph', 'microsoft']) {
       expect(new RegExp(`^(?:${matcher})$`).test(`mcp__${w}__create_rule`), `mail-server alternative for ${w}`).toBe(true)
     }
