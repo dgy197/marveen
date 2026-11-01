@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+// @ts-expect-error -- plain .mjs hook script, no types
 import { hasForwardKey, hasForwardKeyName, mailEndpointWrite, mailToolAction, NO_EXEMPT } from '../../scripts/email-send-gate.mjs'
 
 // card 5e3c31c5 N0 (RED first): a JSON-looking string whose JSON holds a bare NaN / Infinity / -Infinity
