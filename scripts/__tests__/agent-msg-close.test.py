@@ -32,7 +32,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 
 # --- loopback-only socket guard (in this process), checked before any connect -------------------
-_BANNED_PORTS = (18800, 18899, 3420)
+SELFTEST_PORT = 18994  # our own test port, on the deny list: the self-test never touches a live port
+_BANNED_PORTS = (18800, 18899, 3420, SELFTEST_PORT)
 _real_connect = socket.socket.connect
 
 
@@ -46,9 +47,10 @@ def _guarded_connect(self, address):
 socket.socket.connect = _guarded_connect
 
 # self-test of the guard on a port of our own that is on the ban list: it must be refused before any connect
+# (never 18800/18899/3420 here: if the guard were broken, the test would hit the live browser or dashboard)
 try:
-    socket.socket().connect(('127.0.0.1', 18800))
-    raise SystemExit('guard self-test FAILED: a connect to 18800 was not refused')
+    socket.socket().connect(('127.0.0.1', SELFTEST_PORT))
+    raise SystemExit(f'guard self-test FAILED: a connect to {SELFTEST_PORT} was not refused')
 except PermissionError:
     pass
 try:
@@ -162,7 +164,7 @@ def env(key_file=None, base=None, extra=None):
     return e
 
 
-def close(args, key_file=KEY_FILE, queue=None, stdin=None, base=None, extra=None, binary_stdin=None):
+def close(args, key_file=KEY_FILE, queue=None, stdin=None, base=None, extra=None, binary_stdin=None, cwd=None):
     SEEN.clear()
     QUEUE[:] = queue or []
     for p in (ARGV_LOG, LOG):
@@ -171,7 +173,7 @@ def close(args, key_file=KEY_FILE, queue=None, stdin=None, base=None, extra=None
     kw = {'input': binary_stdin} if binary_stdin is not None else {'input': stdin}
     text = binary_stdin is None
     return subprocess.run(['bash', SCRIPT] + args, env=env(key_file, base, extra), capture_output=True, text=text,
-                          cwd=SANDBOX, timeout=120, **kw)
+                          cwd=cwd or SANDBOX, timeout=120, **kw)
 
 
 def argv_text():
@@ -356,6 +358,44 @@ for p in (os.path.join(decoy, 'iroda'), os.path.join(decoy, '.agent-keys', 'irod
 SEEN.clear()
 r = subprocess.run(['bash', SCRIPT, '7', 'done'], env=env(None), capture_output=True, text=True, cwd=decoy, timeout=60)
 check('env unset -> unsigned even with key-looking files in the cwd', r.returncode == 0 and SEEN[0]['key'] is None, repr(SEEN))
+
+# ------------------------------------------------------------------ B1: python runs isolated (-I)
+# A planted json.py / marveen_api.py in the cwd and on PYTHONPATH must not run; the close still works signed.
+plant = os.path.join(SANDBOX, 'plant')
+os.makedirs(plant)
+MARK = os.path.join(SANDBOX, 'PLANTED-RAN')
+for mod in ('json.py', 'marveen_api.py', 'sys.py', 'os.py'):
+    with open(os.path.join(plant, mod), 'w') as f:
+        f.write(f'open({MARK!r}, "a").write("{mod}")\nraise SystemExit(99)\n')
+r = close(['7', 'done', '--notify', 'false', '--result-file', rf], cwd=plant, extra={'PYTHONPATH': plant})
+check('planted json.py/marveen_api.py in cwd and PYTHONPATH: marker absent', not os.path.exists(MARK), open(MARK).read() if os.path.exists(MARK) else '')
+check('planted modules: the close still works, signed, body intact',
+      r.returncode == 0 and r.stdout.startswith('OK id=7') and SEEN[0]['key'] == [KEY] and SEEN[0]['body'].get('result') == NASTY
+      and SEEN[0]['body'].get('notify') is False, r.stdout + r.stderr)
+src = open(SCRIPT).read()
+check('every python3 call in the helper is isolated (-I)',
+      all(l.count('python3') == l.count('python3 -I') for l in src.splitlines() if 'python3' in l and not l.lstrip().startswith('#') and 'command -v' not in l and 'die ' not in l))
+
+# ------------------------------------------------------------------ B3: the port is digits only, 1-65535
+for label, val in (('1@attacker.local', '1@attacker.local'), ('3420/x', '3420/x'), ('empty', ''), ('99999', '99999'),
+                   ('leading space', ' 3420'), ('zero', '0'), ('6 digits', '000001'), ('negative', '-1')):
+    for var in ('MARVEEN_WEB_PORT', 'WEB_PORT'):
+        r = close(['7', 'done'], extra={var: val})
+        check(f'{var}={label!r}: refused, exit 2, no request, no curl call',
+              r.returncode == 2 and SEEN == [] and argv_text() == '' and 'FAIL' in r.stderr and 'port' in r.stderr, r.stdout + r.stderr)
+for var in ('MARVEEN_WEB_PORT', 'WEB_PORT'):
+    r = close(['7', 'done'], extra={var: '65535'})
+    check(f'{var}=65535 is accepted (stub base still wins)', r.returncode == 0 and r.stdout.startswith('OK id=7'), r.stdout + r.stderr)
+# .env source: a bad WEB_PORT line is refused too; a good one is fine
+with open(os.path.join(INST, '.env'), 'w') as f:
+    f.write('WEB_PORT=1@attacker.local\n')
+r = close(['7', 'done'])
+check('.env WEB_PORT=1@attacker.local: refused, nothing sent', r.returncode == 2 and SEEN == [] and argv_text() == '', r.stdout + r.stderr)
+with open(os.path.join(INST, '.env'), 'w') as f:
+    f.write('WEB_PORT="3420"\n')
+r = close(['7', 'done'])
+check('.env WEB_PORT="3420": accepted', r.returncode == 0 and r.stdout.startswith('OK id=7'), r.stdout + r.stderr)
+os.unlink(os.path.join(INST, '.env'))
 
 srv.shutdown()
 # cleanup via the tempdir module

@@ -73,12 +73,20 @@ command -v python3 >/dev/null 2>&1 || die "python3 is required"
 # The same guard marveen-api.sh applies before it hands anything to the helpers: the token goes only to
 # loopback or this install's own configured origin. Without the vetting library a custom base is refused.
 if [ -r "$KEYLIB" ]; then
-  python3 "$KEYLIB" --check-env || exit 2
+  python3 -I "$KEYLIB" --check-env || exit 2
 elif [ -n "${MARVEEN_API_BASE:-}" ] || [ -n "${MARVEEN_TOKEN_FILE:-}" ]; then
   die "scripts/lib/marveen_api.py is missing, so MARVEEN_API_BASE / MARVEEN_TOKEN_FILE cannot be vetted"
 fi
-PORT="${MARVEEN_WEB_PORT:-${WEB_PORT:-$(sed -n 's/^WEB_PORT=//p' "$BASE/.env" 2>/dev/null | head -1 | tr -d ' "'"'"''; true)}}"
-PORT="${PORT:-3420}"
+# The port is checked even when MARVEEN_API_BASE is set. An unset variable means "next source"; a set but empty
+# one is refused. Digits only, 1-65535, so "1@attacker.local" or "3420/x" can never end up in the URL's host.
+if [ "${MARVEEN_WEB_PORT+set}" = set ]; then PORT="$MARVEEN_WEB_PORT"
+elif [ "${WEB_PORT+set}" = set ]; then PORT="$WEB_PORT"
+elif [ -n "$(sed -n '/^WEB_PORT=/p' "$BASE/.env" 2>/dev/null | head -1)" ]; then
+  PORT="$(sed -n 's/^WEB_PORT=//p' "$BASE/.env" 2>/dev/null | head -1 | tr -d ' "'"'"'')"
+else PORT=3420
+fi
+case "$PORT" in ''|*[!0-9]*) die "the web port must be digits only, 1-65535" ;; esac
+[ "${#PORT}" -le 5 ] && [ "$((10#$PORT))" -ge 1 ] && [ "$((10#$PORT))" -le 65535 ] || die "the web port must be 1-65535"
 API_BASE="${MARVEEN_API_BASE:-http://localhost:${PORT}}"
 API_BASE="${API_BASE%/}"
 TOKEN_FILE="${MARVEEN_TOKEN_FILE:-$BASE/store/.dashboard-token}"
@@ -90,7 +98,7 @@ TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
 # --- per-agent send key (the same vetting and format as agent-msg.sh) --------
 KEY_LINE=""; KEY_VAL=""
 if [ -n "${MARVEEN_AGENT_KEY_FILE:-}" ] && [ -r "$KEYLIB" ]; then
-  KEY_RAW="$(python3 "$KEYLIB" --read-key-line || true)"
+  KEY_RAW="$(python3 -I "$KEYLIB" --read-key-line || true)"
   KEY_RE='^X-Agent-Key: ([A-Za-z0-9_.~-]{1,128})$'
   case "$KEY_RAW" in
     *$'\n'*|*$'\r'*) : ;;
@@ -111,7 +119,7 @@ if [ -n "$RESULT_FILE" ]; then
 else
   SRC=""
 fi
-python3 -c '
+python3 -I -c '
 import json, sys
 status, notify, src, out = sys.argv[1:5]
 d = {"status": status}
@@ -142,7 +150,7 @@ while [ "$attempt" -lt "$max" ]; do
   RESP="$(printf '%s\n' "$HEADERS" | curl -s --max-time 30 -X PUT "$URL" -H "Content-Type: application/json" -H @- --data-binary "@$BODYFILE" -w $'\n%{http_code}' 2>/dev/null || true)"
   CODE="$(printf '%s' "$RESP" | tail -n1)"
   JSON="$(printf '%s' "$RESP" | sed '$d')"
-  VERDICT="$(printf '%s' "$JSON" | python3 -c 'import sys,json
+  VERDICT="$(printf '%s' "$JSON" | python3 -I -c 'import sys,json
 try:
   d=json.load(sys.stdin)
   if not isinstance(d,dict): d={}
