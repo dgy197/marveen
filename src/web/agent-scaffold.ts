@@ -954,6 +954,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     injectEmailSendGate(existing, hasThreadReplyCapability(name, readAgentCapabilities(name)))
   }
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
+  if (agentGetsGovernanceGates(name)) injectTestRunGate(existing)
   if (agentGetsKanbanWriteGate(name)) {
     injectKanbanWriteGate(existing)
     injectDigestProvenanceGate(existing)
@@ -1592,6 +1593,30 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
     ...prev.filter((e) => !JSON.stringify(e).includes('self-pace-gate.mjs')),
+    entry,
+  ]
+}
+
+// Idempotently wire the test-run-gate PreToolUse hook (card d6d2d686): a JS test
+// runner must go through scripts/safe-vitest.sh, and no test run may start under
+// /Volumes. Bash-only matcher: every route to a test runner is a shell command.
+// Sub-agents only (agentGetsGovernanceGates); the main agent gets the gate from
+// the repo-shipped root .claude/settings.json, never from this scaffold. Dedupe
+// key is the script file name, so a stale own entry is replaced, not accumulated.
+export function injectTestRunGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'test-run-gate.mjs'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('test-run-gate.mjs')),
     entry,
   ]
 }
@@ -2580,6 +2605,8 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
       || emailGateMatcherStale(ptu)
       || emailGateCommandStale(ptu, emailCmdExpected))
   const needPace = agentGetsGovernanceGates(name) && !hookCommandWired(ptuJson, paceCmd)
+  const testRunCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'test-run-gate.mjs'))
+  const needTestRun = agentGetsGovernanceGates(name) && !hookCommandWired(ptuJson, testRunCmd)
   // The destructive gate has the same two failure modes, plus a third that is
   // specific to it: it was hand-wired on 2026-09-08, so an install can carry a
   // correct-looking entry this code never wrote. Treat a stale matcher as
@@ -2603,11 +2630,12 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
     && (!hookCommandWired(ptuJson, reviewerCmd) || reviewerStale)
   // Off with an entry still wired: the entry goes (see removeSecondReviewerGate).
   const dropReviewer = !agentGetsSecondReviewer(name, profile) && hasSecondReviewerHook(ptu)
-  if (!needEmail && !needPace && !needDestructive && !needCredential && !needReviewer && !dropReviewer) return false
+  if (!needEmail && !needPace && !needTestRun && !needDestructive && !needCredential && !needReviewer && !dropReviewer) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
   if (needEmail) injectEmailSendGate(settings, threadReply)
   if (needPace) injectSelfPaceGate(settings)
+  if (needTestRun) injectTestRunGate(settings)
   if (needDestructive) injectDestructiveGate(settings)
   if (needCredential) injectCredentialGate(settings)
   if (needReviewer) injectSecondReviewerGate(settings)

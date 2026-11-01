@@ -45,6 +45,7 @@ const HOOKS: HookCase[] = [
   { script: 'scripts/hooks/egress-gate.mjs', runner: 'node', cls: 'gate', tool: 'WebFetch' },
   { script: 'scripts/email-send-gate.mjs', runner: 'node', cls: 'gate', tool: 'mcp__x__send_email' },
   { script: 'scripts/self-pace-gate.mjs', runner: 'node', cls: 'gate', tool: 'Bash' },
+  { script: 'scripts/hooks/test-run-gate.mjs', runner: 'node', cls: 'gate', tool: 'Bash' },
   { script: 'scripts/hooks/memory-frontmatter-gate.py', runner: 'python3', cls: 'gate', tool: 'Write' },
   { script: 'scripts/hooks/memory-frontmatter-bash-gate.py', runner: 'python3', cls: 'gate', tool: 'Bash' },
   // Stop guard
