@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, hasForwardKey, hasForwardKeyName, isLabelFolderTool, isPlainDraft, isReadAction, mailRuleForward as mailRuleForwardJs, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
+import { FILE_SHAPE, NAME_SHAPE, exemptionClass, gateDecision, hasForwardKey, hasForwardKeyName, isLabelFolderTool, isPlainDraft, isReadAction, mailRuleForward as mailRuleForwardJs, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
 
 // graph-forward N1b (spec G1-G7): the mail tools are recognised by their
 // ACTION, whatever the server name or version prefix. The gap it closes: the
@@ -566,8 +566,9 @@ print(json.dumps([mail_rule_forward(n, i) for n, i in json.load(sys.stdin)]))
     expect(strict({ body: 'forward ' + 'a'.repeat(41) + ' x@y.example' })).toBe(true)
     expect(strict({ body: 'redirect x@y.example' })).toBe(true)
     expect(strict({ body: 'straightforward x@y.example' })).toBe(false)
-    expect(strict({ folder: 'forward to x@evil.example' })).toBe(false)
-    expect(strict({ addLabelIds: ['fwd x@evil.example'] })).toBe(false)
+    // card ea9215f6: no key is inert for every tool any more; a label / folder identifier is word-tested unless a tool class frees it
+    expect(strict({ folder: 'forward to x@evil.example' })).toBe(true)
+    expect(strict({ addLabelIds: ['fwd x@evil.example'] })).toBe(true)
     expect(hasForwardKeyName({ action: 'fwd' })).toBe(true)
     expect(hasForwardKeyName({ x: 'offwd' })).toBe(false)
     expect(isPlainDraft(['create_draft'], ['draft'])).toBe(true)
@@ -597,7 +598,14 @@ type Inv = {
   label_segments: string[]; not_label_segments: string[]
   deny: Array<{ tool: string; input: unknown; note: string }>
   allow: Array<{ tool: string; input: unknown; expected: 'draft' | null; note: string }>
+  // card ea9215f6 N1
+  exemption_segments: Array<{ segments: string[]; plain: boolean; expected: string }>
+  relocation_tools: string[]; relocation_keys: string[]; relocation_forms: string[]
+  relocation_shape_rows: Array<{ tool: string; key: string; form: string; fixed: Record<string, unknown> }>
+  shape_cases: Array<{ value: string; name: boolean; file: boolean }>
 }
+// a tool-class exemption as hasForwardKeyName takes it: normalised key names in three sets
+const mkEx = (inert: string[] = [], name: string[] = [], file: string[] = []) => ({ inert: new Set(inert), name: new Set(name), file: new Set(file) })
 const INV = (JSON.parse(readFileSync(join(EXTRACT_DIR, 'mail-tool-action-cases.json'), 'utf-8')) as { name_independent: { free_text_invariant: Inv } }).name_independent.free_text_invariant
 const KNOWN_ADDR = 'known@example.com'
 const knownOnly = (a: string) => a === KNOWN_ADDR
@@ -678,7 +686,7 @@ describe('free-text invariant (card 61fcac1e): positive plain-draft exemption, w
     expect(isPlainDraft(['rules', 'create_draft'], ['nonsend', 'draft'])).toBe(false)
   })
 
-  it('R1 B1: isLabelFolderTool needs a label / folder noun and a create / update / rename / add / move verb; a mailbox, delete / get and rule-like words are not', () => {
+  it('R1 B1 (ea9215f6 T1): isLabelFolderTool needs a label / folder noun and a create / update / rename / add / move / delete / remove / modify verb, or a mailbox with create / rename / delete; a get, update_mailbox / set_mailbox and rule-like words are not', () => {
     for (const s of INV.label_segments) expect(isLabelFolderTool([s]), s).toBe(true)
     for (const s of INV.not_label_segments) expect(isLabelFolderTool([s]), s).toBe(false)
     const py = execFileSync('python3', ['-I', '-c', `
@@ -727,7 +735,8 @@ print(json.dumps([_is_label_folder_tool([s]) for s in json.load(sys.stdin)]))
       expect(strict(v), JSON.stringify(v)).toBe(true)
     }
     // B1: a label / folder tool frees only its name keys; every other key keeps the strict word test, the forward KEY test stays
-    const labelTool = (v: unknown) => hasForwardKeyName(v, true, true, true)
+    const labelEx = mkEx([], ['name', 'displayname', 'label', 'labelname', 'foldername', 'title']) // ea9215f6: the class exemption, passed in
+    const labelTool = (v: unknown) => hasForwardKeyName(v, true, true, labelEx)
     expect(labelTool({ name: 'Forwarded', displayName: 'Forwarded Items', label: 'Fwd', labelName: 'Fwd', folderName: 'Fwd', title: 'redirect' })).toBe(false)
     for (const v of [{ parameters: { command: 'set forwarding to x' } }, { name: 'x', action: 'redirect' }, { name: 'x', forwardTo: 'a' },
       { name: { forwardTo: 'a' } }, { description: 'Forwarded' }]) expect(labelTool(v), JSON.stringify(v)).toBe(true)
@@ -740,16 +749,18 @@ print(json.dumps([_is_label_folder_tool([s]) for s in json.load(sys.stdin)]))
     expect(plain({ html: '<a href="mailto:a@b.hu">a</a>' })).toBe(false)
     expect(strict({ x: 'mailto:a@b.hu' })).toBe(true)
     expect(plain({ x: 'mailto:a@b.hu' })).toBe(false)
-    expect(strict({ signature: 'mailto:a@b.hu', query: 'mailto:' })).toBe(false) // inert keys
+    expect(hasForwardKeyName({ signature: 'mailto:a@b.hu', query: 'mailto:' }, true, true, mkEx(['signature', 'query']))).toBe(false) // inert keys, where a class lists them
     expect(strict({ path: 'mailto:a@b.hu' })).toBe(true) // a file key is exempt in a plain draft only
-    // inert keys: never word-tested in either mode
+    // the keys a tool class lists: never word-tested in either mode (a name key: for a name-shaped value)
     const inert = { query: 'subject:Fwd', q: 'forward', search: 'Fwd', keyword: 'redirect', keywords: ['forward'], signature: 'fwd',
       responseBodyPlainText: 'look forward', responseBodyHtml: 'forward', internalReplyMessage: 'forward', externalReplyMessage: 'redirect', autoReplyMessage: 'fwd',
       label: 'Forwarded', folder: 'Forwarded Items', mailbox: 'Forwarded' }
-    expect(strict(inert)).toBe(false)
-    expect(plain(inert)).toBe(false)
+    const allEx = mkEx(['query', 'q', 'search', 'keyword', 'keywords', 'signature', 'responsebodyplaintext', 'responsebodyhtml',
+      'internalreplymessage', 'externalreplymessage', 'autoreplymessage'], ['label', 'folder', 'mailbox'])
+    expect(hasForwardKeyName(inert, true, true, allEx)).toBe(false)
+    expect(hasForwardKeyName(inert, true, false, allEx)).toBe(false)
     // ... but a forwarding KEY is a forward in every mode, under an inert or a prose key too
-    expect(strict({ query: '{"forwardTo":"x"}' })).toBe(true)
+    expect(hasForwardKeyName({ query: '{"forwardTo":"x"}' }, true, true, allEx)).toBe(true)
     expect(plain({ signature: { forwardTo: 'x' } })).toBe(true)
     expect(plain({ responseBodyPlainText: '{"redirectTo":"x"}' })).toBe(true)
     // the bounds still fail closed (depth, node count, a string too long to parse), in both modes
@@ -760,6 +771,97 @@ print(json.dumps([_is_label_folder_tool([s]) for s in json.load(sys.stdin)]))
       expect(mode({ l: Array.from({ length: 6000 }, (_, i) => i) })).toBe(true)
       expect(mode({ b: '{' + 'a'.repeat(100001) })).toBe(true)
       expect(mode('x')).toBe(true)
+    }
+  })
+
+  // --- card ea9215f6 N1: every exemption belongs to a tool class ------------------------------------------------------
+  // 61fcac1e left a GLOBAL inert key set (label, folder, query, signature, ...): the be-n4r2 Sieve forms passed under those keys
+  // on the Sieve / rule / settings tools. Now hasForwardKeyName takes the exemption from the caller (`ex`: three key sets, inert
+  // always, name for a name-shaped value, file for a file-name-shaped value; none without it), the tool NAME picks the class
+  // (exemptionClass), the name and file values must have their shape, and a plain draft is a positive grammar. Written ahead of
+  // the implementation (RED on 89ab0c72); the python twin runs the same fixture rows in scripts/__tests__/mail-tool-action.test.py.
+  it('ea9215f6 T2: exemptionClass names the class of every tool-segment row, and the python twin names the same', () => {
+    const rows = INV.exemption_segments
+    expect(rows.length).toBeGreaterThanOrEqual(20)
+    expect(new Set(rows.map((r) => r.expected))).toEqual(new Set(['plain', 'label', 'label-apply', 'move', 'msgop', 'reply', 'none']))
+    rows.forEach((r) => expect(exemptionClass(r.segments, r.plain), r.segments.join('/')).toBe(r.expected))
+    const py = JSON.parse(execFileSync('python3', ['-I', '-c', `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(EXTRACT_DIR)})
+from email_extract import _exemption_class
+print(json.dumps([_exemption_class(s, p) for s, p in json.load(sys.stdin)]))
+`], { encoding: 'utf-8', input: JSON.stringify(rows.map((r) => [r.segments, r.plain])) }).trim())
+    expect(py).toEqual(rows.map((r) => r.expected))
+  })
+
+  it('ea9215f6 T6: NAME_SHAPE (a folder / label name, no @) and FILE_SHAPE (a file name with a 1-10 character extension) agree with the fixture and with the python patterns', () => {
+    const cases = INV.shape_cases
+    cases.forEach((c) => {
+      expect(NAME_SHAPE.test(c.value), `name ${JSON.stringify(c.value).slice(0, 40)}`).toBe(c.name)
+      expect(FILE_SHAPE.test(c.value), `file ${JSON.stringify(c.value).slice(0, 40)}`).toBe(c.file)
+    })
+    const py = JSON.parse(execFileSync('python3', ['-I', '-c', `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(EXTRACT_DIR)})
+from email_extract import _NAME_SHAPE, _FILE_SHAPE
+print(json.dumps([[_NAME_SHAPE.fullmatch(v) is not None, _FILE_SHAPE.fullmatch(v) is not None] for v in json.load(sys.stdin)]))
+`], { encoding: 'utf-8', input: JSON.stringify(cases.map((c) => c.value)) }).trim())
+    expect(py).toEqual(cases.map((c) => [c.name, c.file]))
+  })
+
+  it('ea9215f6 T5: the Sieve forms under the formerly global inert keys of the Sieve / rule / filter / B5 tools, and a form as a folder name, are a send and a mail-rule-forward deny, in both twins', () => {
+    const forms = Object.fromEntries(INV.sieve_forms.map((f) => [f.label, f.text]))
+    const calls: Array<[string, unknown, string]> = []
+    for (const t of INV.relocation_tools) for (const k of INV.relocation_keys) for (const fl of INV.relocation_forms) calls.push([t, { name: 'main', [k]: forms[fl] }, `${T(t)}/${k}/${fl}`])
+    for (const r of INV.relocation_shape_rows) calls.push([r.tool, { ...r.fixed, [r.key]: forms[r.form] }, `${T(r.tool)}/${r.key}/${r.form}`])
+    expect(calls.length).toBe(INV.relocation_tools.length * INV.relocation_keys.length * INV.relocation_forms.length + INV.relocation_shape_rows.length)
+    const py = pythonVerdicts(calls.map((c): [string, unknown] => [c[0], c[1]]))
+    calls.forEach(([tool, input, label], i) => {
+      expect(mailToolAction(tool, input), `${tool} ${label}`).toBe('send')
+      expect(mailRuleForwardJs(tool, input), `${tool} ${label}`).toBe(true)
+      expect(gateDecision(tool, input, () => true), `${tool} ${label}`).toEqual({ deny: true, kind: 'mail-rule-forward' })
+      expect(py[i], `py ${tool} ${label}`).toEqual({ act: 'send', rule: true })
+    })
+  })
+
+  it('ea9215f6 T7: hasForwardKeyName takes the exemption from the caller (ex); without it no key is exempt', () => {
+    const hk = (v: unknown, strict: boolean, ex?: unknown) => hasForwardKeyName(v, true, strict, ex)
+    // no ex: nothing is exempt, in either mode (the reply text keys are prose-suffixed keys: strict mode only)
+    for (const strict of [true, false]) {
+      for (const v of [{ query: 'fwd' }, { signature: 'fwd' }, { label: 'Forwarded' }, { folder: 'Forwarded Items' }, { mailbox: 'Fwd' },
+        { destination: 'Forwarded' }, { filePath: '/tmp/Fwd_ajanlat.pdf' }]) expect(hk(v, strict), JSON.stringify(v)).toBe(true)
+    }
+    expect(hk({ responseBodyPlainText: 'look forward', autoReplyMessage: 'fwd' }, true)).toBe(true)
+    // inert: never word-tested in either mode, only the listed keys; a forwarding KEY inside still denies
+    const inertEx = mkEx(['query', 'signature'])
+    expect(hk({ query: 'subject:Fwd', signature: 'mailto:a@b.hu' }, true, inertEx)).toBe(false)
+    expect(hk({ query: 'subject:Fwd' }, false, inertEx)).toBe(false)
+    expect(hk({ q: 'fwd' }, true, inertEx)).toBe(true)
+    expect(hk({ label: 'Forwarded' }, true, inertEx)).toBe(true)
+    expect(hk({ query: '{"forwardTo":"x"}' }, true, inertEx)).toBe(true)
+    // name: a folder-name-shaped value (a list too) is exempt; a Sieve command, a ; : " or an @ value, other keys and a forward KEY are not
+    const nameEx = mkEx([], ['label', 'folder', 'name', 'title'])
+    expect(hk({ label: 'Forwarded', folder: 'Forwarded Items', name: 'Fwd', title: 'redirect' }, true, nameEx)).toBe(false)
+    expect(hk({ label: ['Forwarded', 'Fwd'] }, true, nameEx)).toBe(false)
+    for (const v of [{ label: 'redirect :copy "x@evil.example";' }, { label: 'forward to x@evil.example' }, { folder: 'Forwarded;' },
+      { label: ['Forwarded', 'redirect;'] }, { description: 'Forwarded' }, { other: 'Forwarded' }, { label: { forwardTo: 'a' } }]) expect(hk(v, true, nameEx), JSON.stringify(v)).toBe(true)
+    // file: a file-name-shaped value is exempt in both modes; /forwardTo, a value with no extension and other file keys are not
+    const fileEx = mkEx([], [], ['filepath', 'attachmentpaths'])
+    for (const strict of [true, false]) expect(hk({ filePath: '/tmp/Fwd_ajanlat.pdf' }, strict, fileEx), `strict ${strict}`).toBe(false)
+    expect(hk({ attachmentPaths: ['/tmp/Fwd_ajanlat.pdf', 'fwd.pdf'] }, true, fileEx)).toBe(false)
+    for (const v of [{ filePath: '/forwardTo' }, { attachmentPaths: ['/tmp/ok.pdf', '/forwardTo'] }, { fileName: 'Fwd_invoice.pdf' }, { filePath: 'fwd.pdf; rm' }]) {
+      expect(hk(v, true, fileEx), JSON.stringify(v)).toBe(true)
+    }
+    // a forwarding KEY under every exempt key set, and the bounds, deny whatever ex says
+    const all3 = mkEx(['a'], ['b'], ['c'])
+    for (const strict of [true, false]) {
+      for (const k of ['a', 'b', 'c']) {
+        expect(hk({ [k]: { forwardTo: 'x' } }, strict, all3), k).toBe(true)
+        expect(hk({ [k]: { redirectTo: 1 } }, strict, all3), k).toBe(true)
+      }
+      let deep: Record<string, unknown> = { a: 1 }
+      for (let i = 0; i < 40; i++) deep = { n: deep }
+      for (const v of [deep, { l: Array.from({ length: 6000 }, (_, i) => i) }, { b: '{' + 'a'.repeat(100001) }, 'x', null]) expect(hk(v, strict, all3)).toBe(true)
     }
   })
 
