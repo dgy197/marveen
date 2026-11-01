@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { FILE_SHAPE, NAME_SHAPE, exemptionClass, gateDecision, hasForwardKey, hasForwardKeyName, isLabelFolderTool, isPlainDraft, isReadAction, MAIL_ENDPOINT_TABLE, mailEndpointWrite, mailRuleForward as mailRuleForwardJs, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
+import { FILE_SHAPE, FORWARD_WALK_MAX_NODES, NAME_SHAPE, exemptionClass, gateDecision, hasForwardKey, hasForwardKeyName, isLabelFolderTool, isPlainDraft, isReadAction, MAIL_ENDPOINT_TABLE, mailEndpointWrite, mailRuleForward as mailRuleForwardJs, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
 
 // graph-forward N1b (spec G1-G7): the mail tools are recognised by their
 // ACTION, whatever the server name or version prefix. The gap it closes: the
@@ -801,6 +801,30 @@ describe('mail-writing endpoint table (card 31d8fc36 N0): JS and python agree on
     const [a, ms2] = timed(() => mailToolAction(EW.names[0], input))
     expect(a).toBe('send')
     expect(ms2, `mailToolAction took ${ms2} ms`).toBeLessThan(1000)
+  })
+
+  it('B3: the whole-input cost of the endpoint walk stays under 1000 ms per call (mailEndpointWrite and gateDecision)', () => {
+    const sp = (n: number) => ' '.repeat(n)
+    const timed = <T>(f: () => T): [T, number] => { const t0 = performance.now(); const r = f(); return [r, performance.now() - t0] }
+    const nodeLimit = (n: number) => {
+      const o: Record<string, unknown> = { method: 'get' }
+      for (let i = 0; i < n; i++) o['k' + i] = '/settings/filters' + sp(200)
+      return o
+    }
+    const shapes: Array<[string, unknown, boolean]> = [
+      ['B3: one method object, 4900 B-class strings', { method: 'get' + sp(1e6), items: Array.from({ length: 4900 }, () => '/settings/filters') }, false],
+      ['round-1 shapes in one input', { a: 'a' + sp(200000) + 'b', b: 'get a' + sp(200000) + 'b', c: sp(200000) + '/me/sendMail' + sp(200000) }, true],
+      ['node limit - 10 strings', nodeLimit(FORWARD_WALK_MAX_NODES - 10), false],
+      ['node limit + 10 strings (fails closed)', nodeLimit(FORWARD_WALK_MAX_NODES + 10), true],
+    ]
+    for (const [label, input, want] of shapes) {
+      const [got, ms] = timed(() => mailEndpointWrite(input))
+      expect(got, label).toBe(want)
+      expect(ms, `${label}: mailEndpointWrite took ${ms} ms`).toBeLessThan(1000)
+      const [d, ms2] = timed(() => gateDecision(EW.names[0], input, () => false))
+      expect(d.deny, `${label}: gateDecision`).toBe(want)
+      expect(ms2, `${label}: gateDecision took ${ms2} ms`).toBeLessThan(1000)
+    }
   })
 
   it('E2: the JS and python MAIL_ENDPOINT_TABLE are equal, and both are immutable', () => {

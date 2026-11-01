@@ -1646,7 +1646,7 @@ const RULE_WRITE_VERBS = new Set(['create', 'update', 'set', 'add', 'save', 'edi
 // forwarding (fail-closed), and so does an input that is not an object / array.
 // Twin: _has_forward_key in scripts/hooks/email_extract.py.
 const FORWARD_WALK_MAX_DEPTH = 12
-const FORWARD_WALK_MAX_NODES = 5000
+export const FORWARD_WALK_MAX_NODES = 5000
 const FORWARD_JSON_MAX_CHARS = 100000
 const FORWARD_JSON_START = /^[ \t\n\r]*[{["]/
 export function hasForwardKey(input) {
@@ -2090,28 +2090,28 @@ const endpointNonEmpty = (x) => x !== null && x !== undefined && x !== '' && !(t
 export function mailEndpointWrite(toolInput) {
   if (typeof toolInput !== 'object' || toolInput === null) return false
   let nodes = 0
-  // [value, depth, methods of the nearest object that has method keys (null: none), a body key seen]
+  // [value, depth, a non-read method in the nearest object that has method keys (null: no such object; computed once per object, review B3: per-hit recomputation was quadratic), a body key seen]
   const stack = [[toolInput, 0, null, false]]
   while (stack.length) {
-    const [v, depth, methods, hasBody] = stack.pop()
+    const [v, depth, nonRead, hasBody] = stack.pop()
     if (depth > FORWARD_WALK_MAX_DEPTH) return true
     if (typeof v === 'string') {
       const e = endpointOf(v)
       if (e) {
         if (e.cls === 'A') return true
         if (e.reqMethod !== null ? !ENDPOINT_READ_METHODS.includes(e.reqMethod)
-          : methods !== null ? methods.some(endpointNonRead) : hasBody) return true
+          : nonRead !== null ? nonRead : hasBody) return true
       }
       if (FORWARD_JSON_START.test(v)) {
         if (v.length > FORWARD_JSON_MAX_CHARS) return true
         let parsed
         try { parsed = JSON.parse(v) } catch (err) { if (err instanceof SyntaxError) continue; return true }
-        if ((typeof parsed === 'object' && parsed !== null) || typeof parsed === 'string') stack.push([parsed, depth + 1, methods, hasBody])
+        if ((typeof parsed === 'object' && parsed !== null) || typeof parsed === 'string') stack.push([parsed, depth + 1, nonRead, hasBody])
       }
       continue
     }
     const isArr = Array.isArray(v)
-    let ownMethods = methods
+    let ownNonRead = nonRead
     let body = hasBody
     if (!isArr) {
       const own = []
@@ -2120,11 +2120,11 @@ export function mailEndpointWrite(toolInput) {
         if (ENDPOINT_METHOD_KEYS.includes(norm)) own.push(x)
         if (ENDPOINT_BODY_KEYS.includes(norm) && endpointNonEmpty(x)) body = true
       }
-      if (own.length) ownMethods = own
+      if (own.length) ownNonRead = own.some(endpointNonRead)
     }
     for (const x of isArr ? v : Object.values(v)) {
       if (++nodes > FORWARD_WALK_MAX_NODES) return true
-      if (typeof x === 'string' || (typeof x === 'object' && x !== null)) stack.push([x, depth + 1, ownMethods, body])
+      if (typeof x === 'string' || (typeof x === 'object' && x !== null)) stack.push([x, depth + 1, ownNonRead, body])
     }
   }
   return false
