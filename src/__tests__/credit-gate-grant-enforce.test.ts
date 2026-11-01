@@ -781,6 +781,69 @@ describe('A3: the tick writes exactly one new row when the period changes, with 
     expect(h.state().state).toBe('OPEN')
   })
 
+  // R1d (review B4): a button-only signal that never reached the gate's own latch reason still needs a new button.
+  it.each(['auth_401', 'disarm'] as const)('R1d B4(a): a %s signal on a gate already latched by the threshold is audit-only (B14), yet the boundary writes no row and sets the flag', (reason) => {
+    h.enforce()
+    h.now = BOUNDARY_AFTER
+    h.gate.tick(h.now)
+    expect(h.state().state).toBe('CLOSED')
+    h.gate.signal(reason, 'test', null, h.now)
+    // B14: the gate keeps its threshold latch; only the kind='signal' audit row knows the signal.
+    expect(h.stateRow().latch_reason).not.toBe(reason)
+    expect(h.events('signal').map((e) => e['reason'])).toContain(reason)
+    h.proc.process(h.now)
+    h.gate.tick(h.now)
+    expect(h.periods()).toHaveLength(1)
+    expect(grantButtonRequired(getDb())).toMatchObject({ reason })
+    expect(h.state().state).toBe('CLOSED')
+    h.cycle()
+    expect(h.periods()).toHaveLength(1)
+    expect(h.source()).toBeNull()
+    expect(h.state().state).toBe('CLOSED')
+    // A new owner button still opens.
+    h.enforce()
+    expect(h.periods()).toHaveLength(2)
+    expect(h.state().state).toBe('OPEN')
+    expect(grantButtonRequired(getDb())).toBeNull()
+  })
+
+  it.each(['auth_401', 'disarm'] as const)('R1d B4(b): a %s latch, then the boundary tick (before process) rewrites it to the threshold: still no row, flag set', (reason) => {
+    h.enforce()
+    h.gate.signal(reason, 'test', null, h.now)
+    expect(h.state()).toMatchObject({ state: 'CLOSED', reason })
+    h.now = BOUNDARY_AFTER
+    // The runtime ticks BEFORE process(): the period boundary's threshold latch replaces the signal's reason.
+    h.gate.tick(h.now)
+    expect(h.state().state).toBe('CLOSED')
+    expect(h.stateRow().latch_reason).not.toBe(reason)
+    h.proc.process(h.now)
+    h.gate.tick(h.now)
+    expect(h.periods()).toHaveLength(1)
+    expect(grantButtonRequired(getDb())).toMatchObject({ reason })
+    expect(h.state().state).toBe('CLOSED')
+    h.cycle()
+    expect(h.periods()).toHaveLength(1)
+    expect(h.source()).toBeNull()
+  })
+
+  it('R1d B4(c) control: a signal older than the latest enforce does not block the advance', () => {
+    h.enforce()
+    h.gate.signal('auth_401', 'test', null, h.now)
+    h.cycle()
+    expect(grantButtonRequired(getDb())).toMatchObject({ reason: 'auth_401' })
+    h.now += 3_600_000
+    h.enforce()
+    expect(h.state().state).toBe('OPEN')
+    expect(grantButtonRequired(getDb())).toBeNull()
+    expect(h.periods()).toHaveLength(2)
+    h.now = BOUNDARY_AFTER
+    h.cycle()
+    h.cycle()
+    expect(grantButtonRequired(getDb())).toBeNull()
+    expect(h.periods()).toHaveLength(3)
+    expect(h.state().state).toBe('OPEN')
+  })
+
   it('R1c: a Console-source config is unaffected: no flag is set by a 401 latch, and a set flag does not touch the Console source', () => {
     const c = new GH({ calibrationSource: 'console', grantModel: grantBlock() })
     c.consoleRow(7)
