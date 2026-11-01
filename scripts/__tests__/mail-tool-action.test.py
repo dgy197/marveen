@@ -955,6 +955,38 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
           {"mcp__outlook__fetch", "mcp__gmail__create_draft", "mcp__outlook__manage_email"} <= {a["tool"] for a in WJ["actions"]}
           and {"send", None} <= {a["expected"] for a in WJ["actions"]})
 
+    # --- card 5e3c31c5 N2: the shared python reader, huge integers ------------------------------------
+    import inspect
+    walker_reader = getattr(ee, "_walker_json_loads", None)
+    check("5e3c31c5 N2: email_extract._walker_json_loads exists", callable(walker_reader))
+    for fn in (ee._has_forward_key, ee._has_forward_key_name, ee.mail_endpoint_write):
+        src = inspect.getsource(fn)
+        check(f"5e3c31c5 AC1: {fn.__name__} reads JSON strings only through _walker_json_loads",
+              "_walker_json_loads(" in src and "json.loads(" not in src.replace("_walker_json_loads(", ""))
+    huge = "9" * 5000
+    got = attempt(lambda: walker_reader('{"a": ' + huge + ', "b": [-' + huge + ']}'))
+    check("5e3c31c5 AC5: a 5000-digit integer parses to a float, no ValueError (any python version)",
+          isinstance(got, dict) and isinstance(got["a"], float) and got["b"][0] == float("-inf") and got["a"] == float("inf"), f"got {got!r}"[:120])
+    hidden = '{"n": ' + huge + ', "\\u0066orwardTo": 1}'
+    check("5e3c31c5 AC5: the walkers walk on past a 5000-digit integer (hasForwardKey / hasForwardKeyName)",
+          attempt(lambda: ee._has_forward_key({"b": hidden})) is True
+          and attempt(lambda: ee._has_forward_key_name({"b": hidden}, True, False, ee.NO_EXEMPT)) is True)
+    check("5e3c31c5 AC5: ... and mail_endpoint_write",
+          attempt(lambda: ee.mail_endpoint_write({"b": '{"n": ' + huge + ', "path": "/me/sendMail"}'})) is True)
+    check("5e3c31c5 N2: a number, bool and null leave a benign string benign",
+          attempt(lambda: ee._has_forward_key_name({"b": '{"a": 1, "b": true, "c": null, "d": 2.5}'}, True, False, ee.NO_EXEMPT)) is False)
+    if hasattr(sys, "set_int_max_str_digits"):
+        prev = sys.get_int_max_str_digits()
+        sys.set_int_max_str_digits(4300)
+        try:
+            check("5e3c31c5 R4: with the interpreter's digit limit on (4300), plain int() would raise and the walkers still walk",
+                  attempt(lambda: ee._has_forward_key({"b": hidden})) is True
+                  and attempt(lambda: ee.mail_endpoint_write({"b": '{"n": ' + huge + ', "path": "/me/sendMail"}'})) is True)
+        finally:
+            sys.set_int_max_str_digits(prev)
+    else:
+        print("  [SKIP] 5e3c31c5 R4: sys.set_int_max_str_digits does not exist on this python (%s); the limit cannot be exercised" % sys.version.split()[0])
+
 if failed:
     print(f"\n{len(failed)} FAILED: {failed}", file=sys.stderr)
     sys.exit(1)
