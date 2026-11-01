@@ -214,6 +214,48 @@ describe('rule 6: exact=false when no sure reading exists (the text is still the
     expect(r.info.exact).toBe(true)
   })
 
+  // Fix round 1, B1: the `case` keyword was read on the RAW stream, so a continuation inside it hid it, the
+  // pattern `)` closed the substitution and a "comment" of the dq context swallowed the next command.
+  it('a case keyword inside $(...) is inexact, also when a continuation splits it (ca\\<NL>se, case\\<NL> a)', () => {
+    const rows: Array<[string, string]> = [
+      ['K1 ca\\<NL>se', `echo "$(ca${BS}${NL}se a in a) # c ${BS}${NL}crontab -r ;; esac)"`],
+      ['K2 case\\<NL> blank', `echo "$(case${BS}${NL} a in a) # c ${BS}${NL}crontab -r ;; esac)"`],
+      ['K3 unsplit', `echo "$(case a in a) # c ${BS}${NL}crontab -r ;; esac)"`],
+      ['K5 at now', `echo "$(ca${BS}${NL}se a in a) # c ${BS}${NL}at now ;; esac)"`],
+      ['K6 unwrapped', `echo $(ca${BS}${NL}se a in a) # c ${BS}${NL}crontab -r ;; esac)`],
+      ['inside ${x:-...}', `echo "\${x:-$(ca${BS}${NL}se a in a) # c ${BS}${NL}crontab -r ;; esac)}"`],
+      ['two splits', `echo $(c${BS}${NL}a${BS}${NL}s${BS}${NL}e a in a) # c ${BS}${NL}crontab -r ;; esac)`],
+      ['continuation before and inside', `echo $( ${BS}${NL}ca${BS}${NL}se a in a) # c ${BS}${NL}crontab -r ;; esac)`],
+      ['after a separator', `echo $(true; ca${BS}${NL}se a in a) # c ${BS}${NL}crontab -r ;; esac)`],
+    ]
+    for (const [name, src] of rows) {
+      const r = join(src)
+      expect(r.info.exact, name).toBe(false)
+      expect(r.info.reason, name).toMatch(/case inside|unmatched \)/)
+    }
+  })
+
+  it('the keyword rule has no false hit on words that merely contain or continue "case"', () => {
+    for (const src of [
+      `echo $(echo showcase${BS}${NL}x)`,
+      `echo $(echo case_x ${BS}${NL}y)`,
+      `echo $(ca${BS}${NL}sex a ${BS}${NL}b)`,
+      `echo $(echo a ${BS}${NL}b) case`,
+    ]) {
+      const r = join(src)
+      expect(r.info.exact, src).toBe(true)
+    }
+  })
+
+  it('a `)` that closes $(...) after an `in` word is inexact too (a case pattern close looks the same)', () => {
+    const r = join(`echo $(for x in a b; do echo ${BS}${NL}$x; done)`)
+    expect(r.info.exact).toBe(false)
+    expect(r.info.reason).toMatch(/unmatched \)/)
+    // no `in` word, no hit
+    expect(join(`echo $(echo a ${BS}${NL}b)`).info.exact).toBe(true)
+    expect(join(`echo $(echo inside ${BS}${NL}b)`).info.exact).toBe(true)
+  })
+
   it('exact stays true on the clean shapes of the card', () => {
     const exactRows = ['R1', 'R2', 'R3', 'V1', 'V3', 'V4', 'V5', 'V8', 'V9', 'V10', 'V11', 'V13', 'V14', 'V15', 'V18', 'V21', 'B7', 'B9']
     for (const id of exactRows) {
