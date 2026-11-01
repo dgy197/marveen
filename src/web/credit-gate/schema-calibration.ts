@@ -37,6 +37,14 @@
 // new incident-clear of the PINNED owner naming that event re-pins it.
 // min_captured_at_lb: after an incident-clear (or an owner re-pin) only a
 // reading captured at or after this instant counts (MED-2).
+// grant_button_required_at / grant_button_required_reason (card 40e03382, R1c):
+// the grant chain's durable "an owner button is required" flag. The tick sets it
+// on the FIRST tick the gate is latched or held for a reason only a new
+// credit_gate_enforce button lifts (auth_401, disarm, human_stop,
+// canary_undecidable, calibration_error), before a period boundary can
+// overwrite the gate's latch reason. While it is set no period row is written
+// and the grant source hands the gate no calibration. Only the enforce step
+// clears it, in the transaction that writes its new period row.
 
 import type Database from 'better-sqlite3'
 
@@ -93,8 +101,12 @@ export function applyCalibrationSchema(db: Database.Database): void {
       min_captured_at_lb INTEGER
     );
   `)
-  // Added in the review round; only "duplicate column" is expected.
-  for (const sql of ['ALTER TABLE credit_canaries ADD COLUMN hash_taken_at INTEGER']) {
+  // Added later (review rounds, R1c); only "duplicate column" is expected.
+  for (const sql of [
+    'ALTER TABLE credit_canaries ADD COLUMN hash_taken_at INTEGER',
+    'ALTER TABLE credit_calibration_state ADD COLUMN grant_button_required_at INTEGER',
+    'ALTER TABLE credit_calibration_state ADD COLUMN grant_button_required_reason TEXT',
+  ]) {
     try {
       db.exec(sql)
     } catch (err) {

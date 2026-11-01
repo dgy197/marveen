@@ -278,6 +278,31 @@ export function calibrationOfPeriod(cfg: CreditGateConfig, rec: GrantPeriodRecor
   }
 }
 
+// ------------------------------------------------------------------ the button-required flag (R1c)
+
+/**
+ * The durable flag of the chain: an owner button is required (credit_calibration_state).
+ * Set by the tick the first time it sees the gate latched or held for a reason only a
+ * new enforce button lifts; cleared only by the enforce step, in its own transaction.
+ */
+export function grantButtonRequired(db: Database.Database): { readonly at: number; readonly reason: string | null } | null {
+  const r = db.prepare('SELECT grant_button_required_at AS at, grant_button_required_reason AS reason FROM credit_calibration_state WHERE id = 1').get() as
+    { at: number | null; reason: string | null } | undefined
+  return r && r.at !== null ? { at: r.at, reason: r.reason } : null
+}
+
+/** Set the flag (inside the caller's transaction); true when it was not set before. */
+export function requireGrantButton(db: Database.Database, reason: string, nowMs: number): boolean {
+  db.prepare('INSERT OR IGNORE INTO credit_calibration_state (id) VALUES (1)').run()
+  return db.prepare(`UPDATE credit_calibration_state SET grant_button_required_at = ?, grant_button_required_reason = ?
+    WHERE id = 1 AND grant_button_required_at IS NULL`).run(nowMs, reason).changes === 1
+}
+
+/** Clear the flag (inside the enforce step's transaction). */
+export function clearGrantButton(db: Database.Database): void {
+  db.prepare('UPDATE credit_calibration_state SET grant_button_required_at = NULL, grant_button_required_reason = NULL WHERE id = 1').run()
+}
+
 /**
  * The grant_model calibration for a config that selects it: the newest period
  * row, if it verifies and is in force (readChain); null when the reconstructed
@@ -288,6 +313,8 @@ export function grantModelCalibration(db: Database.Database, cfg: CreditGateConf
   if (cfg.calibrationSource !== 'grant_model' || cfg.grantModel === null) return null
   const inputs = measureGrantInputs(cfg)
   if (!inputs.ok) return null
+  // R1c: a chain waiting for the owner's button hands the gate nothing (a read that fails throws: closed).
+  if (grantButtonRequired(db) !== null) return null
   const read = readChain(db, cfg, inputs.hash)
   return read.kind === 'ok' ? calibrationOfPeriod(cfg, read.record) : null
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
 import net from 'node:net'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -45,7 +45,7 @@ import {
   parseCreditGatePayload,
 } from '../web/credit-gate/approval-payload.js'
 import { grantModelHash } from '../web/credit-gate/grant-model.js'
-import { dispatchCalibrationSource, GRANT_CONSUMER } from '../web/credit-gate/grant-period.js'
+import { dispatchCalibrationSource, GRANT_CONSUMER, grantButtonRequired, requireGrantButton } from '../web/credit-gate/grant-period.js'
 import { buildCreditGateApprovalText } from '../web/approval-telegram-text.js'
 import { configObject, pricingText, USD } from './fixtures/credit-gate/gate-harness.js'
 
@@ -194,7 +194,7 @@ class GH {
   ownerId: string | null = OWNER
   consumeOverride: ((p: Parameters<typeof consumeCreditGateApproval>[0]) => ReturnType<typeof consumeCreditGateApproval>) | null = null
   readonly gate: CreditGate
-  readonly proc: CalibrationProcessor
+  proc: CalibrationProcessor
   readonly source: ReturnType<typeof dispatchCalibrationSource>
 
   constructor(o: GhOptions = {}) {
@@ -223,15 +223,28 @@ class GH {
     this.gate = new CreditGate(fileGateDeps({
       storeDir: this.storeDir, db, mode: readCreditGateMode('enforce'), calibration: this.source, now: () => this.now,
     }))
-    this.proc = new CalibrationProcessor({
-      db,
+    this.loadConfig = loadConfig
+    this.proc = this.newProcessor()
+  }
+
+  private readonly loadConfig: () => ReturnType<typeof loadCreditGateConfigFile>
+
+  /** A processor on the same DB and gate, as after a process restart (it keeps no state of its own that matters). */
+  newProcessor(): CalibrationProcessor {
+    return new CalibrationProcessor({
+      db: getDb(),
       gate: this.gate,
-      loadConfig,
+      loadConfig: this.loadConfig,
       loadPricing: (nowMs) => loadPricingFile(this.pricingPath, nowMs),
       ownerId: () => this.ownerId,
       now: () => this.now,
       consume: (p) => (this.consumeOverride ?? consumeCreditGateApproval)(p),
     })
+  }
+
+  /** The human STOP file of the config (a file the gate did not put down). */
+  get humanStopPath(): string {
+    return join(this.dir, 'batch', 'STOP')
   }
 
   writeConfig(cfg: Record<string, unknown>): void {
@@ -680,6 +693,106 @@ describe('A3: the tick writes exactly one new row when the period changes, with 
     expect(h.state().state).toBe('OPEN')
     expect(h.periods()).toHaveLength(2)
     expect(h.periods()[1].id).toBeGreaterThan(h.periods()[0].id)
+  })
+
+  // R1c: the first tick that sees the closing sets the durable flag, so the boundary's own threshold latch
+  // (it overwrites the gate's latch reason, same latch id) can no longer make the closing look liftable.
+  const latchIt = (g: GH, reason: 'auth_401' | 'disarm' | 'human_stop'): void => {
+    if (reason === 'human_stop') writeFileSync(g.humanStopPath, 'human stop\n')
+    else g.gate.signal(reason, 'test', null, g.now)
+  }
+
+  it.each(['auth_401', 'disarm', 'human_stop'] as const)('R1c: a %s latch sets the button-required flag on the first tick; the boundary writes no row and the gate stays CLOSED until a new enforce', (reason) => {
+    h.enforce()
+    expect(h.state().state).toBe('OPEN')
+    expect(grantButtonRequired(getDb())).toBeNull()
+    latchIt(h, reason)
+    h.cycle()
+    expect(h.state()).toMatchObject({ state: 'CLOSED', reason })
+    expect(grantButtonRequired(getDb())).toMatchObject({ reason })
+    expect(h.events('grant_button_required')).toHaveLength(1)
+    // The source hands the gate nothing while the flag is set: the gate cannot open on the old row.
+    expect(h.source()).toBeNull()
+    h.now += 3_600_000
+    h.cycle()
+    h.now = BOUNDARY_AFTER
+    h.cycle()
+    h.cycle()
+    expect(h.state()).toMatchObject({ state: 'CLOSED', reason })
+    expect(h.periods()).toHaveLength(1)
+    expect(h.source()).toBeNull()
+    expect(h.events('grant_button_required')).toHaveLength(1)
+    if (reason === 'human_stop') unlinkSync(h.humanStopPath)
+    h.enforce()
+    expect(h.state().state).toBe('OPEN')
+    expect(h.periods()).toHaveLength(2)
+    expect(h.periods()[1].id).toBeGreaterThan(h.periods()[0].id)
+    expect(grantButtonRequired(getDb())).toBeNull()
+    expect(h.source()).toMatchObject({ id: h.periods()[1].id })
+    h.cycle()
+    expect(h.state().state).toBe('OPEN')
+  })
+
+  it.each(['canary_undecidable', 'calibration_error'] as const)('R1c: a %s HOLD sets the flag too, and the source stays null until a new enforce', (reason) => {
+    h.enforce()
+    h.gate.raiseHold(reason, { why: 'test' }, h.now)
+    h.cycle()
+    expect(grantButtonRequired(getDb())).toMatchObject({ reason })
+    expect(h.source()).toBeNull()
+    h.now = BOUNDARY_AFTER
+    h.cycle()
+    h.cycle()
+    expect(h.state()).toMatchObject({ state: 'HOLD', reason })
+    expect(h.periods()).toHaveLength(1)
+    h.enforce()
+    expect(h.state().state).toBe('OPEN')
+    expect(grantButtonRequired(getDb())).toBeNull()
+  })
+
+  it('R1c: the flag survives a process restart (a new processor on the same DB): still no row, still CLOSED', () => {
+    h.enforce()
+    h.gate.signal('auth_401', 'test', null, h.now)
+    h.cycle()
+    expect(grantButtonRequired(getDb())).not.toBeNull()
+    h.proc = h.newProcessor()
+    expect(grantButtonRequired(getDb())).not.toBeNull()
+    h.now = BOUNDARY_AFTER
+    h.cycle()
+    h.cycle()
+    expect(h.state()).toMatchObject({ state: 'CLOSED', reason: 'auth_401' })
+    expect(h.periods()).toHaveLength(1)
+    expect(h.source()).toBeNull()
+    // A second restart after the boundary does not change it either, and a new button still opens.
+    h.proc = h.newProcessor()
+    h.cycle()
+    expect(h.periods()).toHaveLength(1)
+    h.enforce()
+    expect(h.state().state).toBe('OPEN')
+    expect(grantButtonRequired(getDb())).toBeNull()
+  })
+
+  it('R1c: a threshold-only closing is not button-only: the boundary still lifts it (no flag)', () => {
+    h.enforce()
+    h.now = BOUNDARY_AFTER
+    h.cycle()
+    h.cycle()
+    expect(grantButtonRequired(getDb())).toBeNull()
+    expect(h.periods()).toHaveLength(2)
+    expect(h.state().state).toBe('OPEN')
+  })
+
+  it('R1c: a Console-source config is unaffected: no flag is set by a 401 latch, and a set flag does not touch the Console source', () => {
+    const c = new GH({ calibrationSource: 'console', grantModel: grantBlock() })
+    c.consoleRow(7)
+    // The forged Console row throws, flag or no flag: the Console path is the same as before.
+    expect(() => c.source()).toThrow()
+    c.gate.signal('auth_401', 'test', null, c.now)
+    c.cycle()
+    expect(grantButtonRequired(getDb())).toBeNull()
+    expect(c.periods()).toHaveLength(0)
+    expect(requireGrantButton(getDb(), 'auth_401', c.now)).toBe(true)
+    expect(() => c.source()).toThrow()
+    c.cleanup()
   })
 
   it('B3: after a period row, the next Console reading id is above every period id (the sequence follows)', () => {
