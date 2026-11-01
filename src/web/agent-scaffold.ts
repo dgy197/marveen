@@ -1092,6 +1092,13 @@ const MAIL_SERVER_WORDS = [
 ]
 const mailServerAlt = (w: string) => `${CI('mcp')}__${NON_MAIL_SERVERS}(?:(?!__).)*${CI(w)}(?:(?!__).)*__.*`
 export const MAIL_SERVER_ALTERNATIVES = MAIL_SERVER_WORDS.map(mailServerAlt)
+// The TOOL-name alternative (card 3d6e5181 N4 B1): the server alternatives above
+// look at the server segment only, so a tool carrying the word in ITS name on a
+// server that does not (mcp__google_workspace__create_gmail_filter,
+// mcp__gws__gmail_filters_create, mcp__zoho__create_mail_filter) reached no gate.
+// ONE flat alternative with the same non-mail exclusion: `mail` also covers gmail,
+// email and mailbox. Over-routing is harmless (the hook decides).
+export const MAIL_TOOL_ALTERNATIVE = verbAlt('mail')
 // Binding: email-gate-matcher-drift.test.ts asserts this matcher fires for
 // every name either classifier gates, and never for the Telegram tools.
 export const EMAIL_GATE_MATCHER =
@@ -1107,6 +1114,7 @@ export const EMAIL_GATE_MATCHER =
   + '|.*update[-_]mail[-_]message.*|.*update[-_]shared[-_]mailbox[-_]message.*'
   + '|' + VERB_ALTERNATIVES.join('|')
   + '|' + MAIL_SERVER_ALTERNATIVES.join('|')
+  + '|' + MAIL_TOOL_ALTERNATIVE
 
 // Does an existing PreToolUse array carry an email-gate entry whose matcher is
 // NOT the current one? Pure + exported: this is the predicate that lets
