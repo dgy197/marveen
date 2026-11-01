@@ -11,6 +11,8 @@ import * as joinModule from '../../scripts/shell-line-join.mjs'
 import * as gate from '../../scripts/self-pace-gate.mjs'
 // @ts-expect-error -- plain .mjs fixture module, no types
 import { BS, NL, CRLF, SPEC_CASES, EXTRA_CASES, BENIGN_CASES, allCommands, bigShapes } from './fixtures/self-pace-continuation/cases.mjs'
+// @ts-expect-error -- plain .mjs fixture module, no types
+import { ATTACK_CASES, INTERP_CASES, OPLINE_CASES, FLEET_CASES, STRIP_CONTRACT_CASES, CONTEXT_CASES } from './fixtures/self-pace-context/cases.mjs'
 
 type Info = { exact?: boolean; reason?: string | null }
 function join(src: string): { out: string; info: Info } {
@@ -374,5 +376,99 @@ describe('the gate helpers join on their own entrance (raw text equals pre-joine
       if (!variants.includes(joined) || !variants.includes(naive)) missing.push(JSON.stringify(raw).slice(0, 60))
     }
     expect(missing).toEqual([])
+  })
+})
+
+// Card 0bb35172, node N0 (RED until node N1): shellContext(src) is the one place that decides about heredoc,
+// quote, comment and substitution context. Its text is joinShellLines(src) (E7), and it reports what the same
+// lexer pass opened. The per-character class names are N1's to fix; this node only pins the invariants that do
+// not depend on their spelling (lengths, the heredoc and quote counts, the exact / reason pair).
+describe('shellContext: the same lexer pass as joinShellLines, plus the context it saw (card 0bb35172, E7)', () => {
+  type Ctx = {
+    text: string
+    cls: ArrayLike<unknown>
+    quotes: Array<{ start: number }>
+    heredocs: Array<{ opStart: number; quoted?: boolean }>
+    exact: boolean
+    reason: string | null
+  }
+  const ctxOf = (src: string): Ctx => {
+    expect(typeof joinModule.shellContext, 'scripts/shell-line-join.mjs exports shellContext').toBe('function')
+    return joinModule.shellContext(src) as Ctx
+  }
+  const corpus = (): string[] => [
+    ...(allCommands() as string[]),
+    ...(ATTACK_CASES as Array<{ command: string }>).map((r) => r.command),
+    ...(INTERP_CASES as Array<{ command: string }>).map((r) => r.command),
+    ...(OPLINE_CASES as Array<{ command: string }>).map((r) => r.command),
+    ...(FLEET_CASES as Array<{ command: string }>).map((r) => r.command),
+    ...(STRIP_CONTRACT_CASES as Array<{ command: string }>).map((r) => r.command),
+  ]
+
+  it('is exported next to joinShellLines', () => {
+    expect(typeof joinModule.joinShellLines).toBe('function')
+    expect(typeof joinModule.shellContext).toBe('function')
+  })
+
+  it('text equals joinShellLines(src), and exact / reason equal the info of the same call, on the whole corpus', () => {
+    const bad: string[] = []
+    for (const src of corpus()) {
+      const info: Info = {}
+      const joined = joinModule.joinShellLines(src, info) as string
+      const ctx = ctxOf(src)
+      if (ctx.text !== joined) bad.push(`text: ${JSON.stringify(src).slice(0, 70)}`)
+      else if (ctx.exact !== info.exact || (ctx.reason ?? null) !== (info.reason ?? null)) bad.push(`info: ${JSON.stringify(src).slice(0, 70)}`)
+    }
+    expect(bad).toEqual([])
+  })
+
+  it('cls has one entry per character of text; quotes and heredocs are lists', () => {
+    const bad: string[] = []
+    for (const src of corpus()) {
+      const ctx = ctxOf(src)
+      if (ctx.cls.length !== ctx.text.length || !Array.isArray(ctx.quotes) || !Array.isArray(ctx.heredocs)) bad.push(JSON.stringify(src).slice(0, 70))
+    }
+    expect(bad).toEqual([])
+  })
+
+  it('text equals joinShellLines(src) on 200000 fuzz samples (the alphabet of the 3e13973c p3 probe)', () => {
+    expect(typeof joinModule.shellContext).toBe('function')
+    const alpha = [BS, BS, NL, '\r', "'", '"', '$', '(', ')', '{', '}', '#', '<', '<', '-', ' ', 'a', 'E', ';', '|', '&', '\t', '`', 'c', 's', 'e', '\0']
+    let seed = 12345
+    const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff
+    const bad: string[] = []
+    for (let t = 0; t < 200000 && bad.length < 5; t++) {
+      let s = ''
+      const len = 1 + Math.floor(rnd() * 24)
+      for (let k = 0; k < len; k++) s += alpha[Math.floor(rnd() * alpha.length)]
+      const ctx = joinModule.shellContext(s) as Ctx
+      if (ctx.text !== (joinModule.joinShellLines(s) as string)) bad.push(JSON.stringify(s))
+    }
+    expect(bad).toEqual([])
+  })
+
+  describe('what the lexer opens (B3: a look-alike `<<TAG` opens no heredoc)', () => {
+    for (const row of CONTEXT_CASES as Array<{ id: string; command: string; heredocs: number; quotes: number | null }>) {
+      it(`${row.id}: ${row.heredocs} heredoc(s)${row.quotes === null ? '' : `, ${row.quotes} quoted token(s)`}`, () => {
+        const ctx = ctxOf(row.command)
+        expect(ctx.heredocs.length).toBe(row.heredocs)
+        if (row.quotes !== null) expect(ctx.quotes.length).toBe(row.quotes)
+      })
+    }
+
+    it('a single-quoted token reports its start at the opening quote (H4, t2)', () => {
+      for (const id of ['H4', 't2']) {
+        const row = (CONTEXT_CASES as Array<{ id: string; command: string }>).find((r) => r.id === id) as { command: string }
+        const ctx = ctxOf(row.command)
+        expect(ctx.text[ctx.quotes[0].start], id).toBe("'")
+      }
+    })
+
+    it('a real quoted-tag heredoc starts at its `<<` and is reported as quoted', () => {
+      const row = (CONTEXT_CASES as Array<{ id: string; command: string }>).find((r) => r.id === 'real-heredoc') as { command: string }
+      const ctx = ctxOf(row.command)
+      expect(ctx.text.slice(ctx.heredocs[0].opStart, ctx.heredocs[0].opStart + 2)).toBe('<<')
+      expect(ctx.heredocs[0].quoted).toBe(true)
+    })
   })
 })

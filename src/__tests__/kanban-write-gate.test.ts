@@ -15,8 +15,14 @@ import {
   injectKanbanWriteGate,
 } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID } from '../config.js'
+// @ts-expect-error -- plain .mjs fixture module, no types
+import { KANBAN_ATTACK_CASES, KANBAN_ALLOW_CASES, FLEET_CASES } from './fixtures/self-pace-context/cases.mjs'
+// @ts-expect-error -- plain .mjs fixture module, no types
+import { BENIGN_CASES } from './fixtures/self-pace-continuation/cases.mjs'
 
 const bash = (command: string) => gateDecision('Bash', { command })
+
+type CtxRow = { id: string; command: string; expect: 'DENY' | 'ALLOW' }
 
 describe('kanban-write-gate gateDecision: SQL writes (known positives)', () => {
   it('denies a direct sqlite3 UPDATE of kanban_cards (the 14:43 incident shape)', () => {
@@ -87,6 +93,41 @@ describe('kanban-write-gate gateDecision: the worker duties that MUST pass', () 
   })
   it('ignores non-Bash tools', () => {
     expect(gateDecision('Write', { file_path: '/x', content: 'UPDATE kanban_cards SET' }).deny).toBe(false)
+  })
+})
+
+// Card 0bb35172 (findings 3660cf43 B4): a newline or a backslash-newline INSIDE a quoted header must not cut the
+// write call into two segments (k1, k4: RED on 78b178b2; k2 and k3 are green guards), and the heartbeat worker's
+// real multi-line shapes must keep passing. Strings only: the gate is handed text, nothing is executed.
+describe('kanban-write-gate gateDecision: quoted newline / continuation (card 0bb35172)', () => {
+  const attack = KANBAN_ATTACK_CASES as CtxRow[]
+  it('the corpus has k1-k4', () => {
+    expect(attack.map((r) => r.id)).toEqual(['k1', 'k2', 'k3', 'k4'])
+  })
+  for (const row of attack) {
+    it(`${row.id}: DENY`, () => {
+      expect(bash(row.command).deny, JSON.stringify(row.command)).toBe(true)
+    })
+  }
+
+  it('the 6 worker-duty shapes (incl. the continuation curl read) stay ALLOW', () => {
+    const rows = KANBAN_ALLOW_CASES as CtxRow[]
+    expect(rows.length).toBe(6)
+    for (const row of rows) expect(bash(row.command).deny, `${row.id}: ${JSON.stringify(row.command)}`).toBe(false)
+  })
+
+  it('the 27 real multi-line fleet shapes stay ALLOW (a quoted newline is not a write)', () => {
+    const rows = FLEET_CASES as CtxRow[]
+    expect(rows.length).toBe(27)
+    const denied = rows.filter((r) => bash(r.command).deny).map((r) => r.id)
+    expect(denied).toEqual([])
+  })
+
+  it('the 25 benign continuation shapes keep their verdict: G02 (a real kanban comment POST) DENY, the rest ALLOW', () => {
+    const rows = BENIGN_CASES as CtxRow[]
+    expect(rows.length).toBe(25)
+    const wrong = rows.filter((r) => bash(r.command).deny !== (r.id === 'G02')).map((r) => r.id)
+    expect(wrong).toEqual([])
   })
 })
 
