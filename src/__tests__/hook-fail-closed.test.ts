@@ -184,7 +184,7 @@ describe('the builders', () => {
 // own location, so nothing here touches the install). Positive control: on an intact copy the wrapped
 // command gives the SAME status and stdout as the raw interpreter call, for a set of inputs that
 // includes denials. Negative test: a syntax error appended to the gate FILE, the wrapped command rc 2.
-const NODE_GATES = ['email-send-gate.mjs', 'self-pace-gate.mjs', 'kanban-write-gate.mjs', 'digest-provenance-gate.mjs', 'hooks/egress-gate.mjs', 'hooks/bash-egress-parser.mjs']
+const NODE_GATES = ['email-send-gate.mjs', 'self-pace-gate.mjs', 'kanban-write-gate.mjs', 'digest-provenance-gate.mjs', 'hooks/egress-gate.mjs', 'hooks/bash-egress-parser.mjs', 'shell-line-join.mjs']
 const PY_GATES = ['hooks/outgoing-copy-gate.py', 'hooks/destructive-gate.py', 'hooks/email-approval-gate.py']
 
 function inputs(root: string): string[] {
