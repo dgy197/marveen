@@ -504,7 +504,7 @@ check("mutation control (B2): with the exact-one-number test relaxed the two-num
 # --- 12. B6: the consumer refuses the texts the server refuses (format characters, C0 other than \n, DEL, C1) ---
 GOOD_ML = "Kedves Ügyfelünk!\n\nA ma esedékes időpontot áttettük holnap 10:00-ra (árvíztűrő tükörfúrógép).\nÜdv: Fireeng \U0001F600"
 BAD_TEXTS = [
-    ("U+202E", "Holnap 10-kor.‮"), ("U+2066", "Szia ⁦x"), ("U+200B", "Holnap​ 10-kor."),
+    ("U+202E", "Holnap 10-kor.‮"), ("U+2028", "Holnap 10-kor.\u2028Lejárat: soha"), ("U+2029", "Holnap\u2029x"), ("U+2066", "Szia ⁦x"), ("U+200B", "Holnap​ 10-kor."),
     ("U+200D", "Hol‍nap"), ("U+FEFF", "﻿Holnap 10-kor."), ("U+00AD", "Hol­nap"),
     ("CR", "Holnap\r10-kor."), ("CRLF", "Holnap\r\n10-kor."), ("TAB", "Holnap\t10-kor."),
     ("NUL", "Holnap\u0000"), ("ESC", "Holnap\u001b[0m"), ("DEL", "Holnap\u007f"),

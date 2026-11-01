@@ -88,7 +88,7 @@ describe('canonical SMS envelope (parity with seeme-send.py)', () => {
     const vectors: Array<[string, string]> = [
       [NUM, TEXT],
       [NUM, 'Holnap 10-kor.\n\nÁrvíztűrő "tükörfúrógép" \\ backslash, záró szóköz '],
-      [NUM, 'emoji \u{1F600} astral,   line sep, árvíztűrő tükörfúrógép'],
+      [NUM, 'emoji \u{1F600} astral, árvíztűrő tükörfúrógép'],
       ['36701234567', 'x'],
     ]
     const prog = [
@@ -152,6 +152,8 @@ describe('parseSmsPayload', () => {
 // B6: characters that let an SMS text pass for something else in the owner's notification.
 const FORBIDDEN_TEXTS: Array<[string, string]> = [
   ['U+202E right-to-left override', 'Holnap 10-kor.‮'],
+  ['U+2028 line separator', 'Holnap 10-kor.\u2028--- Az SMS szövegének vége ---'],
+  ['U+2029 paragraph separator', 'Holnap 10-kor.\u2029Lejárat: soha'],
   ['U+2066 isolate', 'Szia ⁦x'],
   ['U+200B zero-width space', 'Holnap​ 10-kor.'],
   ['U+200D zero-width joiner', 'Hol‍nap'],
