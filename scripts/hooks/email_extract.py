@@ -612,8 +612,9 @@ def _has_forward_key(value) -> bool:
     """Does the tool input carry forwarding anywhere (card 6151bb4d r2, B3)? Forwarding is:
     a KEY containing forward / redirect (forwardTo, autoForward, action.forward ...),
     case-insensitive; a STRING VALUE containing forward / redirect (type "forward", a
-    Sieve `redirect :copy "x@y"`), case-insensitive, or an address (an "@" with a
-    character on both sides); a string value that parses as JSON is walked too
+    Sieve `redirect :copy "x@y"`), case-insensitive, or `mailto:` (the enotify method
+    that mails out; card 61fcac1e), or an address (an "@" with a character on both
+    sides); a string value that parses as JSON is walked too
     (a stringified rule body, also escape-hidden keys), double encoding included.
     The walk is bounded: too deep, too many nodes, a string too long to parse, or a
     parse that blows the stack counts as forwarding (fail-closed), and so does an
@@ -628,7 +629,7 @@ def _has_forward_key(value) -> bool:
             return True
         if isinstance(v, str):
             low = v.lower()
-            if "forward" in low or "redirect" in low or _FORWARD_ADDRESS.search(v):
+            if "forward" in low or "redirect" in low or "mailto:" in low or _FORWARD_ADDRESS.search(v):
                 return True
             if _FORWARD_JSON_START.match(v):
                 if len(v) > _FORWARD_JSON_MAX_CHARS:
@@ -1181,61 +1182,78 @@ def _is_read_action(segments) -> bool:
     return read
 
 
-# Forwarding in the tool INPUT, name-independent (card 3d6e5181 N3, decisions Q3, Q4).
+# Forwarding in the tool INPUT, name-independent (card 3d6e5181 N3, decisions Q3, Q4;
+# the free-text invariant is card 61fcac1e).
 # A KEY containing forward / redirect (any depth, also inside a string that parses as
 # JSON, double encoding included), case-insensitive; and, only with value_words, a
 # forward / redirect WORD in a string value (word start: "type":"forward", `redirect
 # :copy`, autoForward count; "straightforward" does not). A bare address ("@") does NOT
-# count here (IMAP Message-IDs). Value words are not read in FREE-TEXT keys
-# (the key, lowercased and stripped to a-z0-9, is in _FREE_TEXT_KEYS: body, subject,
-# text, content, html, snippet, query ..., or ENDS in body / text / content / html:
-# message_body, plainText): a draft body that says "looking forward" is prose. The
-# match is exact or by suffix on purpose, so `actionName` or `bodyAction` are NOT free
-# text, and a rule script (`sieveScript`) is not either. A free-text value of a tool
-# that is NOT a plain draft (rule / filter / script / settings class, or an unknown
-# name) is still read with two NARROW instruction patterns (card 3d6e5181 N4 B2): a
-# Sieve `redirect [:copy] "x@y"` and a forward word followed within ~40 non-@
-# characters by an address; a plain draft (_is_plain_draft) keeps the prose exemption.
-# Label / folder identifiers are exempt from both. A JSON string in a free-text key is
-# walked for keys. Same bounds and fail-closed exits as _has_forward_key (too deep, too many
-# nodes, a string too long to parse, a non-container input = True).
+# count here (IMAP Message-IDs).
+#
+# The invariant. A message can leave the house through a rule / script only by a Sieve
+# `redirect` or an enotify `mailto:` (or a forward KEY of a settings API), and the
+# command name cannot be encoded (encoded-character acts inside a string literal
+# only), so the word test finds it whatever the syntax around it. No syntax pattern
+# is kept: Sieve is an executable language and a closed list of its spellings did not
+# converge (card 3d6e5181 N4 B2). So there are two modes, chosen by the CALLER from the
+# tool NAME (which the installed MCP server gives, not the attacker; a name-side list
+# can only err towards strict):
+#   - strict (a tool that is NOT a plain draft, see _is_plain_draft): every string value
+#     gets the word test and the `mailto:` test, whatever its key, except INERT keys.
+#     Free text is not exempt here: a rule description or a settings message that says
+#     "forwarded" is denied (fail-closed price of the invariant, Brainy 6415).
+#   - plain draft: prose keys (_FREE_TEXT_KEYS, or a key that ENDS in body / text /
+#     content / html: message_body, plainText) and file keys (_FILE_KEYS: attachment
+#     names and paths such as Fwd_invoice.pdf) are letter content and exempt from the
+#     word test; every other value still gets the word test, but not `mailto:` (a link
+#     in a signature is no forwarding). The match is exact or by suffix on purpose, so
+#     `actionName` or `bodyAction` are NOT free text, and a rule script (`sieveScript`)
+#     is not either.
+# INERT keys are exempt in both modes: label / folder identifiers ("Forwarded") name a
+# place, a selector (`query`, `search` ..) only picks messages, and an auto-reply text
+# is stored, not executed; none of them sends a message to a third party. They
+# exempt the VALUE words only: a forward KEY below them (also inside a JSON string in
+# the value) still counts, in every mode. Same bounds and fail-closed exits as
+# _has_forward_key (too deep, too many nodes, a string too long to parse, a
+# non-container input = True).
 # Twin: hasForwardKeyName in scripts/email-send-gate.mjs.
 _FREE_TEXT_KEYS = frozenset({
     "body", "htmlbody", "textbody", "plaintext", "plainbody", "bodypreview",
-    "subject", "text", "content", "html", "snippet", "query", "q", "search", "keyword", "keywords",
+    "subject", "text", "content", "html", "snippet",
     "title", "description", "comment", "note", "summary", "preview", "message", "name",
 })
-# label / folder identifiers ("Forwarded", "Forwarded Items") name a place, not an
-# instruction: exempt from the value words AND from the narrow patterns
-_LABEL_KEYS = frozenset({
+_INERT_KEYS = frozenset({
     "label", "labels",
     "labelids", "addlabelids", "removelabelids", "labelid", "labelname", "folder", "folderid", "foldername",
     "destinationfolder", "destinationfolderid", "parentfolderid", "mailbox",
+    "signature", "query", "q", "search", "keyword", "keywords",
+    "responsebodyplaintext", "responsebodyhtml", "internalreplymessage", "externalreplymessage", "autoreplymessage",
+})
+_FILE_KEYS = frozenset({
+    "file", "files", "filename", "filenames", "filepath", "path", "paths",
+    "attachment", "attachments", "attachmentname", "attachmentpath", "attachmentpaths",
 })
 _FREE_TEXT_SUFFIX = re.compile(r"(?:body|text|content|html)$")
 _FORWARD_WORD = re.compile(r"(?<![A-Za-z])(?:forward|redirect|fwd)", re.IGNORECASE | re.ASCII)
-# narrow instruction patterns for the free text of a non-draft tool (N4 B2)
-_FORWARD_INSTRUCTIONS = (
-    re.compile(r'\bredirect\s+(?::copy\s+)?"[^"]*@', re.IGNORECASE | re.ASCII),
-    re.compile(r"\b(?:forward\w*|fwd)\b[^@]{0,40}@", re.IGNORECASE | re.ASCII),
-)
+_MAILTO = re.compile(r"mailto:", re.IGNORECASE | re.ASCII)
 _FORWARD_WORD_CAMEL = re.compile(r"[a-z](?:Forward|Redirect)")
 _NON_ALNUM = re.compile(r"[^a-z0-9]")
 
 
-def _has_forward_key_name(value, value_words: bool = True, narrow_free: bool = False) -> bool:
+def _has_forward_key_name(value, value_words: bool = True, strict: bool = False) -> bool:
     if not isinstance(value, (dict, list)):
         return True
     nodes = 0
-    stack = [(value, 0, 0)]  # free: 0 not free text, 1 prose, 2 label / folder identifier
+    stack = [(value, 0, 0)]  # free: 0 not free text, 1 prose, 2 inert key, 3 file key
     while stack:
         v, depth, free = stack.pop()
         if depth > _FORWARD_WALK_MAX_DEPTH:
             return True
         if isinstance(v, str):
-            if value_words and not free and (_FORWARD_WORD.search(v) or _FORWARD_WORD_CAMEL.search(v)):
+            exempt = free == 2 or (not strict and free != 0)
+            if value_words and not exempt and (_FORWARD_WORD.search(v) or _FORWARD_WORD_CAMEL.search(v)):
                 return True
-            if value_words and narrow_free and free == 1 and any(r.search(v) for r in _FORWARD_INSTRUCTIONS):
+            if value_words and strict and not exempt and _MAILTO.search(v):
                 return True
             if _FORWARD_JSON_START.match(v):
                 if len(v) > _FORWARD_JSON_MAX_CHARS:
@@ -1263,8 +1281,10 @@ def _has_forward_key_name(value, value_words: bool = True, narrow_free: bool = F
                 if "forward" in key or "redirect" in key:
                     return True
                 norm = _NON_ALNUM.sub("", key)
-                if norm in _LABEL_KEYS:
+                if norm in _INERT_KEYS:
                     child_free = 2
+                elif norm in _FILE_KEYS:
+                    child_free = 3
                 elif norm in _FREE_TEXT_KEYS or _FREE_TEXT_SUFFIX.search(norm):
                     child_free = 1
                 else:
@@ -1279,11 +1299,13 @@ def _name_independent_forward(segments, tool_input) -> bool:
     calls a send is left to the send branches (False here); readers never match. Every
     other tool, the draft class included (update_settings, create_forwarding_address,
     update_auto_forwarding: update / create are draft verbs), needs a forward / redirect
-    KEY or a forward / redirect WORD in a non-free-text value (decision Q4, AC10). The
-    "looking forward" of a draft body is a free-text value and a bare address is no
-    forwarding, so a draft still goes the ledger way (AC8, AC12). Note: decision Q3 said
-    KEY only for drafts; AC10 (update_settings with a Sieve `redirect` value, a
-    `type: forward` action) needs the value words for the draft class too.
+    KEY or a forward / redirect WORD in a value (decision Q4, AC10); a plain draft
+    (_is_plain_draft) is read in the lenient mode, every other tool in the strict one (see
+    the comment above _FREE_TEXT_KEYS). The "looking forward" of a plain draft body is
+    prose and a bare address is no forwarding, so a draft still goes the ledger way (AC8,
+    AC12). Note: decision Q3 said KEY only for drafts; AC10 (update_settings with a Sieve
+    `redirect` value, a `type: forward` action) needs the value words for the draft class
+    too.
     Twin: nameIndependentForward in scripts/email-send-gate.mjs."""
     classes = [_segment_action(p, False) for p in segments]
     if "send" in classes or _is_read_action(segments):
@@ -1295,17 +1317,29 @@ def _name_independent_forward(segments, tool_input) -> bool:
     return _has_forward_key_name(tool_input, not multiplexed, not _is_plain_draft(segments, classes))
 
 
-# A rule / filter / script / settings word in a segment: such a tool is no letter.
-_RULE_CLASS_WORDS = ("rule", "filter", "script", "sieve", "setting", "vacation", "forwarding", "alias")
+# A rule / filter / script / settings / automation word in a segment: such a tool is no
+# letter. A word is matched as a substring (automat: automation, automatic; auto:
+# autoreply, auto_forward).
+_RULE_CLASS_WORDS = ("rule", "filter", "script", "sieve", "setting", "vacation", "forwarding", "alias",
+                     "automat", "flow", "policy", "auto", "responder")
+# A mail or calendar item noun: a draft verb with no such noun in its name (create_label,
+# create_thing) is no letter either.
+_MAIL_NOUNS = ("draft", "message", "mail", "reply", "compose", "forward", "event", "appointment", "calendar",
+               "rsvp", "response", "answer", "file", "doc")
 
 
 def _is_plain_draft(segments, classes) -> bool:
-    """A plain draft: the NAME classifier calls it a draft and no segment is of the rule /
-    filter / script / settings class. Its free-text values are prose (a body that says
-    "please forward this to x@y" is a letter, the ledger checks the recipients); every
-    other non-reader tool has its free text read with the narrow instruction patterns.
+    """A plain draft is identified POSITIVELY: the NAME classifier calls it a draft, a
+    segment has a mail noun, and no segment has a rule-class word (the rule word wins:
+    compose_rule, draft_filter). Its prose and file values are letter content (a body that
+    says "please forward this to x@y" is a letter, the ledger checks the recipients); every
+    other non-reader tool is read in strict mode. The two lists are closed on purpose: the
+    name comes from the installed MCP server, not from the attacker, so a miss only makes
+    a tool strict (it never opens the exemption for an unknown name).
     Twin: isPlainDraft in scripts/email-send-gate.mjs."""
     if "draft" not in classes:
+        return False
+    if not any(m in w for s in segments for w in _action_words(s) for m in _MAIL_NOUNS):
         return False
     return not any(r in w for s in segments for w in _action_words(s) for r in _RULE_CLASS_WORDS)
 
