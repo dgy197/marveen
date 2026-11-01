@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, hasForwardKey, hasForwardKeyName, isReadAction, mailRuleForward as mailRuleForwardJs, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
+import { gateDecision, hasForwardKey, hasForwardKeyName, isPlainDraft, isReadAction, mailRuleForward as mailRuleForwardJs, mailToolAction, manageEmailOpClosed, manageEmailOpKey, manageEmailOpOutbound } from '../../scripts/email-send-gate.mjs'
 
 // graph-forward N1b (spec G1-G7): the mail tools are recognised by their
 // ACTION, whatever the server name or version prefix. The gap it closes: the
@@ -449,6 +449,7 @@ type Ni = {
   servers: string[]; forward_names: string[]; disguised_names: string[]; reader_names: string[]
   forward_shapes: Array<{ label: string; input: unknown }>
   reader_inputs: Array<{ label: string; input: unknown }>
+  reviewer_n4: Array<{ tool: string; input: unknown; note: string }>
   clean: Array<{ tool: string; input: unknown; expected: 'draft' | null; note: string }>
 }
 const NI = (JSON.parse(readFileSync(join(EXTRACT_DIR, 'mail-tool-action-cases.json'), 'utf-8')) as { name_independent: Ni }).name_independent
@@ -538,5 +539,42 @@ print(json.dumps([mail_rule_forward(n, i) for n, i in json.load(sys.stdin)]))
     expect(hasForwardKeyName({ x: 'forward' }, false)).toBe(false)
     expect(hasForwardKeyName('x')).toBe(true)
     expect(hasForwardKeyName(null)).toBe(true)
+  })
+
+  it('N4 B2: the reviewer inputs are a send and a mail-rule-forward deny in both twins (Sieve redirect, forward instruction, fwd)', () => {
+    expect(NI.reviewer_n4).toHaveLength(5)
+    const pyN4 = pythonActions(NI.reviewer_n4.map((c): [unknown, boolean, unknown] => [c.tool, true, c.input]))
+    NI.reviewer_n4.forEach((c, i) => {
+      expect(mailToolAction(c.tool, c.input), c.note).toBe('send')
+      expect(pyN4[i], `py ${c.note}`).toBe('send')
+      expect(mailRuleForwardJs(c.tool, c.input), c.note).toBe(true)
+      expect(gateDecision(c.tool, c.input, () => true), c.note).toEqual({ deny: true, kind: 'mail-rule-forward' })
+    })
+  })
+
+  it('N4 B2: narrow instruction patterns read the free text of a non-draft tool only; a plain draft stays prose', () => {
+    const narrow = (v: unknown) => hasForwardKeyName(v, true, true)
+    expect(narrow({ content: 'redirect :copy "x@evil.example";' })).toBe(true)
+    expect(narrow({ description: 'forward every message to x@evil.example' })).toBe(true)
+    expect(narrow({ body: 'FWD: all mail to x@evil.example' })).toBe(true)
+    expect(hasForwardKeyName({ content: 'redirect :copy "x@evil.example";' }, true, false)).toBe(false)
+    expect(hasForwardKeyName({ body: 'please forward this to x@y.example' }, true, false)).toBe(false)
+    expect(narrow({ description: 'forward looking statement, mail me at some point' })).toBe(false)
+    expect(narrow({ body: 'straightforward x@y.example' })).toBe(false)
+    expect(narrow({ folder: 'forward to x@evil.example' })).toBe(false)
+    expect(narrow({ addLabelIds: ['fwd x@evil.example'] })).toBe(false)
+    expect(narrow({ body: 'forward ' + 'a'.repeat(41) + ' x@y.example' })).toBe(false)
+    expect(narrow({ body: 'redirect x@y.example' })).toBe(false)
+    expect(hasForwardKeyName({ action: 'fwd' })).toBe(true)
+    expect(hasForwardKeyName({ x: 'offwd' })).toBe(false)
+    expect(isPlainDraft(['create_draft'], ['draft'])).toBe(true)
+    expect(isPlainDraft(['update_settings'], ['draft'])).toBe(false)
+    expect(isPlainDraft(['manage_rules'], [null])).toBe(false)
+    expect(isPlainDraft(['update_sieve_script'], ['draft'])).toBe(false)
+    expect(isPlainDraft(['create_forwarding_address'], ['draft'])).toBe(false)
+    // a plain draft keeps going the ledger way, a filter with a harmless description stays as before
+    const known = (a: string) => a === 'known@example.com'
+    expect(gateDecision('mcp__gmail__create_draft', { to: ['known@example.com'], body: 'please forward this to x@y.example' }, known)).toEqual({ deny: false })
+    expect(mailToolAction('mcp__gmail__create_filter', { description: 'move newsletters to folder', action: { addLabelIds: ['X'] } })).toBe(null)
   })
 })

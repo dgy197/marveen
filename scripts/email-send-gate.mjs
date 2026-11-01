@@ -1818,47 +1818,57 @@ export function isReadAction(segments) {
 // text, content, html, snippet, query ..., or ENDS in body / text / content / html:
 // message_body, plainText): a draft body that says "looking forward" is prose. The
 // match is exact or by suffix on purpose, so `actionName` or `bodyAction` are NOT free
-// text, and a rule script (`sieveScript`) is not either. Known gap, accepted: a
-// forward word that only sits in a free-text key (`ruleContent`) is not seen; a JSON
-// string there is still walked for keys. Same bounds and fail-closed exits as hasForwardKey (too deep, too many
+// text, and a rule script (`sieveScript`) is not either. A free-text value of a tool
+// that is NOT a plain draft (rule / filter / script / settings class, or an unknown
+// name) is still read with two NARROW instruction patterns (card 3d6e5181 N4 B2): a
+// Sieve `redirect [:copy] "x@y"` and a forward word followed within ~40 non-@
+// characters by an address; a plain draft (isPlainDraft) keeps the prose exemption.
+// Label / folder identifiers are exempt from both. A JSON string in a free-text key is
+// walked for keys. Same bounds and fail-closed exits as hasForwardKey (too deep, too many
 // nodes, a string too long to parse, a non-object input = true).
 // Twin: _has_forward_key_name in scripts/hooks/email_extract.py.
 const FREE_TEXT_KEYS = new Set(['body', 'htmlbody', 'textbody', 'plaintext', 'plainbody', 'bodypreview',
   'subject', 'text', 'content', 'html', 'snippet', 'query', 'q', 'search', 'keyword', 'keywords',
-  'label', 'labels', 'title', 'description', 'comment', 'note', 'summary', 'preview', 'message', 'name',
-  // label / folder identifiers ("Forwarded", "Forwarded Items") name a place, not an instruction
+  'title', 'description', 'comment', 'note', 'summary', 'preview', 'message', 'name'])
+// label / folder identifiers ("Forwarded", "Forwarded Items") name a place, not an
+// instruction: exempt from the value words AND from the narrow patterns
+const LABEL_KEYS = new Set(['label', 'labels',
   'labelids', 'addlabelids', 'removelabelids', 'labelid', 'labelname', 'folder', 'folderid', 'foldername',
   'destinationfolder', 'destinationfolderid', 'parentfolderid', 'mailbox'])
 const FREE_TEXT_SUFFIX = /(?:body|text|content|html)$/
-const FORWARD_WORD = /(?<![A-Za-z])(?:forward|redirect)/i
+const FORWARD_WORD = /(?<![A-Za-z])(?:forward|redirect|fwd)/i
+// narrow instruction patterns for the free text of a non-draft tool (N4 B2)
+const FORWARD_INSTRUCTIONS = [/\bredirect\s+(?::copy\s+)?"[^"]*@/i, /\b(?:forward\w*|fwd)\b[^@]{0,40}@/i]
+// the walk's `free` flag: 0 not free text, 1 prose, 2 label / folder identifier
 const FORWARD_WORD_CAMEL = /[a-z](?:Forward|Redirect)/
-export function hasForwardKeyName(input, valueWords = true) {
+export function hasForwardKeyName(input, valueWords = true, narrowFree = false) {
   if (typeof input !== 'object' || input === null) return true
   let nodes = 0
-  const stack = [[input, 0, false]]
+  const stack = [[input, 0, 0]]
   while (stack.length) {
     const [v, depth, free] = stack.pop()
     if (depth > FORWARD_WALK_MAX_DEPTH) return true
     if (typeof v === 'string') {
       if (valueWords && !free && (FORWARD_WORD.test(v) || FORWARD_WORD_CAMEL.test(v))) return true
+      if (valueWords && narrowFree && free === 1 && FORWARD_INSTRUCTIONS.some((re) => re.test(v))) return true
       if (FORWARD_JSON_START.test(v)) {
         if (v.length > FORWARD_JSON_MAX_CHARS) return true
         let parsed
         try { parsed = JSON.parse(v) } catch (err) { if (err instanceof SyntaxError) continue; return true }
         if (typeof parsed === 'string') stack.push([parsed, depth + 1, free])
-        else if (typeof parsed === 'object' && parsed !== null) stack.push([parsed, depth + 1, false])
+        else if (typeof parsed === 'object' && parsed !== null) stack.push([parsed, depth + 1, 0])
       }
       continue
     }
     const isArr = Array.isArray(v)
     for (const [k, x] of (isArr ? v.map((y) => [null, y]) : Object.entries(v))) {
       if (++nodes > FORWARD_WALK_MAX_NODES) return true
-      let childFree = isArr ? free : false
+      let childFree = isArr ? free : 0
       if (k !== null) {
         const key = k.toLowerCase()
         if (key.includes('forward') || key.includes('redirect')) return true
         const norm = key.replace(/[^a-z0-9]/g, '')
-        childFree = FREE_TEXT_KEYS.has(norm) || FREE_TEXT_SUFFIX.test(norm)
+        childFree = LABEL_KEYS.has(norm) ? 2 : (FREE_TEXT_KEYS.has(norm) || FREE_TEXT_SUFFIX.test(norm)) ? 1 : 0
       }
       if (typeof x === 'string' || (typeof x === 'object' && x !== null)) stack.push([x, depth + 1, childFree])
     }
@@ -1882,7 +1892,19 @@ function nameIndependentForward(segments, toolInput) {
   // branch below decides those (kind draft-required): only a forward KEY counts here, so the
   // kind of the existing manage_email denies does not change.
   const multiplexed = segments.some((s) => segmentWords(s).join('_') === 'manage_email')
-  return hasForwardKeyName(toolInput, !multiplexed)
+  return hasForwardKeyName(toolInput, !multiplexed, !isPlainDraft(segments, classes))
+}
+
+// A rule / filter / script / settings word in a segment: such a tool is no letter.
+const RULE_CLASS_WORDS = ['rule', 'filter', 'script', 'sieve', 'setting', 'vacation', 'forwarding', 'alias']
+// A plain draft: the NAME classifier calls it a draft and no segment is of the rule /
+// filter / script / settings class. Its free-text values are prose (a body that says
+// "please forward this to x@y" is a letter, the ledger checks the recipients); every
+// other non-reader tool has its free text read with the narrow instruction patterns.
+// Twin: _is_plain_draft in scripts/hooks/email_extract.py.
+export function isPlainDraft(segments, classes) {
+  if (!classes.includes('draft')) return false
+  return !segments.some((s) => segmentWords(s).some((w) => RULE_CLASS_WORDS.some((r) => w.includes(r))))
 }
 
 // A rule / filter write whose input forwards (hasForwardKey), or any non-reader call

