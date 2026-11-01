@@ -95,6 +95,16 @@
 // incident-clear, gate not in INCIDENT): after an INCIDENT only a NEW enforce
 // approval, decided after the clear, reopens. A bad reconstructed file (A6) is a
 // HOLD and nothing is consumed.
+//
+// The grant model's canary (node N3, grant-canary.ts): the canary row of the
+// button is bound to ONE run by consumeCanaryApproval (the enforce approval id,
+// the same run terms; the old credit_gate_canary approval is refused and stays
+// unconsumed). There is no after-reading, so the tick judges the run on its own
+// ledger rows (evaluateGrantCanary) when the first of them appears, closes the
+// gate's canary window with a fresh id of the shared id space, and HOLDs
+// (canary_close_timeout) canaryCloseMaxH after the run was taken if no row came.
+// After a switch back to the Console source the open grant canaries are closed
+// as undecidable (grant_source_switched), never read against a Console reading.
 
 import { createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
@@ -113,7 +123,11 @@ import {
 import { parseUtcInstant, type ConfigLoadResult, type CreditGateConfig } from './config.js'
 import { formatUsd, type Calibration, type CalibrationSource, type CanaryCloseResult, type PricingFileResult } from './gate.js'
 import { currentPeriod, grantRemaining, priorCharge, type GrantPeriod } from './grant-model.js'
-import { insertPeriod, measureGrantInputs, newestPeriod, readChain, type ChainRead, type GrantInputs } from './grant-period.js'
+import {
+  evaluateGrantCanary, GRANT_CANARY_COLUMNS, GRANT_CANARY_SQL, grantCanaryStart, openGrantCanaries, signalSince, windowSince,
+  type GrantCanaryRow, type GrantCanaryVerdict,
+} from './grant-canary.js'
+import { insertPeriod, measureGrantInputs, newestPeriod, nextCalibrationId, readChain, type ChainRead, type GrantInputs } from './grant-period.js'
 import { HEADLESS_SOURCE } from './ledger.js'
 import { MICRO_PER_USD, parseUsd } from './money.js'
 import type { Micro, PricingTable } from './types.js'
@@ -596,6 +610,8 @@ export type CanaryConsumeRefusal =
   | 'bad_request' | 'no_owner' | 'owner_changed' | 'config_invalid' | 'not_found' | 'wrong_category' | 'already_consumed'
   | 'not_owner_verified' | 'unbound' | 'hash_mismatch' | 'terms_mismatch'
   | 'before_not_accepted' | 'before_not_latest' | 'before_too_old' | 'canary_exists' | 'busy'
+  /** Grant model (card 40e03382): the old credit_gate_canary approval is not the canary there; the enforce button's chain is not in force. */
+  | 'grant_model' | 'chain_not_in_force'
 
 export type CanaryConsumeResult =
   | {
@@ -844,6 +860,8 @@ export class CalibrationProcessor {
         else rep.refused++
       }
       if (grant !== null && !deferred) this.advanceGrantPeriod(grant, inputs, nowMs, rep)
+      if (grant !== null) this.settleGrantCanaries(grant, nowMs, rep)
+      else this.closeOrphanGrantCanaries(nowMs, rep)
     }
   }
 
@@ -1022,6 +1040,150 @@ export class CalibrationProcessor {
   }
 
   /**
+   * N3 (spec A8, A9): the bound grant canaries get their verdict from the run's
+   * own ledger rows -- when the first of them appears, or a signal came; else,
+   * canaryCloseMaxH after the run was taken, HOLD (`canary_close_timeout`, the
+   * gate's window and STOP stay as they are). An unbound canary waits: no run,
+   * no window, nothing to hold. The verdict closes the gate's canary window
+   * (the grant model has no after-reading, so the close step carries a fresh id
+   * from the shared id space) -- except on the timeout.
+   */
+  private settleGrantCanaries(cfg: CreditGateConfig, nowMs: number, rep: ProcessReport): void {
+    for (const c of openGrantCanaries(this.db)) {
+      if (c.run_id === null) continue
+      const start = grantCanaryStart(c)
+      const window = windowSince(this.db, start)
+      const signal = signalSince(this.db, c.consumed_at)
+      let v: GrantCanaryVerdict
+      if (signal !== null || window.some((w) => w.source === HEADLESS_SOURCE && w.run_id === c.run_id)) {
+        v = evaluateGrantCanary(window, { run_id: c.run_id, min_expected_micro: c.min_expected_micro, budget_micro: c.budget_micro, signal })
+      } else if (nowMs >= start + cfg.canaryCloseMaxH * HOUR_MS) {
+        v = { outcome: 'undecidable', reason: 'canary_close_timeout' }
+      } else {
+        continue
+      }
+      try {
+        this.tx(() => {
+          const after = nextCalibrationId(this.db)
+          const info = this.db.prepare(`UPDATE credit_canaries SET status = ?, after_calibration_id = ?, result_json = ?, evaluated_at = ?
+            WHERE approval_id = ? AND status = 'consumed'`).run(v.outcome, after, JSON.stringify(v), nowMs, c.approval_id)
+          if (info.changes !== 1) return
+          const detail = { canary_approval_id: c.approval_id, after_calibration_id: after, ...v }
+          this.gate.audit('canary_evaluated', { reason: v.outcome, calId: after, detail }, nowMs)
+          const timeout = v.outcome === 'undecidable' && v.reason === 'canary_close_timeout'
+          if (v.outcome === 'incident') {
+            const st = this.db.prepare('SELECT state FROM credit_gate_state WHERE id = 1').get() as { state: string } | undefined
+            if (st?.state !== 'INCIDENT') this.gate.raiseIncident(`canary_${v.reason}`, detail, nowMs, false)
+            rep.incidents++
+          } else if (v.outcome === 'undecidable') {
+            this.gate.raiseHold(timeout ? 'canary_close_timeout' : 'canary_undecidable', detail, nowMs, false)
+            rep.held++
+          }
+          if (!timeout) this.closeCanaryWindow(after, nowMs)
+          rep.changed = true
+        })
+      } catch (err) {
+        if (!isBusy(err)) throw err
+      }
+    }
+  }
+
+  /**
+   * After a switch back to the Console source a grant canary row can only be an
+   * orphan: the next Console reading would call it `not_the_next_reading` and
+   * HOLD the gate for a canary that was never the Console's. Closed here,
+   * explicitly, once -- and only on a config that is readable and says console.
+   */
+  private closeOrphanGrantCanaries(nowMs: number, rep: ProcessReport): void {
+    let cfgR: ConfigLoadResult
+    try {
+      cfgR = this.deps.loadConfig()
+    } catch {
+      return
+    }
+    if (!cfgR.ok || cfgR.config.calibrationSource === 'grant_model') return
+    for (const c of openGrantCanaries(this.db)) {
+      const v: GrantCanaryVerdict = { outcome: 'undecidable', reason: 'grant_source_switched' }
+      try {
+        this.tx(() => {
+          const info = this.db.prepare(`UPDATE credit_canaries SET status = 'undecidable', result_json = ?, evaluated_at = ?
+            WHERE approval_id = ? AND status = 'consumed'`).run(JSON.stringify(v), nowMs, c.approval_id)
+          if (info.changes !== 1) return
+          this.gate.audit('canary_evaluated', {
+            reason: v.outcome, calId: c.before_calibration_id, detail: { canary_approval_id: c.approval_id, ...v },
+          }, nowMs)
+          rep.changed = true
+        })
+      } catch (err) {
+        if (!isBusy(err)) throw err
+      }
+    }
+  }
+
+  /**
+   * The runs route's canary start under the grant model (N3), ONE atomic step:
+   * the enforce button's canary row, bound to this run -- no new approval. The
+   * approval must still verify as the owner's consumed credit_gate_enforce, its
+   * chain must be in force, and the run must be exactly what the owner saw:
+   * config hash, model, budget (at most), node, cwd and prompt hash. Once: a
+   * row that has a run is spent. The old credit_gate_canary approval is refused
+   * here and stays unconsumed.
+   */
+  private bindGrantCanary(
+    cfg: CreditGateConfig, approvalId: string, configHash: string, terms: CanaryRunTerms, owner: string, nowMs: number,
+    refuse: (reason: CanaryConsumeRefusal) => CanaryConsumeResult,
+  ): CanaryConsumeResult {
+    if (cfg.grantModel === null) return refuse('config_invalid')
+    const maxAgeMs = Math.min(cfg.calibrationMaxAgeH, MAX_CALIBRATION_AGE_H) * HOUR_MS
+    try {
+      return this.tx((): CanaryConsumeResult => {
+        if (this.ownerMismatch(owner, this.calState())) return refuse('owner_changed')
+        const a = getApproval(approvalId)
+        if (!a) return refuse('not_found')
+        if (a.category === 'credit_gate_canary') return refuse('grant_model')
+        if (a.category !== 'credit_gate_enforce') return refuse('wrong_category')
+        if (a.status !== 'approved' || a.consumed_at == null || a.consumed_by !== CONSUMER || !isOwnerVerified(a.id, owner)) return refuse('not_owner_verified')
+        const b = creditGateBinding(a)
+        if (!b.bound || b.payload.kind !== 'credit_gate_enforce') return refuse('unbound')
+        const p = (b.payload as EnforcePayload).canary
+        const row = this.db.prepare(`SELECT ${GRANT_CANARY_COLUMNS} FROM credit_canaries c
+          WHERE c.approval_id = ? AND ${GRANT_CANARY_SQL}`).get(approvalId) as GrantCanaryRow | undefined
+        if (!row) return refuse('not_found')
+        if (row.status !== 'consumed' || row.run_id !== null) return refuse('canary_exists')
+        if (p.config_hash !== configHash || row.config_hash !== configHash) return refuse('hash_mismatch')
+        const budget = parseUsd(p.budget_usd)
+        if (budget === null) return refuse('unbound')
+        if (terms.model !== p.model || terms.budget_micro > budget) return refuse('terms_mismatch')
+        if (terms.node !== p.node || terms.cwd !== p.cwd || terms.prompt_sha256 !== p.prompt_sha256) return refuse('terms_mismatch')
+        const inputs = measureGrantInputs(cfg)
+        if (!inputs.ok) return refuse('config_invalid')
+        let read: ChainRead
+        try {
+          read = readChain(this.db, cfg, inputs.hash)
+        } catch {
+          return refuse('chain_not_in_force')
+        }
+        if (read.kind !== 'ok' || read.record.approval_id !== a.id || (b.payload as EnforcePayload).grant_model_hash !== inputs.hash) return refuse('chain_not_in_force')
+        if (nowMs - row.consumed_at > maxAgeMs) return refuse('before_too_old')
+        const u = this.db.prepare(`UPDATE credit_canaries SET run_id = ? WHERE approval_id = ? AND status = 'consumed' AND run_id IS NULL`).run(terms.runId, a.id)
+        if (u.changes !== 1) return refuse('canary_exists')
+        this.gate.audit('canary_consumed', {
+          reason: 'canary_consumed',
+          calId: row.before_calibration_id,
+          detail: { approval_id: a.id, model: p.model, budget_usd: formatUsd(terms.budget_micro), run_id: terms.runId, grant_model: true },
+        }, nowMs)
+        return {
+          ok: true, approval_id: a.id, config_hash: p.config_hash, model: p.model, budget_micro: budget,
+          min_expected_micro: row.min_expected_micro, before_calibration_id: row.before_calibration_id, run_id: terms.runId,
+        }
+      })
+    } catch (err) {
+      if (isBusy(err)) return refuse('busy')
+      throw err
+    }
+  }
+
+  /**
    * BE-3c P5: the configured owner is not the pinned one. HOLD once; then only
    * the pinned owner's NEW incident-clear naming the owner_changed event counts.
    */
@@ -1136,8 +1298,9 @@ export class CalibrationProcessor {
     outcome: CalibrationVerdict['outcome'],
     nowMs: number,
   ): void {
-    const open = this.db.prepare(`SELECT approval_id, run_id, min_expected_micro, before_calibration_id
-      FROM credit_canaries WHERE status = 'consumed' ORDER BY consumed_at, approval_id`).all() as CanaryRow[]
+    // A grant_model canary has no Console after-reading: it is judged on the run's own rows (settleGrantCanaries).
+    const open = this.db.prepare(`SELECT c.approval_id, c.run_id, c.min_expected_micro, c.before_calibration_id
+      FROM credit_canaries c WHERE c.status = 'consumed' AND NOT ${GRANT_CANARY_SQL} ORDER BY c.consumed_at, c.approval_id`).all() as CanaryRow[]
     for (const c of open) {
       let v: CanaryVerdict
       if (outcome === 'incident') v = { outcome: 'incident', reason: 'protected_decreased' }
@@ -1216,6 +1379,8 @@ export class CalibrationProcessor {
     if (owner === null) return refuse('no_owner')
     const cfgR = this.deps.loadConfig()
     if (!cfgR.ok) return refuse('config_invalid')
+    // Card 40e03382: under the grant model the canary is the enforce button's own; no credit_gate_canary approval is consumed.
+    if (cfgR.config.calibrationSource === 'grant_model') return this.bindGrantCanary(cfgR.config, approvalId, configHash, terms, owner, nowMs, refuse)
     const maxAgeMs = Math.min(cfgR.config.calibrationMaxAgeH, MAX_CALIBRATION_AGE_H) * HOUR_MS
     try {
       return this.tx((): CanaryConsumeResult => {
