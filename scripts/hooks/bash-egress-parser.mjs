@@ -118,6 +118,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { maskInertLiterals } from '../self-pace-gate.mjs'
+import { joinShellLines } from '../shell-line-join.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 export const BLOCK_LOG = process.env.BASH_EGRESS_BLOCK_LOG || join(ROOT, 'store', 'bash-egress-blocks.jsonl')
@@ -582,9 +583,12 @@ function spans(masked) {
   while ((m = re.exec(masked))) {
     // A backslash-escaped separator (`u\;u.urlopen(...)`, `a\&b`) is a literal character of the word, not
     // the end of the command (card 44167c0b, B07): splitting there cut an interpreter body in two.
+    // A newline is the exception (card 0983a3fc, N1): every backslash-newline the shell joins is already gone
+    // from the text (joinShellLines), so one that is left is no continuation (a comment's end, a blanked
+    // literal, backslash + CR + LF) and the command ends there.
     let bs = 0
     while (m.index - bs > 0 && masked[m.index - bs - 1] === '\\') bs++
-    if (bs % 2 === 1) { re.lastIndex = m.index + 1; continue }
+    if (bs % 2 === 1 && m[0] !== '\n') { re.lastIndex = m.index + 1; continue }
     out.push([start, m.index]); start = m.index + m[0].length
   }
   out.push([start, masked.length])
@@ -1870,18 +1874,21 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
   }
 }
 
-// Backslash-newline is a line continuation only behind an ODD run of backslashes: `a\\<NL>cmd` is an
-// escaped backslash, then a newline that ENDS the command (card 44167c0b, B5). `withText` replaces the
-// continuation (the last backslash and the newline).
-function joinContinuations(raw, withText) {
-  return raw.replace(/(\\+)(\r?\n)/g, (m, bs) => (bs.length % 2 === 1 ? bs.slice(0, -1) + withText : m))
+// The OVER-ESTIMATING join, used ONLY by rawAnsiInputDeny as one more trigger reading (card 0983a3fc, Q3):
+// every ODD backslash run followed by LF or CR+LF counts as a continuation, wherever it stands (inside
+// quotes, a heredoc body or a comment, and before a CR, where bash does NOT join: the shared join in
+// shell-line-join.mjs is the bash reading). It can only find MORE `$'`, so it can only deny more; the
+// ansi-c-structural corpus rows with CRLF lines expect that deny. It is not a second parser: nothing else
+// reads its output, and no other call site may use it.
+function overestimatingAnsiJoin(raw) {
+  return raw.replace(/(\\+)(\r?\n)/g, (m, bs) => (bs.length % 2 === 1 ? bs.slice(0, -1) : m))
 }
 
 // Check raw input, including feeds, before any transformation can hide an ANSI prefix.
 // Only a complete literal echo/printf command is exempt; unknown execution contexts deny.
 function rawAnsiInputDeny(raw) {
-  const joined = joinContinuations(raw, '')
-  if (!raw.includes("$'") && !joined.includes("$'")) return false
+  const joined = joinShellLines(raw)
+  if (!raw.includes("$'") && !joined.includes("$'") && !overestimatingAnsiJoin(raw).includes("$'")) return false
   if (/\\\r?\n/.test(raw)) return true
   const literal = /^(?:[^\s'"\\$`;|&<>(){}*?\[\]#]|\\[^\r\n]|\$'(?:[^'\\]|\\[^\r\n])*'|'[^']*'|"(?:[^"\\$`]|\\[^\r\n]|\$\$|\$')*")+/
   const start = /^[ \t]*(?:echo|printf)(?=[ \t]|$)/.exec(raw)
@@ -1905,7 +1912,9 @@ function classifyCommand(command, depth, vendorHosts, vendorDomains, stdinTainte
   if (depth === 0) fnMemo = new Map()
   const raw = String(command ?? '')
   if (rawAnsiInputDeny(raw)) return { deny: true, reason: 'raw-ansi-execution-context', hosts: [] }
-  const norm = joinContinuations(raw, ' ')
+  // The shell's own line continuation, from the shared lexer (card 0983a3fc): the pair vanishes, no space
+  // takes its place, and nothing joins inside quotes, a quoted heredoc body or a comment.
+  const norm = joinShellLines(raw)
   const lifted = liftSubstitutions(norm)
   const { inners, innerAts, herestrings, bodies } = lifted
   let orig = lifted.stripped
