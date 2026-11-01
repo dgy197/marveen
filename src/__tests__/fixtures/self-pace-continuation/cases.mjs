@@ -58,7 +58,7 @@ export const SPEC_CASES = [
   { id: 'B3', command: `crontab ${BS}${NL}  -l`, runs: true, expect: 'ALLOW', readOnly: true },
   { id: 'B4', command: `echo "line one ${BS}${NL}line two"`, runs: false, expect: 'ALLOW' },
   // B5: `\<CR>` is NOT a continuation, so `c` is a separate (harmless) command and the gate keeps ALLOW.
-  { id: 'B5', command: `printf '%s\\n' a ${BS}${NL}  b ${BS}${CRLF}  c`, runs: false, expect: 'ALLOW' },
+  { id: 'B5', command: `printf '%s\\n' a ${BS}${NL}  b ${BS}${CRLF}  c`, runs: false, expect: 'ALLOW', noOracle: 'allowlist: the lone word c is a command word the guard does not allow' },
   { id: 'B6', command: `# just a note${NL}ls -la`, runs: false, expect: 'ALLOW' },
   { id: 'B7', command: `python3 - <<'PY'${NL}print("a ${BS}${NL}b")${NL}PY${NL}echo done`, runs: false, expect: 'ALLOW' },
   { id: 'B8', command: `echo a ${BS}${BS}${NL}echo b`, runs: false, expect: 'ALLOW' },
@@ -78,7 +78,7 @@ export const EXTRA_CASES = [
   // with a syntax error and runs nothing. The conservative reading is the card's rule: DENY.
   { id: 'X5', command: `echo $(echo a # c ${BS}${NL}crontab -r)`, runs: null, expect: 'DENY' },
   // `\<CR>` escapes the CR, the LF then ends the line: `cron\r` and `tab -r` are two harmless words
-  { id: 'X6', command: `cron${BS}${CRLF}tab -r`, oracle: `__m${BS}${CRLF}1 -r`, runs: false, expect: 'ALLOW' },
+  { id: 'X6', command: `cron${BS}${CRLF}tab -r`, oracle: `__m${BS}${CRLF}1 -r`, runs: false, expect: 'ALLOW', noOracle: 'allowlist: the CR-glued word __m<CR> is not a marker function' },
   // the second backslash-newline is a lone continuation on its own line: it vanishes and crontab starts a line
   { id: 'X7', command: `echo a${BS}${BS}${NL}${BS}${NL}crontab -r`, runs: true, expect: 'DENY' },
   { id: 'X8', command: `echo "$(echo a${BS}${BS}${NL}crontab -r)"`, runs: true, expect: 'DENY' },
@@ -89,6 +89,18 @@ export const EXTRA_CASES = [
   { id: 'X12', command: `echo 'abc${BS}${NL}crontab -r`, runs: null, expect: 'DENY', reason: 'ambiguous-continuation' },
   { id: 'X13', command: `cat <<EOF${NL}x${BS}${NL}crontab -r`, runs: null, expect: 'DENY', reason: 'ambiguous-continuation' },
   { id: 'X14', command: `echo \`echo a${BS}${NL}b\``, runs: false, expect: 'DENY', reason: 'ambiguous-continuation', noOracle: 'backtick: not rewritten' },
+  // Fix round 1 (B1, the reviewer's K shapes): a `case` keyword split by a continuation inside $(...) used to be
+  // missed (the keyword was read on the raw stream), the pattern `)` closed the substitution early and the next
+  // command hid in a "comment" of the dq context. The joiner now reads the keyword on the joined stream and the
+  // shape is inexact -> DENY. The dq-wrapped rows are not run through the oracle (the guard cannot prove that the
+  // # after the pattern is a comment inside the quotes); `runs` is null for all: the corpus makes no claim.
+  { id: 'X15', command: `echo "$(ca${BS}${NL}se a in a) # c ${BS}${NL}crontab -r ;; esac)"`, runs: null, expect: 'DENY', reason: 'ambiguous-continuation', noOracle: 'guard: # inside $( ) inside "..." cannot be proven a comment' },
+  { id: 'X16', command: `echo "$(case${BS}${NL} a in a) # c ${BS}${NL}crontab -r ;; esac)"`, runs: null, expect: 'DENY', reason: 'ambiguous-continuation', noOracle: 'guard: # inside $( ) inside "..." cannot be proven a comment' },
+  { id: 'X17', command: `echo "$(case a in a) # c ${BS}${NL}crontab -r ;; esac)"`, runs: null, expect: 'DENY', reason: 'ambiguous-continuation', noOracle: 'guard: # inside $( ) inside "..." cannot be proven a comment' },
+  { id: 'X18', command: `echo "$(ca${BS}${NL}se a in a) # c ${BS}${NL}at now ;; esac)"`, runs: null, expect: 'DENY', reason: 'ambiguous-continuation', noOracle: 'guard: # inside $( ) inside "..." cannot be proven a comment' },
+  { id: 'X19', command: `echo "\${x:-$(ca${BS}${NL}se a in a) # c ${BS}${NL}crontab -r ;; esac)}"`, runs: null, expect: 'DENY', reason: 'ambiguous-continuation', noOracle: 'guard: # inside $( ) inside "..." cannot be proven a comment' },
+  { id: 'X20', command: `echo $(ca${BS}${NL}se a in a) # c ${BS}${NL}crontab -r ;; esac)`, runs: null, expect: 'DENY', reason: 'ambiguous-continuation' },
+  { id: 'X21', command: `echo $(case${BS}${NL} a in a) # c ${BS}${NL}tmux send-keys -t x Enter ;; esac)`, runs: null, expect: 'DENY', reason: 'ambiguous-continuation' },
 ]
 
 // Real multi-line shapes of the fleet (curl with several headers, gh / git with files, python and node heredocs,

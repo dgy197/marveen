@@ -132,7 +132,23 @@ describe('(b) oracle guard', () => {
     }
     expect(refused).toEqual([])
     // a row dropping out of the oracle must be a visible decision, not a silent skip
-    expect(skipped.map((r) => r.id)).toEqual(['X14'])
+    // B5, X6: the positive allowlist cannot prove them harmless; X14: backtick; X15-X19: the reviewer's K shapes
+    // wrapped in "..." (the guard cannot prove the # inside $( ) inside quotes is a comment). All carry a reason.
+    expect(skipped.map((r) => r.id)).toEqual(['B5', 'X6', 'X14', 'X15', 'X16', 'X17', 'X18', 'X19'])
+    expect(skipped.filter((r) => !r.noOracle || r.noOracle.length < 10)).toEqual([])
+    // most of the corpus still reaches the shell: the allowlist must not hollow the differential test out
+    expect(rows.length - skipped.length).toBeGreaterThan(420)
+  })
+
+  it('the guard is a positive allowlist: quote-split words, module loading and unknown command words are refused', () => {
+    const refusedTexts = [
+      'zmodload z""s""h/files', 'zmodload zsh/files; zf_rm x', 'c""rontab -r', 'cr\\ontab -r', "$'cron'tab -r",
+      'echo ok; c""rontab -r', 'x=rm; $x -rf y', 'echo $(c""rontab -r)', 'echo ok\nrm x', 'for f in a; do rm x; done',
+      'cat <<EOF\n$(rm -rf x)\nEOF', "echo '<<EOF'\nrm -rf x\nEOF", 'echo "a" # c \\\nrm -rf x', 'echo hi > ../x',
+    ]
+    for (const t of refusedTexts) expect(guardOracleScript(ORACLE_DEFS + t).ok, JSON.stringify(t)).toBe(false)
+    const acceptedTexts = ['__m1 -r', 'echo ok; __m2 now', '__m7 <<EOF\nx\nEOF\n__m1', 'case a in a) __m1 ;; esac', 'echo $(__m6)']
+    for (const t of acceptedTexts) expect(guardOracleScript(ORACLE_DEFS + t).ok, JSON.stringify(t)).toBe(true)
   })
 
   it('the rewrite leaves no real scheduler / network word in the executed text', () => {
