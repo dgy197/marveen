@@ -374,7 +374,7 @@ check('planted modules: the close still works, signed, body intact',
       and SEEN[0]['body'].get('notify') is False, r.stdout + r.stderr)
 src = open(SCRIPT).read()
 check('every python3 call in the helper is isolated (-I)',
-      all(l.count('python3') == l.count('python3 -I') for l in src.splitlines() if 'python3' in l and not l.lstrip().startswith('#') and 'command -v' not in l and 'die ' not in l))
+      all(l.count('python3') == l.count('python3 -I') for l in src.splitlines() if 'python3' in l and not l.lstrip().startswith('#') and 'command -v python3' not in l))
 
 # ------------------------------------------------------------------ B3: the port is digits only, 1-65535
 for label, val in (('1@attacker.local', '1@attacker.local'), ('3420/x', '3420/x'), ('empty', ''), ('99999', '99999'),
