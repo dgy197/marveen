@@ -495,6 +495,8 @@ export const INSTALL_ANCHORED_SUFFIXES = [
   '/scripts/skill-lint.mjs',
   // #2232: the strict-profile helper every strict agent's recipes name
   '/scripts/marveen-api.sh',
+  // card f137f980: the message-close block names the signing close helper by absolute path
+  '/scripts/agent-msg-close.sh',
 ] as const
 // An absolute path prefix: starts with a `/` that is not the tail of something
 // else (`~/x`, `{{X}}/x`, `a/x` are not absolute roots -- the lookbehind keeps
