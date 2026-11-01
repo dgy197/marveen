@@ -642,18 +642,55 @@ describe('A3: the tick writes exactly one new row when the period changes, with 
     expect(h.periods()[1].id).toBe(first + 41)
   })
 
-  it('the latch lifts at the new period and not inside the old one', () => {
+  // R1 (owner decision): a HOLD of canary_undecidable or calibration_error, and a 401 latch, is
+  // lifted by a NEW enforce button only -- the period boundary does not write the next row.
+  it.each(['canary_undecidable', 'calibration_error'] as const)('a %s HOLD is not lifted by the period boundary; a new enforce button lifts it', (reason) => {
     h.enforce()
     expect(h.state().state).toBe('OPEN')
-    h.gate.raiseHold('canary_undecidable', { why: 'test' }, h.now)
+    h.gate.raiseHold(reason, { why: 'test' }, h.now)
     h.cycle()
-    expect(h.state()).toMatchObject({ state: 'HOLD', reason: 'canary_undecidable' })
+    expect(h.state()).toMatchObject({ state: 'HOLD', reason })
     h.now += 3_600_000
     h.cycle()
     expect(h.state().state).toBe('HOLD')
     h.now = BOUNDARY_AFTER
     h.cycle()
+    h.cycle()
+    expect(h.state()).toMatchObject({ state: 'HOLD', reason })
+    expect(h.periods()).toHaveLength(1)
+    h.enforce()
     expect(h.state().state).toBe('OPEN')
+    expect(h.periods()).toHaveLength(2)
+    expect(h.periods()[1]).toMatchObject({ lb: P2.lb, expires: P2.expires })
+  })
+
+  it('B1: an auth_401 latch is not lifted by the period boundary; only a new enforce button opens', () => {
+    h.enforce()
+    expect(h.state().state).toBe('OPEN')
+    h.gate.signal('auth_401', 'test', null, h.now)
+    h.cycle()
+    expect(h.state()).toMatchObject({ state: 'CLOSED', reason: 'auth_401' })
+    h.now = BOUNDARY_AFTER
+    h.cycle()
+    h.cycle()
+    expect(h.state()).toMatchObject({ state: 'CLOSED', reason: 'auth_401' })
+    expect(h.periods()).toHaveLength(1)
+    expect(h.source()).toBeNull()
+    h.enforce()
+    expect(h.state().state).toBe('OPEN')
+    expect(h.periods()).toHaveLength(2)
+    expect(h.periods()[1].id).toBeGreaterThan(h.periods()[0].id)
+  })
+
+  it('B3: after a period row, the next Console reading id is above every period id (the sequence follows)', () => {
+    h.enforce()
+    h.now = BOUNDARY_AFTER
+    h.cycle()
+    const lastPeriod = h.periods().at(-1)!.id
+    expect(h.periods()).toHaveLength(2)
+    const r = getDb().prepare(`INSERT INTO credit_calibrations (approval_id, captured_at_lb, readings_json, content_hash, accepted_at, outcome)
+      VALUES (?, ?, '{}', ?, ?, 'accepted')`).run(randomUUID(), h.now - 3_600_000, 'b'.repeat(64), h.now)
+    expect(Number(r.lastInsertRowid)).toBeGreaterThan(lastPeriod)
   })
 
   it('a tick after a long pause writes one row for the period it is in, not one per missed period', () => {
@@ -724,6 +761,27 @@ describe('A9: an INCIDENT ends the chain; only a new enforce approval, decided a
     expect(h.periods().at(-1)).toMatchObject({ approval_id: fresh })
     expect(h.periods().at(-1)!.id).toBeGreaterThan(before)
     expect(h.state().state).toBe('OPEN')
+  })
+
+  it('B2: the clear floor rounds strict: an approval decided in the floor\'s second, before the floor ms, is skipped', () => {
+    h.enforce()
+    const floorSecond = Math.floor(h.now / 1000) + 5
+    getDb().prepare('UPDATE credit_calibration_state SET min_captured_at_lb = ? WHERE id = 1').run(floorSecond * 1000 + 500)
+    const same = ownerApproved('credit_gate_enforce', enforcePayload(h.hash()))
+    const setSecond = (s: number) => {
+      getDb().prepare('UPDATE approvals SET resolved_at = ? WHERE id = ?').run(s, same)
+      getDb().prepare('UPDATE approval_owner_resolutions SET resolved_at = ? WHERE approval_id = ?').run(s, same)
+    }
+    setSecond(floorSecond)
+    h.now = floorSecond * 1000 + 900
+    h.cycle()
+    expect(getApproval(same)!.consumed_at).toBeNull()
+    expect(h.periods()).toHaveLength(1)
+    // The next second is after the floor: the same approval now counts.
+    setSecond(floorSecond + 1)
+    h.cycle()
+    expect(getApproval(same)!.consumed_at).not.toBeNull()
+    expect(h.periods()).toHaveLength(2)
   })
 
   it('an enforce approval decided BEFORE the clear is not the new button: skipped, still unconsumed', () => {
