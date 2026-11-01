@@ -2560,6 +2560,161 @@
             ]
           },
           "note": "ea9215f6 AC15: a plain draft frees a file key only for a file-name-shaped value; /forwardTo has no extension"
+        },
+        {
+          "tool": "mcp__gmail__rename_mailbox",
+          "input": {
+            "from": "Inbox",
+            "to": "fwd@x.hu"
+          },
+          "note": "card acf545e0 N0: still denied: an address or mailto: under an R1 / R2 key (D1)"
+        },
+        {
+          "tool": "mcp__gmail__rename_mailbox",
+          "input": {
+            "from": "Inbox",
+            "to": "mailto:a@b.hu"
+          },
+          "note": "card acf545e0 N0: still denied: an address or mailto: under an R1 / R2 key (D1)"
+        },
+        {
+          "tool": "mcp__gmail__rename_mailbox",
+          "input": {
+            "from": "forward@x.hu",
+            "to": "Archive"
+          },
+          "note": "card acf545e0 N0: still denied: an address or mailto: under an R1 / R2 key (D1)"
+        },
+        {
+          "tool": "mcp__gmail__modify_labels",
+          "input": {
+            "id": "1",
+            "addLabels": [
+              "forward@x.hu"
+            ]
+          },
+          "note": "card acf545e0 N0: still denied: an address or mailto: under an R1 / R2 key (D1)"
+        },
+        {
+          "tool": "mcp__gmail__modify_labels",
+          "input": {
+            "id": "1",
+            "addLabels": "mailto:a@b.hu"
+          },
+          "note": "card acf545e0 N0: still denied: an address or mailto: under an R1 / R2 key (D1)"
+        },
+        {
+          "tool": "mcp__gmail__add_label",
+          "input": {
+            "id": "1",
+            "removeLabels": [
+              "Forwarded",
+              "forward@x.hu"
+            ]
+          },
+          "note": "card acf545e0 N0: still denied: an address or mailto: under an R1 / R2 key (D1)"
+        },
+        {
+          "tool": "mcp__gmail__rename_mailbox",
+          "input": {
+            "from": "Inbox",
+            "to": {
+              "forwardTo": "a"
+            }
+          },
+          "note": "card acf545e0 N0: still denied: a forward KEY below an R1 / R2 key, also in a JSON string (D2)"
+        },
+        {
+          "tool": "mcp__gmail__rename_mailbox",
+          "input": {
+            "from": "Inbox",
+            "to": "{\"forwardTo\": \"a\"}"
+          },
+          "note": "card acf545e0 N0: still denied: a forward KEY below an R1 / R2 key, also in a JSON string (D2)"
+        },
+        {
+          "tool": "mcp__gmail__rename_mailbox",
+          "input": {
+            "from": "Inbox",
+            "to": "Forwarded",
+            "forwardingAddress": "a"
+          },
+          "note": "card acf545e0 N0: still denied: a forward KEY below an R1 / R2 key, also in a JSON string (D2)"
+        },
+        {
+          "tool": "mcp__gmail__modify_labels",
+          "input": {
+            "id": "1",
+            "addLabels": [
+              "x"
+            ],
+            "autoForward": "a"
+          },
+          "note": "card acf545e0 N0: still denied: a forward KEY below an R1 / R2 key, also in a JSON string (D2)"
+        },
+        {
+          "tool": "mcp__gmail__modify_labels",
+          "input": {
+            "id": "1",
+            "addLabels": [
+              {
+                "forwardTo": "a"
+              }
+            ]
+          },
+          "note": "card acf545e0 N0: still denied: a forward KEY below an R1 / R2 key, also in a JSON string (D2)"
+        },
+        {
+          "tool": "mcp__gmail__create_filter",
+          "input": {
+            "to": "Forwarded"
+          },
+          "note": "card acf545e0 N0: still denied: the forward word as a value outside the label class or on a msgop tool (D4)"
+        },
+        {
+          "tool": "mcp__gmail__update_mailbox",
+          "input": {
+            "to": "Forwarded"
+          },
+          "note": "card acf545e0 N0: still denied: the forward word as a value outside the label class or on a msgop tool (D4)"
+        },
+        {
+          "tool": "mcp__gmail__batch_modify_emails",
+          "input": {
+            "ids": [
+              "1"
+            ],
+            "addLabels": [
+              "forwarded"
+            ]
+          },
+          "note": "card acf545e0 N0: still denied: the forward word as a value outside the label class or on a msgop tool (D4)"
+        },
+        {
+          "tool": "mcp__gmail__move_folder",
+          "input": {
+            "id": "1",
+            "to": "Forwarded"
+          },
+          "note": "card acf545e0 N0: still denied: the forward word as a value outside the label class or on a msgop tool (D4)"
+        },
+        {
+          "tool": "mcp__gmail__modify_labels",
+          "input": {
+            "id": "1",
+            "to": "Forwarded"
+          },
+          "note": "card acf545e0 N0: still denied: the forward word as a value outside the label class or on a msgop tool (D4)"
+        },
+        {
+          "tool": "mcp__gmail__create_forward_label",
+          "input": {
+            "to": "Forwarded",
+            "addLabels": [
+              "forwarded"
+            ]
+          },
+          "note": "card acf545e0 N0: still denied: a rule / filter / forward word in the tool name leaves the class (D5)"
         }
       ],
       "allow": [
@@ -2873,6 +3028,93 @@
           },
           "expected": "draft",
           "note": "ea9215f6 AC15 B6: top-level fileName of a plain draft, file-name-shaped value"
+        },
+        {
+          "tool": "mcp__gmail__rename_mailbox",
+          "input": {
+            "from": "Inbox",
+            "to": "Forwarded mail"
+          },
+          "expected": null,
+          "note": "card acf545e0 N0: the folder / label tool takes a forward word as a NAME (label class: to / from / newName / oldName; label and label-apply: addLabels / removeLabels), name shape only"
+        },
+        {
+          "tool": "mcp__outlook__rename_mailbox",
+          "input": {
+            "from": "Forwarded mail",
+            "to": "Archive 2026"
+          },
+          "expected": null,
+          "note": "card acf545e0 N0: the folder / label tool takes a forward word as a NAME (label class: to / from / newName / oldName; label and label-apply: addLabels / removeLabels), name shape only"
+        },
+        {
+          "tool": "mcp__gmail__create_folder",
+          "input": {
+            "newName": "Forwarded"
+          },
+          "expected": null,
+          "note": "card acf545e0 N0: the folder / label tool takes a forward word as a NAME (label class: to / from / newName / oldName; label and label-apply: addLabels / removeLabels), name shape only"
+        },
+        {
+          "tool": "mcp__gmail__rename_folder",
+          "input": {
+            "oldName": "Fwd",
+            "newName": "Forwarded items"
+          },
+          "expected": null,
+          "note": "card acf545e0 N0: the folder / label tool takes a forward word as a NAME (label class: to / from / newName / oldName; label and label-apply: addLabels / removeLabels), name shape only"
+        },
+        {
+          "tool": "mcp__gmail__rename_label",
+          "input": {
+            "from": "forwarded",
+            "to": "Fwd"
+          },
+          "expected": null,
+          "note": "card acf545e0 N0: the folder / label tool takes a forward word as a NAME (label class: to / from / newName / oldName; label and label-apply: addLabels / removeLabels), name shape only"
+        },
+        {
+          "tool": "mcp__gmail__modify_labels",
+          "input": {
+            "id": "1",
+            "addLabels": [
+              "forwarded"
+            ]
+          },
+          "expected": null,
+          "note": "card acf545e0 N0: the folder / label tool takes a forward word as a NAME (label class: to / from / newName / oldName; label and label-apply: addLabels / removeLabels), name shape only"
+        },
+        {
+          "tool": "mcp__gmail__modify_labels",
+          "input": {
+            "id": "1",
+            "removeLabels": [
+              "Forwarded"
+            ]
+          },
+          "expected": null,
+          "note": "card acf545e0 N0: the folder / label tool takes a forward word as a NAME (label class: to / from / newName / oldName; label and label-apply: addLabels / removeLabels), name shape only"
+        },
+        {
+          "tool": "mcp__gmail__add_label",
+          "input": {
+            "id": "1",
+            "addLabels": "forwarded"
+          },
+          "expected": null,
+          "note": "card acf545e0 N0: the folder / label tool takes a forward word as a NAME (label class: to / from / newName / oldName; label and label-apply: addLabels / removeLabels), name shape only"
+        },
+        {
+          "tool": "mcp__gmail__create_label",
+          "input": {
+            "name": "x",
+            "addLabels": [
+              "fwd",
+              "redirect"
+            ]
+          },
+          "expected": null,
+          "note": "card acf545e0 N0: the folder / label tool takes a forward word as a NAME (label class: to / from / newName / oldName; label and label-apply: addLabels / removeLabels), name shape only"
         }
       ],
       "_ea9215f6": "Card ea9215f6 N1: exemption_segments = segment list + plain flag -> the class exemptionClass / _exemption_class names; relocation_* = the Sieve forms (referenced by label from sieve_forms) moved under the formerly global inert keys on the Sieve / rule / filter / B5 tools, all denied; relocation_shape_rows = a Sieve form as a NAME on a tool class that frees that name key, denied by the name shape (round 1 B1: also a Sieve form under a note key on the one-word glued names updateemail / savedraft, which are no plain draft and stay strict); shape_cases = NAME_SHAPE / FILE_SHAPE verdicts (no @ in the name shape).",
