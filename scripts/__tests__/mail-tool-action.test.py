@@ -209,7 +209,7 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     # --- 1b. card 3d6e5181 N3: the name-independent forwarding rule ------------
     print("name-independent forwarding rule")
     NI = VECTORS["name_independent"]
-    bad_fwd = bad_reader = bad_clean = 0
+    bad_fwd = bad_reader = bad_clean = bad_reader_fwd = 0
     for s in NI["servers"]:
         for nm in NI["forward_names"] + NI["disguised_names"]:
             for f in NI["forward_shapes"]:
@@ -217,17 +217,36 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
                 if ee.mail_tool_action(t, f["input"]) != "send" or ee.mail_rule_forward(t, f["input"]) is not True:
                     bad_fwd += 1
         for nm in NI["reader_names"]:
-            for f in NI["reader_inputs"]:
+            for f in NI["reader_inputs"] + NI["reader_benign_inputs"]:
                 t = f"mcp__{s}__{nm}"
                 if ee.mail_tool_action(t, f["input"]) is not None or ee.mail_rule_forward(t, f["input"]) is not False:
                     bad_reader += 1
+            # card 1239a7ad: a reader is a reader only while its input has no forward / redirect KEY
+            for f in NI["reader_forward_key_inputs"]:
+                t = f"mcp__{s}__{nm}"
+                if ee.mail_tool_action(t, f["input"]) != "send" or ee.mail_rule_forward(t, f["input"]) is not True:
+                    bad_reader_fwd += 1
     for c in NI["clean"]:
         if ee.mail_tool_action(c["tool"], c["input"]) != c["expected"] or ee.mail_rule_forward(c["tool"], c["input"]) is not False:
             bad_clean += 1
             print("   clean case differs:", c["tool"], c["note"])
     n_fwd = len(NI["servers"]) * (len(NI["forward_names"]) + len(NI["disguised_names"])) * len(NI["forward_shapes"])
     check(f"{n_fwd} forward calls (servers x names x shapes) are a send via mail_rule_forward", bad_fwd == 0, f"{bad_fwd} differ")
-    check("readers stay None whatever the input", bad_reader == 0, f"{bad_reader} differ")
+    check("readers stay None while the input has no forward KEY (a forward word in a value is exempt)", bad_reader == 0, f"{bad_reader} differ")
+    check("card 1239a7ad AC1/AC3/AC5: a reader with a forward / redirect KEY is a send via mail_rule_forward (gateway body, JSON string, gmail filter, FPK over-block)",
+          bad_reader_fwd == 0, f"{bad_reader_fwd} differ")
+    check("card 1239a7ad AC3: the named gateway readers deny the gateway forward body",
+          all(ee.mail_tool_action(t, NI["reader_forward_key_inputs"][1]["input"]) == "send"
+              for t in ("mcp__outlook__fetch", "mcp__outlook__query", "mcp__gmail__get_filter")))
+    over = {"a": 1}
+    for _ in range(40):
+        over = {"n": over}
+    check("card 1239a7ad AC6: on a reader name a non-object input and the walk limits fail closed, [] and {} stay allowed",
+          all(ee.mail_tool_action(t, v) == "send"
+              for t in ("mcp__outlook__get_rules", "mcp__gmail__get_filter", "mcp__outlook__fetch")
+              for v in ("x", over, {"l": list(range(6000))}, {"b": "{" + "a" * 100001}))
+          and all(ee.mail_tool_action(t, v) is None
+                  for t in ("mcp__outlook__get_rules", "mcp__gmail__get_filter", "mcp__outlook__fetch") for v in ({}, [])))
     check("clean non-reader calls and prose drafts keep their class", bad_clean == 0, f"{bad_clean} differ")
     bad_n4 = [c["tool"] for c in NI["reviewer_n4"]
               if ee.mail_tool_action(c["tool"], c["input"]) != "send" or ee.mail_rule_forward(c["tool"], c["input"]) is not True]
@@ -257,8 +276,8 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
     check("a bare address does NOT count for a name-independent tool (Q4)", ee.mail_tool_action("mcp__imap__move_message", {"messageId": "<abc@host>"}) is None)
     check("channel plugin and ms365 chat are out of scope", ee.mail_tool_action("mcp__plugin_telegram_telegram__edit_message", {"forwardTo": "x"}) is None
           and ee.mail_tool_action("mcp__ms365__send-chat-message", {"forwardTo": "x"}) is None)
-    check("non-object input: a non-reader is a send (fail-closed), a reader stays None",
-          ee.mail_tool_action("mcp__outlook__manage_rules", "x") == "send" and ee.mail_tool_action("mcp__outlook__get_rules", "x") is None)
+    check("non-object input: a non-reader is a send (fail-closed), and so is a reader (card 1239a7ad AC6; was None under 3d6e5181 AC11)",
+          ee.mail_tool_action("mcp__outlook__manage_rules", "x") == "send" and ee.mail_tool_action("mcp__outlook__get_rules", "x") == "send")
     reads = lambda n: ee._is_read_action(n.split("__"))
     check("_is_read_action: readers", all(reads(n) for n in ("get_rules", "list_rules", "getrules", "search_emails", "v2_get_settings", "read_email",
           "listEmails", "export_rules", "watch_mailbox", "search_address_book", "describe_filter", "fetch_message")))
@@ -441,11 +460,15 @@ with tempfile.TemporaryDirectory(prefix="mta-") as td:
             code, _, _ = run(COPY, st, fwd_t, fwd_i)
             check(f"copy gate level {level}: forwarding rule is denied (no text to inspect)", code == 2, f"exit={code}")
         st = make_store(os.path.join(td_ni, "l1b"), 1)
-        for tool, ti, label in (("mcp__outlook__list_rules", {"forwardTo": "x"}, "reader"),
+        # card 1239a7ad: a reader passes while its input has no forward KEY; with one it is a send like any other
+        for tool, ti, label in (("mcp__outlook__list_rules", {"query": "forward"}, "reader (forward word in a value)"),
                                 ("mcp__outlook__manage_rules", {"rules": [{"actions": {"moveToFolder": "F1"}}]}, "clean rule")):
             for script in (GATE, COPY):
                 code, _, _ = run(script, st, tool, ti)
                 check(f"{os.path.basename(script)} level 1: {label} passes", code == 0, f"exit={code}")
+        for script in (GATE, COPY):
+            code, _, _ = run(script, st, "mcp__outlook__list_rules", {"forwardTo": "x"})
+            check(f"{os.path.basename(script)} level 1: a reader with a forward KEY is denied like any send (card 1239a7ad)", code == 2, f"exit={code}")
 
     # --- 2. the call forms the pinned helper and the golden use (G6) ----------
     print("call forms")

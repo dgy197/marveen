@@ -935,7 +935,7 @@
     }
   ],
   "name_independent": {
-    "_comment": "card 3d6e5181 N3: the name-independent forwarding rule. A tool of a mail server (servers x names) that is not a reader and whose input forwards (a forward / redirect KEY, or a forward / redirect WORD in a value outside the free-text keys; a bare address does not count) is a send for mail_tool_action / mailToolAction and mail-rule-forward for gateDecision, under any name. readers stay None whatever the input; disguised = reader-looking names that carry a write or forward word (non-reader); clean = non-reader calls without forwarding, which keep their old class. Read by src/__tests__/mail-tool-action-conformance.test.ts and scripts/__tests__/mail-tool-action.test.py.",
+    "_comment": "card 3d6e5181 N3: the name-independent forwarding rule. A tool of a mail server (servers x names) that is not a reader and whose input forwards (a forward / redirect KEY, or a forward / redirect WORD in a value outside the free-text keys; a bare address does not count) is a send for mail_tool_action / mailToolAction and mail-rule-forward for gateDecision, under any name. readers (card 1239a7ad: a reader is a reader only while its input has no forward / redirect KEY; a forward word in a VALUE stays exempt) - reader_inputs and reader_benign_inputs stay None, reader_forward_key_inputs are a send / mail-rule-forward; disguised = reader-looking names that carry a write or forward word (non-reader); clean = non-reader calls without forwarding, which keep their old class. Read by src/__tests__/mail-tool-action-conformance.test.ts and scripts/__tests__/mail-tool-action.test.py.",
     "servers": [
       "gmail",
       "outlook",
@@ -1144,14 +1144,6 @@
     ],
     "reader_inputs": [
       {
-        "label": "forward key",
-        "input": {
-          "forwardTo": [
-            "invented@example.com"
-          ]
-        }
-      },
-      {
         "label": "forward word in a value",
         "input": {
           "filter": {
@@ -1165,6 +1157,163 @@
         "input": {
           "query": "from:x@y.hu"
         }
+      }
+    ],
+    "reader_forward_key_inputs": [
+      {
+        "label": "forward key",
+        "note": "card 1239a7ad AC3(d): was a reader_inputs row (allow, 3d6e5181 AC11), now deny",
+        "input": {
+          "forwardTo": [
+            "invented@example.com"
+          ]
+        }
+      },
+      {
+        "label": "gateway messageRules body with forwardTo",
+        "note": "card 1239a7ad AC3(a): 3d6e5181 be-n4 reader_inputs row 2",
+        "input": {
+          "method": "POST",
+          "path": "/me/mailFolders/inbox/messageRules",
+          "body": {
+            "actions": {
+              "forwardTo": [
+                {
+                  "emailAddress": {
+                    "address": "x@evil.example"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "label": "gateway messageRules body as a JSON string",
+        "note": "card 1239a7ad AC3(b): the same body, JSON-encoded in a string",
+        "input": {
+          "method": "POST",
+          "path": "/me/mailFolders/inbox/messageRules",
+          "body": "{\"actions\": {\"forwardTo\": [{\"emailAddress\": {\"address\": \"x@evil.example\"}}]}}"
+        }
+      },
+      {
+        "label": "gmail filter with action.forward",
+        "note": "card 1239a7ad AC3(c)",
+        "input": {
+          "method": "POST",
+          "path": "/gmail/v1/users/me/settings/filters",
+          "body": {
+            "criteria": {
+              "from": "a"
+            },
+            "action": {
+              "forward": "x@evil.example"
+            }
+          }
+        }
+      },
+      {
+        "label": "FPK isForwarded key",
+        "note": "card 1239a7ad AC5/Q3: accepted over-block, a key that only contains the word forward is not a forwarding but a reader denies it (fail-closed)",
+        "input": {
+          "filter": {
+            "isForwarded": true
+          }
+        }
+      },
+      {
+        "label": "FPK includeRedirects key",
+        "note": "card 1239a7ad AC5/Q3: accepted over-block",
+        "input": {
+          "includeRedirects": false
+        }
+      },
+      {
+        "label": "FPK fields.forwardTo key",
+        "note": "card 1239a7ad AC5/Q3: accepted over-block",
+        "input": {
+          "fields": {
+            "forwardTo": 1
+          }
+        }
+      }
+    ],
+    "reader_benign_inputs": [
+      {
+        "label": "query: forward",
+        "input": {
+          "query": "forward"
+        }
+      },
+      {
+        "label": "q: subject:Fwd is:unread",
+        "input": {
+          "q": "subject:Fwd is:unread"
+        }
+      },
+      {
+        "label": "GET search for forward",
+        "input": {
+          "method": "GET",
+          "path": "/me/messages?$search=\"forward\""
+        }
+      },
+      {
+        "label": "GET messageRules",
+        "input": {
+          "method": "GET",
+          "path": "/me/mailFolders/inbox/messageRules"
+        }
+      },
+      {
+        "label": "select forwardTo as a value",
+        "input": {
+          "select": [
+            "subject",
+            "forwardTo"
+          ]
+        }
+      },
+      {
+        "label": "POST search/query forward invoice",
+        "input": {
+          "method": "POST",
+          "path": "/search/query",
+          "body": {
+            "requests": [
+              {
+                "entityTypes": [
+                  "message"
+                ],
+                "query": {
+                  "queryString": "forward invoice"
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "label": "GET mailboxSettings",
+        "input": {
+          "method": "GET",
+          "path": "/me/mailboxSettings"
+        }
+      },
+      {
+        "label": "messageId only",
+        "input": {
+          "messageId": "<a@b>"
+        }
+      },
+      {
+        "label": "empty object",
+        "input": {}
+      },
+      {
+        "label": "empty array",
+        "input": []
       }
     ],
     "reviewer_n4": [
