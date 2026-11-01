@@ -9,8 +9,11 @@
 // Rules (spec.md of the card):
 //   R1 a JS test runner is denied: vitest, jest, mocha, `node --test`, npm|pnpm|yarn|bun test / t / run test*,
 //      npx | pnpm exec | pnpm dlx | yarn vitest ..., */node_modules/.bin/vitest -- through any wrapper
-//      (env, bash -c, sh -c, eval, command, exec, time, nice, timeout, xargs, find -exec, subshell,
-//      substitution, heredoc / here-string fed shell, a function or alias the text itself defines).
+//      (env, bash -c, sh -c, eval, command, exec, time, nice, timeout, gtimeout, run-sandboxed.sh,
+//      sandbox-exec, perl -e 'exec @ARGV', script, xargs, find -exec, subshell, substitution, heredoc /
+//      here-string fed shell, a function or alias the text itself defines). ssh is not unwrapped (remote).
+//      A plain variable as the command word with a python test shape (`"$PY" -m pytest`, `${PY} a.test.py`)
+//      is a Python runner (Brainy N1b D2); any other computed command word stays "unknown".
 //   R2 except safe-vitest.sh: the one under the live root (derived from this file's place, like
 //      egress-gate.mjs REPO_ROOT), or a copy whose safe-vitest.sh AND sibling safe-vitest.sb are
 //      byte-identical (sha256) to the live ones. Unreadable -> deny.
@@ -93,6 +96,9 @@ const NODE_VALUE_OPTS = new Set(['-r', '--require', '--import', '--loader', '--e
   '--input-type', '-C', '--conditions', '--title', '--stack-size'])
 const XARGS_VALUE_OPTS = new Set(['-a', '-d', '-E', '-I', '-J', '-L', '-n', '-P', '-R', '-S', '-s', '--arg-file',
   '--delimiter', '--eof', '--max-args', '--max-procs', '--max-lines', '--max-chars'])
+const SANDBOX_EXEC_VALUE_OPTS = new Set(['-f', '-p', '-n', '-D'])
+const TIMEOUT_VALUE_OPTS = new Set(['-s', '--signal', '-k', '--kill-after'])
+const VAR_WORD = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/
 const DIR_OPTS = new Set(['--root', '--dir', '--prefix', '--cwd', '--rootdir', '-C'])
 const DIR_OPT_EQ = /^(--root|--dir|--prefix|--cwd|--rootdir)=([\s\S]*)$/
 const REDIR_OP = /^(?:\d+|&)?(?:<<<|<<-?|<>|>>|>\||>&?|<&?|&>>?)/
@@ -253,7 +259,17 @@ function analyzeWords(rawWords, extra, ctx, depth, steps) {
   if (ci !== -1 && prefix.slice(ci + 1).some((p) => /^-[A-Za-z]*[vV]/.test(p))) return
 
   // A word computed at run time ($X, $(...), a glob or brace pattern) may be anything.
-  if (/[$`*?[{]/.test(cmd) && !/^(?:\[|\[\[|\{|\})$/.test(cmd)) { steps.push({ type: 'unknown', word: cmd }); return }
+  if (/[$`*?[{]/.test(cmd) && !/^(?:\[|\[\[|\{|\})$/.test(cmd)) {
+    // D2: a plain variable in the command word with a python test shape (`"$PY" -m pytest`,
+    // `${PY} -I a/b.test.py`) is a python runner; every other computed word stays unknown.
+    if (VAR_WORD.test(cmd)) {
+      const py = []
+      pythonRun(args, py)
+      if (py.length) { steps.push(...py); return }
+    }
+    steps.push({ type: 'unknown', word: cmd })
+    return
+  }
 
   if (name === 'alias') {
     for (const a of args) {
@@ -322,6 +338,12 @@ function analyzeWords(rawWords, extra, ctx, depth, steps) {
     analyzeWords(args.slice(k), { heredocs: [], herestring: false }, ctx, depth + 1, steps)
     return
   }
+  // D1: sandbox-style wrappers run the rest of the line; judge it like a bare command. ssh is NOT here (remote).
+  const wrapped = wrappedCommand(name, args)
+  if (wrapped !== null) {
+    analyzeWords(wrapped, { heredocs: [], herestring: false }, ctx, depth + 1, steps)
+    return
+  }
   if (PY_RUNNER_LAUNCHERS.has(name)) {
     const rest = peelLauncherOptions(args, steps, ctx, depth)
     if (rest[0] === 'run') analyzeWords(peelLauncherOptions(rest.slice(1), steps, ctx, depth), { heredocs: [], herestring: false }, ctx, depth + 1, steps)
@@ -338,6 +360,48 @@ function analyzeWords(rawWords, extra, ctx, depth, steps) {
     return
   }
   if (PM_NAMES.has(name)) packageManagerRun(name, args, steps, ctx, depth)
+}
+
+// The words a D1 wrapper hands to the command it runs, or null when `name` is not such a wrapper.
+// A wrapper with no command after its options yields [] (nothing runs).
+//   run-sandboxed.sh <cmd...>                       (any path: basename match)
+//   sandbox-exec [-f file | -p profile | -n name | -D k=v] <cmd...>
+//   perl -e '<code with exec / system>' <cmd...>    (argv after the code; without exec / system, nothing runs)
+//   script [-aeFkqr] [-t time] <file> [<cmd...>]    (macOS form)
+//   gtimeout [opts] <duration> <cmd...>             (GNU timeout, like timeout in commandIndex)
+function wrappedCommand(name, args) {
+  if (name === 'run-sandboxed.sh') return args
+  if (name === 'sandbox-exec') {
+    let k = 0
+    while (k < args.length && args[k].startsWith('-') && args[k] !== '--') k += SANDBOX_EXEC_VALUE_OPTS.has(args[k]) ? 2 : 1
+    if (args[k] === '--') k++
+    return args.slice(k)
+  }
+  if (name === 'perl') {
+    let k = 0
+    let code = ''
+    while (k < args.length) {
+      const w = args[k]
+      if (w === '--') { k++; break }
+      if (!w.startsWith('-') || w === '-') break
+      if (/^-[A-Za-z]*[eE]$/.test(w)) { code += `${args[k + 1] ?? ''}\n`; k += 2; continue }
+      k += w === '-I' ? 2 : 1
+    }
+    return /\b(?:exec|system)\b/.test(code) ? args.slice(k) : []
+  }
+  if (name === 'script') {
+    let k = 0
+    while (k < args.length && args[k].startsWith('-') && args[k] !== '--') k += args[k] === '-t' ? 2 : 1
+    if (args[k] === '--') k++
+    return args.slice(k + 1) // args[k] is the typescript file
+  }
+  if (name === 'gtimeout') {
+    let k = 0
+    while (k < args.length && args[k].startsWith('-') && args[k] !== '--' && args[k].length > 1) k += TIMEOUT_VALUE_OPTS.has(args[k]) ? 2 : 1
+    if (args[k] === '--') k++
+    return args.slice(k + 1) // args[k] is the duration
+  }
+  return null
 }
 
 function nodeRun(args, steps) {
