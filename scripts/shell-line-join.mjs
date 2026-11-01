@@ -39,6 +39,15 @@
 //             subst (unquoted only) is true when a body line holds `$(` or a backtick. A `<<` the lexer did not
 //             open as an operator (comment, quote, here-string) is not in the list.
 //   exact/reason  what joinShellLines reports in info for the same call
+//   substs    [{ start, end, kind: 'cmd'|'proc-in'|'proc-out'|'bq' }], in order of start (card 6f27c86a, N1): the
+//             substitution frames the pass opened, so a gate never counts brackets of its own. cmd = `$( )`,
+//             proc-in = `<( )`, proc-out = `>( )`, bq = a backtick run. start is the first character of the opener
+//             (the `$`, the `<` or `>`, the backtick), end the index after the closer. end is -1 when the frame is
+//             not known to be closed: the text ends inside it, or (proc only) a `case` keyword stands in it, whose
+//             pattern `)` is indistinguishable from the closer (the same blind spot as rule 6, but here it must not
+//             change `exact`, so the frame is left open instead). Arithmetic `$(( ))` and `(( ))` are no frame.
+//             Frames nest or are disjoint. `<(` and `>(` are NOT lexer frames (the bracket stays in its enclosing
+//             frame, as before); they are recorded on the side, so text, cls and exact are the same as without them.
 // Without a map (every joinShellLines call) the scan allocates nothing for any of this.
 
 // the values of cls (the numbers are part of the contract, tests and gates compare them)
@@ -83,12 +92,12 @@ export function joinShellLines(src, info = {}) {
 
 export function shellContext(src) {
   const info = {}
-  const map = { cls: null, quotes: [], heredocs: [] }
+  const map = { cls: null, quotes: [], heredocs: [], substs: [] }
   const text = scan(src, info, map)
-  return { text, cls: map.cls.subarray(0, text.length), quotes: map.quotes, heredocs: map.heredocs, exact: info.exact, reason: info.reason }
+  return { text, cls: map.cls.subarray(0, text.length), quotes: map.quotes, heredocs: map.heredocs, substs: map.substs, exact: info.exact, reason: info.reason }
 }
 
-// The one lexer pass. `map` is null (joinShellLines) or { cls, quotes, heredocs } to fill (shellContext).
+// The one lexer pass. `map` is null (joinShellLines) or { cls, quotes, heredocs, substs } to fill (shellContext).
 function scan(src, info, map) {
   const s = typeof src === 'string' ? src : String(src ?? '')
   info.exact = true
@@ -111,6 +120,18 @@ function scan(src, info, map) {
   const markSubst = () => {
     if (rec) for (let q = 0; q < dqOpen.length; q++) dqOpen[q].subst = true
   }
+  // a substitution record for map.substs (null without a map); end stays -1 until the closer is read
+  const openSubst = (kind, start) => {
+    if (!rec) return null
+    const r = { start, end: -1, kind }
+    map.substs.push(r)
+    return r
+  }
+  // open `<(` / `>(` records, innermost last: { rec, frame, depth }. depth counts the plain `(` opened inside, so the
+  // `)` that closes the process substitution is the one that finds depth 0 in the same frame. They are no lexer frames.
+  const procs = []
+  // set by a `<` or `>` whose next joined character is `(`: the kind and the start of the record the `(` opens
+  let procMark = null
   const openDq = (start) => {
     if (!rec) return
     const q = { start, end: -1, kind: 'dq', subst: false }
@@ -344,9 +365,10 @@ function scan(src, info, map) {
         i = j2 + 1
         frames.push({ t: 'arith', depth: 1, inDq: false })
       } else {
+        const r = openSubst('cmd', out.length)
         put('$(', K_CODE)
         i = j + 1
-        frames.push({ t: 'subst', depth: 0, inDq: false })
+        frames.push({ t: 'subst', depth: 0, inDq: false, rec: r })
       }
       atWord = true
       return
@@ -441,9 +463,10 @@ function scan(src, info, map) {
     }
     if (c === BQ) {
       markSubst()
+      const r = openSubst('bq', out.length)
       put('`', K_BQ)
       i++
-      frames.push({ t: 'bq', depth: 0, inDq: false })
+      frames.push({ t: 'bq', depth: 0, inDq: false, rec: r })
       atWord = false
       return
     }
@@ -463,6 +486,8 @@ function scan(src, info, map) {
     if (c === LT && words) {
       const j1 = skip(i + 1)
       if (s.charCodeAt(j1) !== LT) {
+        // `<(`: the next step opens the process-substitution record (the bracket is not a lexer frame)
+        if (rec && s.charCodeAt(j1) === LP) procMark = { kind: 'proc-in', start: out.length }
         put('<', K_CODE)
         i++
         atWord = true
@@ -501,17 +526,22 @@ function scan(src, info, map) {
       return
     }
     if (c === LP) {
+      const mark = procMark
+      procMark = null
       if (atWord && t !== 'arith') {
         const j = skip(i + 1)
         if (s.charCodeAt(j) === LP) {
-          // (( arithmetic command
+          // (( arithmetic command; after `<` or `>` it is `<(` + a subshell `(`, and the record ends with this frame
+          const r = mark ? openSubst(mark.kind, mark.start) : null
           put('((', K_CODE)
           i = j + 1
-          frames.push({ t: 'arith', depth: 1, inDq: false })
+          frames.push({ t: 'arith', depth: 1, inDq: false, rec: r })
           atWord = true
           return
         }
       }
+      if (mark) procs.push({ rec: openSubst(mark.kind, mark.start), frame: f, depth: 0, hold: false })
+      else if (procs.length && procs[procs.length - 1].frame === f) procs[procs.length - 1].depth++
       if (t !== 'top') f.depth++
       put('(', K_CODE)
       i++
@@ -521,6 +551,15 @@ function scan(src, info, map) {
     if (c === RP) {
       put(')', K_CODE)
       i++
+      if (procs.length && procs[procs.length - 1].frame === f) {
+        // a plain `)` of the process substitution, or its closer
+        const p = procs[procs.length - 1]
+        if (p.depth > 0) p.depth--
+        else {
+          if (!p.hold) p.rec.end = out.length
+          procs.pop()
+        }
+      }
       if (t === 'top') {
         atWord = true
       } else if (f.depth > 0) {
@@ -529,12 +568,15 @@ function scan(src, info, map) {
       } else {
         // a `)` with no matching `(` closes $(...); after an `in` word it may be a case pattern close instead
         if (t === 'subst' && f.sawIn) inexact('unmatched ) after in inside $(...)')
+        if (f.rec) f.rec.end = out.length
         frames.pop()
         atWord = false
       }
       return
     }
     if (isBreak(c)) {
+      // `>(`: the next step opens the process-substitution record (`<(` is marked where the `<` is read)
+      if (c === GT && words && rec && s.charCodeAt(skip(i + 1)) === LP) procMark = { kind: 'proc-out', start: out.length }
       put(s[i], K_CODE)
       i++
       atWord = true
@@ -546,6 +588,10 @@ function scan(src, info, map) {
       // joined stream (rule 4): ca\<NL>se and case\<NL> a are the keyword too.
       if (wordAt('case', i)) inexact('case inside $(...)')
       else if (wordAt('in', i)) f.sawIn = true
+    }
+    // a `case` in a <( ) / >( ): its pattern `)` looks like the closer, so the record is never closed (end stays -1)
+    if (atWord && procs.length && wordAt('case', i)) {
+      for (let q = procs.length - 1; q >= 0 && procs[q].frame === f; q--) procs[q].hold = true
     }
     let j = i + 1
     while (j < n) {
@@ -578,9 +624,10 @@ function scan(src, info, map) {
     }
     if (c === BQ) {
       markSubst()
+      const r = openSubst('bq', out.length)
       put('`', K_BQ)
       i++
-      frames.push({ t: 'bq', depth: 0, inDq: false })
+      frames.push({ t: 'bq', depth: 0, inDq: false, rec: r })
       return
     }
     let j = i + 1
@@ -594,7 +641,7 @@ function scan(src, info, map) {
   }
 
   // backticks: scanned to the next unescaped backtick; a backslash run + LF inside is not read exactly (V22)
-  const stepBq = () => {
+  const stepBq = (f) => {
     const c = s.charCodeAt(i)
     if (c === BSL) {
       put(backslashRun(() => inexact('continuation inside backticks')), K_BQ)
@@ -603,6 +650,7 @@ function scan(src, info, map) {
     if (c === BQ) {
       put('`', K_BQ)
       i++
+      if (f.rec) f.rec.end = out.length
       frames.pop()
       atWord = false
       return
@@ -620,7 +668,7 @@ function scan(src, info, map) {
   while (i < n) {
     const f = frames[frames.length - 1]
     if (f.t === 'dq') stepDq()
-    else if (f.t === 'bq') stepBq()
+    else if (f.t === 'bq') stepBq(f)
     else stepNormal(f)
   }
 
