@@ -153,3 +153,136 @@ export const CONTEXT_CASES = [
   { id: 'real-heredoc', command: `cat <<${Q}EOF${Q}${NL}x${NL}EOF`, heredocs: 1, quotes: 0 },
   { id: 'real-heredoc-then-code', command: `cat <<${Q}EOF${Q}${NL}x; ${Q}y${NL}EOF${NL}echo ${Q}z${Q}`, heredocs: 1, quotes: 1 },
 ]
+
+// =============================================================================================================
+// Card 6f27c86a, node N0: a heredoc body is DATA only when its owner provably does not execute it.
+// Rows OPEN (O1-O13, O15-O19), FH (F1-F13) and GOV are taken verbatim from tmp/m1.mjs of that card (no new attack
+// shapes). Same rules as above: strings only, nothing here is executed, no backslash in any fixture.
+//
+// Row shape (additions to the shape above):
+//   why     the reason label of the heredocBodyIsData decision: 'owner' | 'pipe' | 'subst' | 'procsubst' | 'data'
+//           (backtick is a label of the rule too, but no m1 row has it: see the report of node N0)
+//   data    the heredocBodyIsData(ctx, heredoc) result the rule requires (true = the body is data)
+//   keep    text of the body that stripHeredocBodies must leave in place (the body is visible, i.e. not data)
+//   marker  text of the body that stripHeredocBodies must remove iff the body is data (data) / keep (not data)
+//
+// Variant: V2 (coordinator decision, blueprint "Coordinator decisions"): a script-file-running interpreter in a pipe
+// stage or around a $( ) is a data consumer, except the stdin paths (/dev/stdin, /dev/fd/N, /proc/*/fd/N) and a
+// code option. The owner of the redirect itself is always strict (F9).
+// =============================================================================================================
+
+const MSG = '/Users/gyorgydecsi/marveen/scripts/agent-msg.sh'
+
+// 6. OPEN: shapes where the shell RUNS the body but the head rule (first word of the segment) calls it data. Every
+// row: gateDecision must DENY, heredocBodyIsData must be false, stripHeredocBodies must keep `keep`.
+export const HEREDOC_OWNER_CASES = [
+  { id: 'O1-cat-pipe-bash', command: `cat <<'EOF' | bash${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'pipe', keep: `${C} -r`, source: 'm1 OPEN' },
+  { id: 'O2-cat-pipe-sh-s', command: `cat <<'EOF' | sh -s${NL}${A}${NL}EOF`, expect: 'DENY', why: 'pipe', keep: A, source: 'm1 OPEN' },
+  { id: 'O3-env-i-bash', command: `env -i bash <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'm1 OPEN' },
+  { id: 'O4-sudo-u-bash', command: `sudo -u x bash <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'm1 OPEN' },
+  { id: 'O5-nice-n-bash', command: `nice -n 5 bash <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'm1 OPEN' },
+  { id: 'O6-timeout-bash', command: `timeout 5 bash <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'm1 OPEN' },
+  { id: 'O7-stdbuf-oL-sh', command: `stdbuf -oL sh <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'm1 OPEN' },
+  { id: 'O8-bash-c-subst', command: `bash -c "$(cat <<'EOF'${NL}${C} -r${NL}EOF${NL})"`, expect: 'DENY', why: 'subst', keep: `${C} -r`, source: 'm1 OPEN' },
+  { id: 'O9-eval-subst', command: `eval "$(cat <<'EOF'${NL}${C} -r${NL}EOF${NL})"`, expect: 'DENY', why: 'subst', keep: `${C} -r`, source: 'm1 OPEN' },
+  { id: 'O10-cat-pipe-bash-tmux', command: `cat <<'EOF' | bash${NL}${T} ${S} -t x Enter${NL}EOF`, expect: 'DENY', why: 'pipe', keep: `${T} ${S} -t x Enter`, source: 'm1 OPEN' },
+  { id: 'O11-tee-pipe-sh', command: `tee /dev/null <<'EOF' | sh${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'pipe', keep: `${C} -r`, source: 'm1 OPEN' },
+  { id: 'O12-bash-procsubst', command: `bash <(cat <<'EOF'${NL}${C} -r${NL}EOF${NL})`, expect: 'DENY', why: 'procsubst', keep: `${C} -r`, source: 'm1 OPEN' },
+  { id: 'O13-command-p-bash', command: `command -p bash <<'EOF'${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'm1 OPEN' },
+  { id: 'O15-cat-pipe-bash-devstdin', command: `cat <<'EOF' | bash /dev/stdin${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'pipe', keep: `${C} -r`, source: 'm1 OPEN', note: 'V2: the stdin path is not a script file' },
+  { id: 'O16-cat-pipe-py-devfd', command: `cat <<'EOF' | python3 /dev/fd/0${NL}${C} -r${NL}EOF`, expect: 'DENY', why: 'pipe', keep: `${C} -r`, source: 'm1 OPEN', note: 'V2: the fd path is not a script file' },
+  { id: 'O17-do-bash-loop', command: `for i in 1; do env -i bash <<'EOF'${NL}${C} -r${NL}EOF${NL}done`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'm1 OPEN' },
+  { id: 'O18-pipe-bash-midline', command: `cat <<'EOF' | bash${NL}echo x; ${C} -r${NL}EOF`, expect: 'DENY', why: 'pipe', keep: `echo x; ${C} -r`, source: 'm1 OPEN' },
+  { id: 'O19-env-bash-midline-pipe', command: `env -i bash <<'EOF'${NL}echo job | ${C} -${NL}EOF`, expect: 'DENY', why: 'owner', keep: `echo job | ${C} -`, source: 'm1 OPEN' },
+]
+
+// 6b. Rows that are NOT part of the 18 above. O20 is a green guard (DENY on the head, exact=false in the lexer, the
+// gate denies; it must stay so once the frames come from the lexer). O14 is the documented limit of this card
+// (spec section 6): a heredoc written to a file and run later is not tracked; the verdict is ALLOW on the head and
+// stays ALLOW. If a later card closes it, change this row on purpose.
+export const HEREDOC_LIMIT_CASES = [
+  { id: 'O20-case-paren-in-subst', command: `bash -c "$(case a in a) cat <<'EOF'${NL}${C} -r${NL}EOF${NL};; esac)"`, expect: 'DENY', source: 'm1 OPEN', note: 'green guard: lexer exact=false, the gate denies' },
+  { id: 'O14-file-then-run', command: `cat <<'EOF' > /tmp/s.sh && bash /tmp/s.sh${NL}${C} -r${NL}EOF`, expect: 'ALLOW', source: 'm1 OPEN', note: 'documented limit (spec section 6), not part of this card' },
+]
+
+// 7. FH: data heredocs of the fleet whose text MENTIONS trigger words (over-block probes, no attack). Expectation
+// per spec E4/E5 with the V2 variant. F9 is the pre-existing over-block of the head (a script-file interpreter as
+// the DIRECT owner stays visible, never provable as non-executing). F11 is the accepted new over-block of V2
+// (`echo` is not a data owner; 0 of 46575 Bash calls in the fleet transcripts have this shape).
+export const HEREDOC_DATA_CASES = [
+  { id: 'F1-cat-pipe-agentmsg', command: `cat <<'EOF' | bash ${MSG} ezermester brainy -${NL}report: the ${T} ${S} path is blocked by the gate${NL}EOF`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'm1 FH' },
+  { id: 'F2-agentmsg-subst', command: `bash ${MSG} ezermester brainy "$(cat <<'EOF'${NL}report: the ${T} ${S} path is blocked${NL}EOF${NL})"`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'm1 FH' },
+  { id: 'F3-curl-binary-stdin', command: `curl -s -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" -H "Authorization: Bearer ${TOK}" --data-binary @- <<'JSON'${NL}{"from":"ezermester","to":"brainy","content":"the ${T} ${S} path is blocked"}${NL}JSON`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'm1 FH' },
+  { id: 'F4-py-script-subst', command: `python3 /Users/gyorgydecsi/marveen/scripts/x.py --note "$(cat <<'EOF'${NL}at the same time the ${T} ${S} path${NL}EOF${NL})"`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'm1 FH' },
+  { id: 'F5-cat-pipe-grep', command: `cat <<'EOF' | grep -c keys${NL}${T} ${S} notes${NL}EOF`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'm1 FH' },
+  { id: 'F6-git-F', command: `git commit -F - <<'EOF'${NL}fix: the ${T} ${S} path${NL}EOF`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'm1 FH' },
+  { id: 'F7-gh-body-subst', command: `gh pr create --title x --body "$(cat <<'EOF'${NL}## Summary${NL}- the ${T} ${S} path is blocked${NL}EOF${NL})"`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'm1 FH' },
+  { id: 'F8-assign-subst', command: `MSG=$(cat <<'EOF'${NL}the ${T} ${S} path${NL}EOF${NL})`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'm1 FH' },
+  { id: 'F9-agentmsg-direct-owner', command: `bash ${MSG} ezermester brainy - <<'EOF'${NL}the ${T} ${S} path${NL}EOF`, expect: 'DENY', data: false, why: 'owner', marker: `${T} ${S}`, source: 'm1 FH', note: 'pre-existing over-block on the head: a script-file interpreter as the direct owner is never provably non-executing' },
+  { id: 'F10-cat-pipe-agentmsg-plain', command: `cat <<'EOF' | bash ${MSG} ezermester brainy -${NL}report: tests green, nothing blocked${NL}EOF`, expect: 'ALLOW', data: true, why: 'data', marker: 'tests green', source: 'm1 FH' },
+  { id: 'F11-echo-subst', command: `echo "$(cat <<'EOF'${NL}${T} ${S} notes${NL}EOF${NL})"`, expect: 'DENY', data: false, why: 'subst', marker: `${T} ${S}`, source: 'm1 FH', note: 'accepted over-block (V2): echo is not a data owner; was ALLOW on the head' },
+  { id: 'F12-cat-to-file', command: `cat > /tmp/n.md <<'EOF'${NL}the ${T} ${S} path${NL}EOF`, expect: 'ALLOW', data: true, why: 'data', marker: `${T} ${S}`, source: 'm1 FH' },
+  { id: 'F13-git-commit-m-subst-at', command: `git commit -m "$(cat <<'EOF'${NL}fix${NL}${NL}at the same time we clear the cache${NL}EOF${NL})"`, expect: 'ALLOW', data: true, why: 'data', marker: 'at the same time we clear', source: 'm1 FH' },
+]
+
+// 8. GOV: the heredoc shapes of governance-gates.test.ts as m1 replays them (22 rows), gate verdict only (the 17
+// stripper expectations stay in governance-gates.test.ts). Called without gate options, as m1 does.
+const govBody = (line) => `git commit -m "$(cat <<'EOF'${NL}fix(lib): parser tweak${NL}${NL}${line}${NL}EOF${NL})"`
+export const HEREDOC_GOV_CASES = [
+  ...['at least 80% of parsed entries must carry a date', 'at most 3 retries before giving up', 'at runtime the parser reads the header', 'at the same time we clear the cache', 'batch size is 50 by default'].map((l, i) => ({ id: `g59-${i}`, command: govBody(l), expect: 'ALLOW', source: 'm1 GOV' })),
+  { id: 'g87', command: `git commit -m "$(cat <<EOF${NL}fix${NL}$(${A})${NL}EOF${NL})"`, expect: 'DENY', source: 'm1 GOV' },
+  { id: 'g535', command: `cat <<PY${NL}$(${C} -r)${NL}PY`, expect: 'DENY', source: 'm1 GOV' },
+  { id: 'g595', command: `cat <<${Q}EOF${Q} | python3${NL}import urllib.request as u${NL}u.urlopen(u.Request('http://localhost:3420/api/schedules', data=b'{}'))${NL}EOF`, expect: 'DENY', source: 'm1 GOV' },
+  { id: 'g626', command: `curl -s -X POST http://localhost:3420/api/messages -H "Authorization: Bearer ${TOK}" --data-binary @- <<${Q}JSON${Q}${NL}{"from":"agent-a","to":"agent-b","content":"wanted POST /api/schedules"}${NL}JSON`, expect: 'ALLOW', source: 'm1 GOV' },
+  { id: 'g627', command: `git commit -m "$(cat <<${Q}EOF${Q}${NL}fix: /api/schedules gate${NL}${NL}see ~/.claude/scheduled-tasks${NL}EOF${NL})"`, expect: 'ALLOW', source: 'm1 GOV' },
+  { id: 'g656', command: `F=~/.claude/scheduled-tasks/x/SKILL.md; cat >> $F <<${Q}EOF${Q}${NL}more${NL}EOF`, expect: 'DENY', source: 'm1 GOV' },
+  { id: 'g687', command: `<<${Q}E${Q}${NL}/api/schedules${NL}E${NL}python3 -c "print(1)"`, expect: 'DENY', source: 'm1 GOV' },
+  { id: 'g743', command: `python3 - <<${Q}PY${Q}${NL}import re; print(re.findall(r'[a-z]*', 'x'))${NL}PY`, expect: 'ALLOW', source: 'm1 GOV' },
+  { id: 'g884', command: `git commit -m "$(cat <<${Q}EOF${Q}${NL}fix: read the /api/schedules docs; command() in prose${NL}EOF${NL})"`, expect: 'ALLOW', source: 'm1 GOV' },
+  { id: 'g896', command: `cat <<${Q}EOF${Q} | bash${NL}curl -X POST localhost:3420/api/schedules -d x${NL}EOF`, expect: 'DENY', source: 'm1 GOV' },
+  { id: 'g913', command: `gh pr create --body-file - <<${Q}EOF${Q}${NL}POST /api/schedules is denied${NL}EOF`, expect: 'ALLOW', source: 'm1 GOV' },
+  { id: 'g1020', command: `cat <<${Q}X${Q} > /tmp/s.sh${NL}curl -X POST localhost:3420/api/schedules -d x${NL}X${NL}bash /tmp/s.sh`, expect: 'DENY', source: 'm1 GOV' },
+  { id: 'g1021', command: `cat > /tmp/f <<${Q}X${Q}${NL}curl -X POST localhost:3420/api/schedules -d x${NL}X${NL}sh /tmp/f`, expect: 'DENY', source: 'm1 GOV' },
+  { id: 'g1022', command: `grep -h . <<${Q}X${Q} > /tmp/s.py${NL}import urllib.request as u; u.urlopen(u.Request("http://localhost:3420/api/schedules", data=b"{}"))${NL}X${NL}python3 /tmp/s.py`, expect: 'DENY', source: 'm1 GOV' },
+  { id: 'g1026', command: `curl -s -X POST http://localhost:3420/api/messages --data-binary @- <<${Q}J${Q}${NL}{"content":"wanted POST /api/schedules"}${NL}J`, expect: 'ALLOW', source: 'm1 GOV' },
+  { id: 'g1027', command: `git commit -F - <<${Q}EOF${Q}${NL}fix /api/schedules docs${NL}EOF`, expect: 'ALLOW', source: 'm1 GOV' },
+  { id: 'gd-git-commit-heredoc-prose', command: `git commit -F - <<'EOF'${NL}at the same time we fixed the parser${NL}EOF`, expect: 'ALLOW', source: 'm1 GOV' },
+]
+
+// 9. The closed list of data owners (spec section 2, rule 1; the list is closed, a new name is a Brainy decision).
+// `NAME <<'EOF'` with nothing else on the line: data. awk and sed are NOT on the list: visible.
+export const DATA_OWNER_NAMES = ['cat', 'tee', 'wc', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'sort', 'uniq', 'tr', 'base64', 'diff', 'cmp', 'shasum', 'sha256sum', 'md5', 'jq', 'gh', 'glab']
+export const HEREDOC_LIST_CASES = [
+  ...DATA_OWNER_NAMES.map((n) => ({ id: `L-${n}`, command: `${n} <<'EOF'${NL}x${NL}EOF`, data: true, why: 'data', source: 'spec section 2 rule 1' })),
+  ...['awk', 'sed'].map((n) => ({ id: `L-not-${n}`, command: `${n} <<'EOF'${NL}x${NL}EOF`, data: false, why: 'owner', source: 'spec section 2 rule 1' })),
+]
+
+// 10. SUBST: the substitution frames the lexer must report in ctx.substs (card 6f27c86a N1). Convention fixed here:
+// start = index (in ctx.text) of the first character of the opener, end = index after the closing character; so
+// text.slice(start, start + open.length) === open and text[end - 1] === close. kind: cmd = $(  proc-in = <(
+// proc-out = >(  bq = backtick. An arithmetic $(( )) is no frame. A frame the text never closes has end = -1.
+const byId = (rows, id) => rows.find((r) => r.id === id).command
+export const SUBST_CASES = [
+  { id: 'O8', command: byId(HEREDOC_OWNER_CASES, 'O8-bash-c-subst'), substs: [{ kind: 'cmd', open: '$(', close: ')' }] },
+  { id: 'O9', command: byId(HEREDOC_OWNER_CASES, 'O9-eval-subst'), substs: [{ kind: 'cmd', open: '$(', close: ')' }] },
+  { id: 'O12', command: byId(HEREDOC_OWNER_CASES, 'O12-bash-procsubst'), substs: [{ kind: 'proc-in', open: '<(', close: ')' }] },
+  { id: 'F2', command: byId(HEREDOC_DATA_CASES, 'F2-agentmsg-subst'), substs: [{ kind: 'cmd', open: '$(', close: ')' }] },
+  { id: 'F8', command: byId(HEREDOC_DATA_CASES, 'F8-assign-subst'), substs: [{ kind: 'cmd', open: '$(', close: ')' }] },
+  { id: 'real-heredoc', command: `cat <<${Q}EOF${Q}${NL}x${NL}EOF`, substs: [] },
+]
+
+// 11. E2 rows of card 0bb35172 (test gaps): a `git commit -m '` that sits in a comment deletes nothing, the real
+// command line after it runs (same shape as D2, with the git commit flag the reviewer named).
+export const COMMIT_COMMENT_CASES = [
+  { id: 'C1-comment-line', command: `# git commit -m ${Q}${NL}${C} -r${NL}# ${Q}`, expect: 'DENY' },
+  { id: 'C2-trailing-comment', command: `echo x # git commit -m ${Q}${NL}${C} -r${NL}# ${Q}`, expect: 'DENY' },
+]
+
+// 12. E2 rows of card 0bb35172: a reading the lexer is not sure of (exact=false: an unterminated quote or heredoc)
+// strips NOTHING; each of the four strippers hands the text back byte for byte (none has a backslash-newline).
+export const INEXACT_CASES = [
+  { id: 'X1-commit-m-open-sq', command: `git commit -m ${Q}fix${NL}${C} -r` },
+  { id: 'X2-curl-d-open-sq', command: `curl -s -X POST http://localhost:3420/api/messages -d ${Q}{"to":"x"${NL}${C} -r` },
+  { id: 'X3-gh-body-open-dq', command: `gh pr create --title x --body "fix${NL}${C} -r` },
+  { id: 'X4-commit-F-open-heredoc', command: `git commit -F - <<${Q}EOF${Q}${NL}at the same time we fixed the parser${NL}no terminator line` },
+]
