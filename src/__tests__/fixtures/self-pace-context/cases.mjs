@@ -273,6 +273,8 @@ const govBody = (line) => `git commit -m "$(cat <<'EOF'${NL}fix(lib): parser twe
 export const HEREDOC_GOV_CASES = [
   ...['at least 80% of parsed entries must carry a date', 'at most 3 retries before giving up', 'at runtime the parser reads the header', 'at the same time we clear the cache', 'batch size is 50 by default'].map((l, i) => ({ id: `g59-${i}`, command: govBody(l), expect: 'ALLOW', source: 'm1 GOV' })),
   { id: 'g87', command: `git commit -m "$(cat <<EOF${NL}fix${NL}$(${A})${NL}EOF${NL})"`, expect: 'DENY', source: 'm1 GOV' },
+  // review E1 (card a6422462): git is no data owner, so g87 stays DENY without the unquoted-tag rule; this sibling has a cat owner and a body that is otherwise data
+  { id: 'g87-cat-owner', command: `cat <<EOF${NL}fix${NL}$(${A})${NL}EOF`, expect: 'DENY', source: 'a6422462 review E1' },
   { id: 'g535', command: `cat <<PY${NL}$(${C} -r)${NL}PY`, expect: 'DENY', source: 'm1 GOV' },
   { id: 'g595', command: `cat <<${Q}EOF${Q} | python3${NL}import urllib.request as u${NL}u.urlopen(u.Request('http://localhost:3420/api/schedules', data=b'{}'))${NL}EOF`, expect: 'DENY', source: 'm1 GOV' },
   { id: 'g626', command: `curl -s -X POST http://localhost:3420/api/messages -H "Authorization: Bearer ${TOK}" --data-binary @- <<${Q}JSON${Q}${NL}{"from":"agent-a","to":"agent-b","content":"wanted POST /api/schedules"}${NL}JSON`, expect: 'ALLOW', source: 'm1 GOV' },
@@ -381,6 +383,15 @@ export const HEREDOC_BINDS_CASES = [
   { id: 'B-binder-in-dq-subst', command: `echo "$(hash -p /tmp/x cat)"${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
   { id: 'B-binder-in-backtick', command: `echo ${BQ}hash -p /tmp/x cat${BQ}${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6' },
   { id: 'B-binder-after-body-in-loop', command: `${CAT}${NL}for i in 1; do${NL}hash -p /tmp/x cat${NL}done`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 B6', note: 'the order does not matter: the binder is in the same command' },
+  // review E3 (card a6422462): the branches of the command-position scan that no row reached before
+  { id: 'B-set-dash-A', command: `set -A x a b${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 review E3', note: 'zsh set -A binds an array name' },
+  { id: 'B-set-dash-k', command: `set -k${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 review E3', note: 'set -k: keyword assignments anywhere in the command' },
+  { id: 'B-setopt-allexport', command: `setopt ALL_EXPORT${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 review E3' },
+  { id: 'B-arith-assign-subst', command: `: $(( $n = 1 ))${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 review E3', note: 'an arithmetic assignment through a $ name' },
+  { id: 'B-print-v', command: `print -v x y${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 review E3', note: 'zsh print -v, sibling of B-printf-v' },
+  { id: 'B-repeat-var-word', command: `repeat 2 $cmd${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 review E3', note: 'zsh repeat N: the command word after the count is a variable' },
+  { id: 'B-redirect-then-var-word', command: `> /tmp/o $cmd${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 review E3', note: 'a redirection and its target are skipped, the word behind it is a variable' },
+  { id: 'B-fd-redirect-then-var-word', command: `2> /tmp/e $cmd${NL}${CAT}`, expect: 'DENY', why: 'owner', keep: `${C} -r`, source: 'a6422462 review E3', note: 'the descriptor of 2> is skipped as well' },
 ]
 
 // An assignment in front of the command word that takes the body (owner, pipe stage, or the command around a $( ))
