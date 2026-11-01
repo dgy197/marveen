@@ -33,6 +33,7 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'provenance-gate.py',
   'email-send-gate.mjs',
   'self-pace-gate.mjs',
+  'test-run-gate.mjs',
   'telegram_progress.py',
   'telegram_progress_clear.py',
   'telegram_progress_watchdog.py',

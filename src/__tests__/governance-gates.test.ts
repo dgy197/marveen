@@ -10,14 +10,16 @@ import { bashViolation, isExactInstall } from '../../scripts/readonly-repo-gate.
 import {
   agentGetsGovernanceGates,
   agentGetsTelegramCopyGate,
+  ensureGovernanceGateCommands,
   injectSelfPaceGate,
   injectTelegramCopyGate,
+  injectTestRunGate,
   TELEGRAM_COPY_GATE_MATCHER,
 } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 
 // --- self-pace-gate: blocks the agent from scheduling its own future turns ---
@@ -430,6 +432,65 @@ describe('governance gate scaffold wiring', () => {
     // operator-confirmation-gate is intentionally NOT wired: merge/deploy is
     // operator-authorized autonomously; the self-decide vector is covered above.
     expect(pre.some((e) => JSON.stringify(e).includes('operator-confirmation-gate.mjs'))).toBe(false)
+  })
+})
+
+// --- test-run-gate wiring (card d6d2d686): sub-agents via the scaffold, the main
+// agent via the repo-shipped root .claude/settings.json only ---
+describe('test-run-gate scaffold wiring', () => {
+  const countGate = (s: Record<string, unknown>) =>
+    ((s.hooks as Record<string, unknown>).PreToolUse as unknown[])
+      .filter((e) => JSON.stringify(e).includes('test-run-gate.mjs')).length
+
+  it('is wired exactly once, on the Bash matcher, and not duplicated by a re-run', () => {
+    const s: Record<string, unknown> = {}
+    injectTestRunGate(s)
+    expect(countGate(s)).toBe(1)
+    injectTestRunGate(s) // respawn re-run
+    expect(countGate(s)).toBe(1)
+    const pre = (s.hooks as Record<string, unknown>).PreToolUse as Array<{ matcher: string }>
+    expect(pre.find((e) => JSON.stringify(e).includes('test-run-gate.mjs'))!.matcher).toBe('Bash')
+  })
+  it('replaces a stale own entry by file name and keeps the other gates', () => {
+    const s: Record<string, unknown> = {
+      hooks: { PreToolUse: [
+        { matcher: 'Bash', hooks: [{ type: 'command', command: 'node "/old/place/test-run-gate.mjs"' }] },
+        { matcher: 'Bash', hooks: [{ type: 'command', command: 'node "/x/other-gate.mjs"' }] },
+      ] },
+    }
+    injectTestRunGate(s)
+    expect(countGate(s)).toBe(1)
+    const pre = (s.hooks as Record<string, unknown>).PreToolUse as unknown[]
+    expect(JSON.stringify(pre)).not.toContain('/old/place/')
+    expect(JSON.stringify(pre)).toContain('other-gate.mjs')
+  })
+  it('coexists with the self-pace gate in both orders', () => {
+    const a: Record<string, unknown> = {}
+    injectSelfPaceGate(a); injectTestRunGate(a)
+    const b: Record<string, unknown> = {}
+    injectTestRunGate(b); injectSelfPaceGate(b)
+    for (const s of [a, b]) {
+      const pre = ((s.hooks as Record<string, unknown>).PreToolUse as unknown[])
+      expect(pre.filter((e) => JSON.stringify(e).includes('self-pace-gate.mjs')).length).toBe(1)
+      expect(countGate(s)).toBe(1)
+    }
+  })
+  it('the scaffold never rewrites the main agent (its gate is the root settings entry)', () => {
+    expect(agentGetsGovernanceGates(MAIN_AGENT_ID)).toBe(false)
+    expect(ensureGovernanceGateCommands(MAIN_AGENT_ID)).toBe(false)
+  })
+  it('the root .claude/settings.json wires it once, fail-closed like the egress-gate entry', () => {
+    const root = JSON.parse(readFileSync(join(__dirname, '..', '..', '.claude', 'settings.json'), 'utf-8'))
+    const entries = (root.hooks.PreToolUse as Array<{ matcher: string; hooks: Array<{ command: string; timeout: number }> }>)
+      .filter((e) => JSON.stringify(e).includes('test-run-gate.mjs'))
+    expect(entries.length).toBe(1)
+    expect(entries[0].matcher).toBe('Bash')
+    const cmd = entries[0].hooks[0].command
+    expect(cmd).toContain('command -v node >/dev/null 2>&1 ||')
+    expect(cmd).toContain('exit 2')
+    expect(cmd).toContain('timeout -k 1 8 node')
+    expect(cmd).toContain('[ "$rc" = 0 ] || [ "$rc" = 2 ]')
+    expect(cmd).toContain('exit "$rc"')
   })
 })
 
