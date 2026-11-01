@@ -1649,6 +1649,45 @@ const FORWARD_WALK_MAX_DEPTH = 12
 export const FORWARD_WALK_MAX_NODES = 5000
 const FORWARD_JSON_MAX_CHARS = 100000
 const FORWARD_JSON_START = /^[ \t\n\r]*[{["]/
+
+// The JSON reader of the three walkers (hasForwardKey, hasForwardKeyName, mailEndpointWrite): it accepts
+// exactly what the python walkers' reader accepts (_walker_json_loads = json.loads with parse_int=float).
+// Python takes the bare constants NaN, Infinity and -Infinity as values, JSON.parse throws on them, so a
+// string the python walker walks (and may call a send) was stepped over here (card 5e3c31c5, 1239a7ad BE B1).
+// One pass over the text, tracking whether we are inside a string (a backslash skips the next character, so
+// an escaped quote does not end it); outside strings exactly those three tokens become `null`, then
+// JSON.parse. Everything else is left alone, so anything python rejects (-NaN, +Infinity, NaNx, nan,
+// Infinity1, "- Infinity", a constant in key position) still throws SyntaxError: a replaced token is a
+// complete `null` and cannot fuse with a neighbouring character into something valid. The parsed value
+// differs from python's only in NaN / Infinity being null, which no walker reads. Twin:
+// _walker_json_loads in scripts/hooks/email_extract.py.
+export function parseWalkerJson(v) {
+  if (!v.includes('NaN') && !v.includes('Infinity')) return JSON.parse(v)
+  const out = []
+  let from = 0
+  let inString = false
+  for (let i = 0; i < v.length;) {
+    const c = v[i]
+    if (inString) {
+      if (c === '\\') i += 2
+      else { if (c === '"') inString = false; i++ }
+      continue
+    }
+    let len = 0
+    if (c === '"') inString = true
+    else if (c === 'N') len = v.startsWith('NaN', i) ? 3 : 0
+    else if (c === 'I') len = v.startsWith('Infinity', i) ? 8 : 0
+    else if (c === '-') len = v.startsWith('-Infinity', i) ? 9 : 0
+    if (len) {
+      out.push(v.slice(from, i), 'null')
+      i += len
+      from = i
+    } else i++
+  }
+  out.push(v.slice(from))
+  return JSON.parse(out.join(''))
+}
+
 export function hasForwardKey(input) {
   if (typeof input !== 'object' || input === null) return true
   let nodes = 0
@@ -1662,7 +1701,7 @@ export function hasForwardKey(input) {
       if (FORWARD_JSON_START.test(v)) {
         if (v.length > FORWARD_JSON_MAX_CHARS) return true
         let parsed
-        try { parsed = JSON.parse(v) } catch (err) { if (err instanceof SyntaxError) continue; return true }
+        try { parsed = parseWalkerJson(v) } catch (err) { if (err instanceof SyntaxError) continue; return true }
         if ((typeof parsed === 'object' && parsed !== null) || typeof parsed === 'string') stack.push([parsed, depth + 1])
       }
       continue
@@ -1917,7 +1956,7 @@ export function hasForwardKeyName(input, valueWords = true, strict = false, ex =
       if (FORWARD_JSON_START.test(v)) {
         if (v.length > FORWARD_JSON_MAX_CHARS) return true
         let parsed
-        try { parsed = JSON.parse(v) } catch (err) { if (err instanceof SyntaxError) continue; return true }
+        try { parsed = parseWalkerJson(v) } catch (err) { if (err instanceof SyntaxError) continue; return true }
         if (typeof parsed === 'string') stack.push([parsed, depth + 1, free])
         else if (typeof parsed === 'object' && parsed !== null) stack.push([parsed, depth + 1, 0])
       }
@@ -2105,7 +2144,7 @@ export function mailEndpointWrite(toolInput) {
       if (FORWARD_JSON_START.test(v)) {
         if (v.length > FORWARD_JSON_MAX_CHARS) return true
         let parsed
-        try { parsed = JSON.parse(v) } catch (err) { if (err instanceof SyntaxError) continue; return true }
+        try { parsed = parseWalkerJson(v) } catch (err) { if (err instanceof SyntaxError) continue; return true }
         if ((typeof parsed === 'object' && parsed !== null) || typeof parsed === 'string') stack.push([parsed, depth + 1, nonRead, hasBody])
       }
       continue
