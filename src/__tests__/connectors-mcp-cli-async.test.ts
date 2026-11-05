@@ -21,7 +21,8 @@ vi.mock('../config.js', async (importOriginal) => ({
 const logSpy = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
 vi.mock('../logger.js', () => ({ logger: logSpy, PRETTY_OPTIONS: {} }))
 
-vi.mock('../web/vault.js', () => ({
+vi.mock('../web/vault.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../web/vault.js')>()),
   listSecrets: vi.fn(() => []),
   setSecret: vi.fn(),
   deleteSecret: vi.fn(),

@@ -16,8 +16,9 @@ import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../
 import { readBody, json } from '../http-helpers.js'
 import { mayActAsOwner, refuseOwner } from './auth.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars, parseRunScriptsFlag } from '../dashboard-settings.js'
-import { listSecrets, setSecret, getSecret, deleteSecret, updateSecretLabel, normalizeVaultLabel, VAULT_LABEL_MAX_LENGTH } from '../vault.js'
+import { listSecrets, setSecret, getSecret, deleteSecret, updateSecretLabel, normalizeVaultLabel, VAULT_LABEL_MAX_LENGTH, VaultEntryLockedError } from '../vault.js'
 import { logVaultRead, isSshPrivateKeyId, principalOf, readVaultAcl, vaultReadRefused, vaultAclMode } from '../vault-acl.js'
+import { isPermissionBotVaultId, PERMISSION_BOT_VAULT_LOCKED_ERROR } from '../permission-bot-vault.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
   syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
@@ -138,6 +139,14 @@ function upsertLocalCatalogEntry(entry: any): void {
 // registered by `claude mcp add` WITHOUT the secret, so it stands non-functional
 // but leaks nothing; the caller surfaces the error and the user re-adds the
 // secret from the Vault page.
+// Refuse BEFORE `claude mcp add` runs, so a locked vault id leaves no
+// half-installed server behind. The storage layer (vault.ts) is the backstop.
+export function assertEnvSecretsNotLocked(serverName: string, envSecrets: Record<string, string>): void {
+  for (const key of Object.keys(envSecrets)) {
+    if (isPermissionBotVaultId(`${slugifyMcp(serverName)}-${key.toLowerCase()}`)) throw new VaultEntryLockedError()
+  }
+}
+
 export function vaultAndBindEnvSecrets(
   serverName: string,
   mcpFilePath: string,
@@ -514,6 +523,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         const userSecrets = Object.fromEntries(
           Object.entries(data.env || {}).filter(([, v]) => v !== ''),
         ) as Record<string, string>
+        assertEnvSecretsNotLocked(sanitizedName, userSecrets)
         const argList = data.args ? data.args.split(/\s+/).filter(Boolean) : []
         await runClaudeMcp(['mcp', 'add', '-s', scope, sanitizedName, '--', data.command, ...argList], 15000)
         catalogEntry.type = 'local'
@@ -540,6 +550,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
       json(res, { ok: true, name: sanitizedName, nameChanged })
     } catch (err: any) {
+      if (err instanceof VaultEntryLockedError) { json(res, { error: err.message }, 403); return true }
       json(res, { error: err.message || 'Failed to add connector' }, 500)
     }
     return true
@@ -757,6 +768,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         const userSecrets = Object.fromEntries(
           Object.entries(envData).filter(([, v]) => v !== ''),
         ) as Record<string, string>
+        assertEnvSecretsNotLocked(cliName, userSecrets)
         const defaultEnv = Object.fromEntries(
           Object.entries(item.env || {}).filter(([k, v]) => v !== '' && !(k in userSecrets)),
         ) as Record<string, string>
@@ -781,6 +793,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
       json(res, { ok: true, message })
     } catch (err: any) {
+      if (err instanceof VaultEntryLockedError) { json(res, { error: err.message }, 403); return true }
       logger.error({ err }, 'Failed to install MCP from catalog')
       json(res, { error: err.message || 'Failed to install' }, 500)
     }
@@ -840,6 +853,8 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `label must be at most ${VAULT_LABEL_MAX_LENGTH} characters` }, 400)
       return true
     }
+    // Card 9a77b3e5: the permission bot's token is never written through the API.
+    if (isPermissionBotVaultId(id)) { json(res, { error: PERMISSION_BOT_VAULT_LOCKED_ERROR }, 403); return true }
     setSecret(id.trim(), normalizeVaultLabel(id.trim(), label ?? ''), value)
     const syncResult = syncSecret(id.trim())
     json(res, { ok: true, synced: syncResult.updated })
@@ -947,6 +962,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
   if (vaultMatch && !isVaultSubroute && method === 'DELETE') {
     const id = decodeURIComponent(vaultMatch[1])
+    if (isPermissionBotVaultId(id)) { json(res, { error: PERMISSION_BOT_VAULT_LOCKED_ERROR }, 403); return true }
     if (!deleteSecret(id)) { json(res, { error: 'Not found' }, 404); return true }
     removeBindingsForSecret(id)
     json(res, { ok: true })
@@ -1076,6 +1092,10 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     let bound = 0
     const errors: string[] = []
     for (const imp of importRequests) {
+      if (isPermissionBotVaultId(imp.vaultId)) {
+        errors.push(PERMISSION_BOT_VAULT_LOCKED_ERROR)
+        continue
+      }
       let value: string | null = null
       for (const target of imp.targets) {
         try {
