@@ -1,23 +1,28 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, APP_TZ, DASHBOARD_PUBLIC_URL, WEB_PORT } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, APP_TZ, DASHBOARD_PUBLIC_URL, WEB_PORT, PERMISSION_BOT_ID } from '../../config.js'
 import {
   consumeApproval, consumeCategoryApproval,
   CATEGORY_CONSUME_DEFAULT_WINDOW_S, CATEGORY_CONSUME_MAX_WINDOW_S,
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
-  createAgentMessage, setApprovalTelegramMessageId,
+  createAgentMessage, setApprovalTelegramMessageId, setPermissionBotNonceHashes,
   type Approval,
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { approvalGranteeOf, approvalNotGrantedReason, identityDenialBody } from '../auth-gate.js'
-import { resolveOwnerChatId } from '../../owner-chat.js'
+import { resolveOwnerChatId, resolveAlertOwnerChat } from '../../owner-chat.js'
 import { sendOwnerMessage, sendOwnerSlackDm, slackTargetFor, noticeTargetDrift } from '../../notify.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { mainBotToken, ownerDmVerdict, SLACK_CHUNK } from '../../slack-notify.js'
 import { reactionRoute, reactionsOn, repliesOn, dashboardOnlyLine, postReactionPrompt, startApprovalSlackSweeper, type RouteDeps } from '../approval-slack-route.js'
-import { sendTelegramMessage } from '../telegram.js'
+import { sendTelegramMessage, type TelegramInlineKeyboard } from '../telegram.js'
+import { channelStateDir, readChannelToken } from '../../channel-provider.js'
+import { getSecret } from '../vault.js'
+import { PERMISSION_BOT_VAULT_ID } from '../permission-bot-vault.js'
+import { isPermissionBotCategory, parseRagApprovalPayload, type RagApprovalPayload } from '../rag-approval-payload.js'
+import { buildCallbackData, newCallbackNonce, nonceHash } from '../approval-callback-data.js'
 import { mayActAsOwner, OWNER_SESSION_REQUIRED, refuseOwner } from './auth.js'
 import type { RouteContext } from './types.js'
 
@@ -230,6 +235,12 @@ export const reactionDeps: RouteDeps = {
 }
 
 function notifyOwner(approval: Approval, chatApprovedMessageId: number | string | null = null, serverFiled = false): void {
+  // Card 9a77b3e5: a permission-bot category goes out through the permission
+  // bot ONLY, never through the main bot's token below.
+  if (isPermissionBotCategory(approval.category)) {
+    notifyPermissionBot(approval)
+    return
+  }
   const informative = chatApprovedMessageId != null
   let text = informative
     ? buildOwnerChatApprovedText(approval, chatApprovedMessageId)
@@ -331,6 +342,284 @@ function notifyOwner(approval: Approval, chatApprovedMessageId: number | string 
       'approval owner notification FAILED -- the request is only visible on the dashboard')
     if (!informative) fallbackInBand(approval, 'send-failed')
   })()
+}
+
+// Approval notifications go out one at a time, in arrival order (an
+// in-process promise chain), so the messages of two notifications (a failed
+// button message and its plain notice, say) never interleave in the owner's
+// chat. A failed notification never breaks the chain. Other messages of the
+// same bot are not ordered against these (accepted trade-off).
+let ownerNotificationQueue: Promise<void> = Promise.resolve()
+
+function enqueueOwnerNotification(approvalId: string, task: () => Promise<void>): void {
+  // Each task starts on its own macrotask, after the POST's response is out:
+  // even its synchronous part (hashing, file reads) never delays the reply.
+  ownerNotificationQueue = ownerNotificationQueue
+    .then(() => new Promise<void>(r => setImmediate(r)))
+    .then(task)
+    .catch(() => {
+    // The task catches its own failures; this is only the backstop that keeps
+    // the chain alive. The error is not logged: it could carry the nonce.
+      logger.warn({ approvalId }, 'approval owner notification aborted unexpectedly -- the request is only visible on the dashboard')
+    })
+}
+
+/** Test seam: settles once every owner notification queued so far is done. */
+export function ownerNotificationsSettled(): Promise<void> {
+  return ownerNotificationQueue
+}
+
+// Pause before the plain notice that follows a failed button message, and the
+// cap on a 429 wait.
+export const APPROVAL_PART_PAUSE_MS = 1000
+export const APPROVAL_RETRY_AFTER_CAP_S = 30
+// A 429 without a readable retry_after (Telegram always sends one).
+const APPROVAL_RETRY_AFTER_DEFAULT_S = 3
+
+type Sleep = (ms: number) => Promise<void>
+let ownerNotificationSleep: Sleep = ms => new Promise(r => setTimeout(r, ms))
+
+/** Test seam: replace the pause/429 sleep; returns the previous one. */
+export function setOwnerNotificationSleep(sleep: Sleep): Sleep {
+  const prev = ownerNotificationSleep
+  ownerNotificationSleep = sleep
+  return prev
+}
+
+const APPROVE_BUTTON_TEXT = '✅ Jóváhagyom'
+const REJECT_BUTTON_TEXT = '❌ Elutasítom'
+
+// A Telegram bot id: the part of a bot token before the colon.
+const TELEGRAM_BOT_ID_RE = /^[1-9][0-9]{0,19}$/
+// A Telegram user id: a positive decimal integer, no sign, no leading zero.
+const TELEGRAM_USER_ID_RE = /^[1-9][0-9]{0,15}$/
+
+export function telegramBotId(token: string | null | undefined): string | null {
+  if (typeof token !== 'string') return null
+  const t = token.trim()
+  const colon = t.indexOf(':')
+  if (colon <= 0 || colon === t.length - 1) return null
+  const id = t.slice(0, colon)
+  return TELEGRAM_BOT_ID_RE.test(id) ? id : null
+}
+
+/** True when both tokens belong to the same bot (equal bot ids, both well-formed). */
+export function sameTelegramBot(a: string | null | undefined, b: string | null | undefined): boolean {
+  const ia = telegramBotId(a)
+  return ia != null && ia === telegramBotId(b)
+}
+
+function approvalButtons(approvalId: string, approveNonce: string, rejectNonce: string): TelegramInlineKeyboard {
+  return {
+    inline_keyboard: [[
+      { text: APPROVE_BUTTON_TEXT, callback_data: buildCallbackData('approved', approvalId, approveNonce) },
+      { text: REJECT_BUTTON_TEXT, callback_data: buildCallbackData('rejected', approvalId, rejectNonce) },
+    ]],
+  }
+}
+
+// The message of an error, with every occurrence of each secret cut out.
+function scrubbedErrorText(err: unknown, secrets: string[]): string {
+  let text = err instanceof Error ? err.message : String(err)
+  for (const secret of secrets) text = text.split(secret).join('<redacted>')
+  return text
+}
+
+// Epoch seconds as Budapest local time (APP_TZ), the owner-facing format.
+function budapestTime(epochS: number): string {
+  return new Date(epochS * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ })
+}
+
+/**
+ * Seconds to wait before the one retry of a send Telegram refused with 429
+ * (an HTTP 429, or ok:false with error_code 429), capped at
+ * APPROVAL_RETRY_AFTER_CAP_S; null for any other error.
+ */
+export function telegramRetryAfterSeconds(err: unknown): number | null {
+  const text = err instanceof Error ? err.message : ''
+  if (!/^Telegram API 429\b/.test(text)) return null
+  const m = /"retry_after"\s*:\s*(\d{1,6})/.exec(text) ?? /retry after (\d{1,6})/i.exec(text)
+  const s = m ? Number(m[1]) : APPROVAL_RETRY_AFTER_DEFAULT_S
+  return Math.min(Math.max(s, 1), APPROVAL_RETRY_AFTER_CAP_S)
+}
+
+// The button message: one retry after a 429, none otherwise (a timed-out send
+// may have landed; repeating it would duplicate the message). The error travels
+// on unchanged; the caller scrubs it. Nothing here logs it.
+async function sendButtonMessage(
+  token: string, chatId: string, text: string, approvalId: string, keyboard: TelegramInlineKeyboard,
+): Promise<number | null> {
+  try {
+    return await sendTelegramMessage(token, chatId, text, keyboard)
+  } catch (err) {
+    const waitS = telegramRetryAfterSeconds(err)
+    if (waitS == null) throw err
+    logger.warn({ approvalId, waitS }, 'approval notification hit the Telegram rate limit (429): one retry after the wait')
+    await ownerNotificationSleep(waitS * 1000)
+    return await sendTelegramMessage(token, chatId, text, keyboard)
+  }
+}
+
+// --- Card 9a77b3e5: the permission bot (rag_production_d, permission_bot_probe) ---
+//
+// The owner's buttons for these rows are sent by the permission bot,
+// whose token the dashboard reads in-process from the
+// Vault entry below. The token is never logged, returned or put in a message;
+// only its bot id (the part before the colon) is ever used outside the send
+// call itself. The callback comes back through the relay (POST
+// /api/approvals/:id/permission-bot); this process only SENDS, it never polls.
+export { PERMISSION_BOT_VAULT_ID }
+
+type PermissionBotTokenReader = () => string | null
+const vaultPermissionBotToken: PermissionBotTokenReader = () => {
+  try { return getSecret(PERMISSION_BOT_VAULT_ID) } catch { return null }
+}
+let permissionBotTokenReader: PermissionBotTokenReader = vaultPermissionBotToken
+
+/** Test seam: replace the Vault read of the permission-bot token (null = the real one); returns the previous reader. */
+export function setPermissionBotTokenReader(reader: PermissionBotTokenReader | null): PermissionBotTokenReader {
+  const prev = permissionBotTokenReader
+  permissionBotTokenReader = reader ?? vaultPermissionBotToken
+  return prev
+}
+
+// The tokens of the main bot as far as this install knows it: the one the main
+// channel plugin polls, then the one the dashboard's own sends use.
+function mainBotTokens(): string[] {
+  const tokens: string[] = []
+  try {
+    const channel = readChannelToken('telegram', join(channelStateDir('telegram'), '.env'))
+    if (telegramBotId(channel) != null && channel) tokens.push(channel)
+  } catch { /* unreadable: the other source decides */ }
+  if (telegramBotId(TELEGRAM_BOT_TOKEN) != null) tokens.push(TELEGRAM_BOT_TOKEN)
+  return tokens
+}
+
+export type PermissionBotUnavailable =
+  | 'bot_id_unpinned' | 'token_missing' | 'token_malformed' | 'token_bot_mismatch'
+  | 'main_bot_unresolved' | 'same_as_main_bot'
+
+type PermissionBot =
+  | { ok: true; token: string; botId: string }
+  | { ok: false; reason: PermissionBotUnavailable }
+
+type PermissionBotWithMain =
+  | { ok: true; token: string; botId: string; mainBotId: string }
+  | { ok: false; reason: PermissionBotUnavailable }
+
+// The permission bot as configured NOW. Its id is the PINNED PERMISSION_BOT_ID
+// (process env / install .env at startup, outside the Bearer's reach); the Vault
+// token is only the credential to SEND with, and only while its bot id (the part
+// before the colon) IS the pinned id. A missing or malformed pin, no token, a
+// malformed token, or a token of another bot is no bot (fail-closed): a token
+// swapped into the Vault is never used and never defines who may approve.
+function resolvePermissionBot(): PermissionBot {
+  const pinned = PERMISSION_BOT_ID
+  if (typeof pinned !== 'string' || !TELEGRAM_BOT_ID_RE.test(pinned)) return { ok: false, reason: 'bot_id_unpinned' }
+  let raw: string | null = null
+  try { raw = permissionBotTokenReader() } catch { raw = null }
+  const token = typeof raw === 'string' ? raw.trim() : ''
+  if (token === '') return { ok: false, reason: 'token_missing' }
+  const tokenBotId = telegramBotId(token)
+  if (tokenBotId == null) return { ok: false, reason: 'token_malformed' }
+  if (tokenBotId !== pinned) return { ok: false, reason: 'token_bot_mismatch' }
+  return { ok: true, token, botId: pinned }
+}
+
+// The same, plus the main bot's id: the SEND and the decision paths need it (the
+// permission bot must not be the main bot, and a main-bot press must never
+// decide). The consume path does not: it only compares against the pinned id.
+function resolvePermissionBotWithMain(): PermissionBotWithMain {
+  const bot = resolvePermissionBot()
+  if (!bot.ok) return bot
+  const mains = mainBotTokens()
+  const mainBotId = mains.length > 0 ? telegramBotId(mains[0]) : null
+  if (mainBotId == null) return { ok: false, reason: 'main_bot_unresolved' }
+  if (mainBotId === bot.botId || mains.some(m => sameTelegramBot(m, bot.token))) return { ok: false, reason: 'same_as_main_bot' }
+  return { ok: true, token: bot.token, botId: bot.botId, mainBotId }
+}
+
+// The owner-facing text of a permission-bot request. Built from the stored,
+// validated payload -- never from the requester's action_description -- so
+// the owner reads the package, run and window he is approving.
+export function buildPermissionBotText(approval: Approval, payload: RagApprovalPayload): string {
+  const title = approval.category === 'permission_bot_probe'
+    ? 'Engedély-bot próba (nem engedélyez semmit)'
+    : 'RAG éles futás (D) jóváhagyása'
+  return [
+    title,
+    `Kérő ügynök: ${approval.agent_id}`,
+    `Azonosító: ${approval.id.slice(0, 8)}`,
+    `Csomag (sha256 első 16 jele): ${payload.package_sha256.slice(0, 16)}`,
+    `Futás (run_id): ${payload.run_id}`,
+    `Írási ablak: ${budapestTime(payload.write_window_start)} - ${budapestTime(payload.write_window_end)} (Budapest)`,
+    `Lejárat: ${approval.timeout_at ? budapestTime(approval.timeout_at) : 'nincs'}`,
+  ].join('\n')
+}
+
+function telegramOwnerUserId(): string | null {
+  try {
+    const owner = resolveAlertOwnerChat()
+    return owner.chatId != null && TELEGRAM_USER_ID_RE.test(owner.chatId) ? owner.chatId : null
+  } catch {
+    return null
+  }
+}
+
+function notifyPermissionBot(approval: Approval): void {
+  const bot = resolvePermissionBotWithMain()
+  if (!bot.ok) {
+    logger.warn({ approvalId: approval.id, reason: bot.reason }, 'permission-bot approval NOT sent: the permission bot is unavailable -- the owner was not asked')
+    fallbackInBand(approval, 'permission-bot-unavailable')
+    return
+  }
+  const ownerChat = telegramOwnerUserId()
+  if (ownerChat == null) {
+    logger.warn({ approvalId: approval.id, reason: 'owner_unresolved' }, 'permission-bot approval NOT sent: the strict owner is unresolved -- the owner was not asked')
+    fallbackInBand(approval, 'no-owner-chat')
+    return
+  }
+  enqueueOwnerNotification(approval.id, async () => {
+    const secretPart = bot.token.slice(bot.token.indexOf(':') + 1)
+    try {
+      const current = getApproval(approval.id)
+      const nowS = Math.floor(Date.now() / 1000)
+      if (!current || current.status !== 'pending' || (current.timeout_at != null && current.timeout_at <= nowS)) {
+        logger.info({ approvalId: approval.id, status: current?.status ?? null }, 'permission-bot approval notification skipped: decided, expired or gone while it waited in the queue')
+        return
+      }
+      const parsed = parseRagApprovalPayload(current.action_payload, current.category)
+      if (!parsed.ok) {
+        logger.warn({ approvalId: approval.id, field: parsed.field }, 'permission-bot approval NOT sent: the stored payload is not the canonical one')
+        return
+      }
+      const approveNonce = newCallbackNonce()
+      const rejectNonce = newCallbackNonce()
+      // The hashes go onto the row BEFORE the message: a press can only ever
+      // match a button that exists.
+      if (!setPermissionBotNonceHashes(approval.id, { approved: nonceHash(approveNonce), rejected: nonceHash(rejectNonce) })) {
+        logger.warn({ approvalId: approval.id, reason: 'nonce_not_bound' }, 'permission-bot approval NOT sent: the buttons could not be bound to the row')
+        return
+      }
+      const keyboard = approvalButtons(approval.id, approveNonce, rejectNonce)
+      let messageId: number | null
+      try {
+        messageId = await sendButtonMessage(bot.token, ownerChat, buildPermissionBotText(current, parsed.payload), approval.id, keyboard)
+      } catch (err) {
+        throw new Error(`permission-bot message failed: ${scrubbedErrorText(err, [bot.token, secretPart, approveNonce, rejectNonce])}`)
+      }
+      if (messageId != null && !setApprovalTelegramMessageId(approval.id, messageId)) {
+        logger.warn({ approvalId: approval.id }, 'permission-bot message sent, but its message id was NOT stamped onto the row')
+      }
+      if (messageId == null) {
+        logger.warn({ approvalId: approval.id }, 'permission-bot message sent without a message_id: NOT bound, every press will be refused (not_bound)')
+      }
+      logger.info({ approvalId: approval.id, messageId, botId: bot.botId }, 'permission-bot approval notification sent')
+    } catch (err) {
+      logger.warn({ err, approvalId: approval.id }, 'permission-bot approval notification FAILED -- the owner was not asked')
+      fallbackInBand(approval, 'send-failed')
+    }
+  })
 }
 
 function notifyMainAgent(approval: Approval): void {
