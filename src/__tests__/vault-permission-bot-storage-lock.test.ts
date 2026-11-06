@@ -28,7 +28,17 @@ vi.mock('../web/keychain.js', () => ({
 }))
 vi.mock('node:child_process', async (importOriginal) => {
   const orig = await importOriginal<typeof import('node:child_process')>()
-  return { ...orig, execSync: (cmd: string) => { if (cmd.startsWith('which ')) return '/usr/bin/claude'; h.exec.push(cmd); return '' } }
+  // Upstream runs `claude mcp add` through promisify(execFile) and closes the child's stdin;
+  // the fake records the argv and starts no process.
+  const { promisify } = await import('node:util')
+  const execFile: any = () => { throw new Error('execFile: only the promisified form is expected') }
+  execFile[promisify.custom] = (file: string, args: string[]) => {
+    h.exec.push([file, ...args].join(' '))
+    const p: any = Promise.resolve({ stdout: '', stderr: '' })
+    p.child = { stdin: { end: () => undefined } }
+    return p
+  }
+  return { ...orig, execFile, execSync: (cmd: string) => { if (cmd.startsWith('which ')) return '/usr/bin/claude'; h.exec.push(cmd); return '' } }
 })
 vi.mock('../web/vault-bindings.js', () => ({
   syncSecret: () => ({ updated: 0, errors: [] }),
@@ -37,7 +47,8 @@ vi.mock('../web/vault-bindings.js', () => ({
   syncAllBindings: () => ({}),
   listBindings: () => [],
 }))
-vi.mock('../db.js', () => ({ logConfigChange: () => undefined }))
+// One owner exists: the dashboard is past first-run setup, so the owner gate is the normal one.
+vi.mock('../db.js', () => ({ logConfigChange: () => undefined, countDashboardUsers: () => 1 }))
 vi.mock('../store-watcher.js', () => ({ setStoreWriteActor: () => undefined }))
 
 const { setSecret, getSecret, deleteSecret, VaultEntryLockedError } = await import('../web/vault.js')
@@ -66,7 +77,9 @@ async function post(path: string, body: unknown) {
   }
   const ctx = {
     req: fakeReq(body) as unknown as http.IncomingMessage, res: res as http.ServerResponse,
-    path, method: 'POST', url: new URL(`http://localhost${path}`), auth: { kind: 'token' },
+    // An owner session: upstream's owner gate lets it add connectors, so the refusal below
+    // can only come from the storage-layer lock, not from the owner gate.
+    path, method: 'POST', url: new URL(`http://localhost${path}`), auth: { kind: 'session' },
   } as unknown as RouteContext
   expect(await tryHandleConnectors(ctx)).toBe(true)
   return out
