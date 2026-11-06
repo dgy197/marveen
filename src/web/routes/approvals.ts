@@ -753,7 +753,7 @@ function handleCategoryConsume(ctx: RouteContext, id: string, body: Record<strin
 }
 
 const APPROVAL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const TELEGRAM_CHAT_ID_RE = /^-?[1-9][0-9]{0,19}$/
+const TELEGRAM_CHAT_ID_RE = /^-?[1-9][0-9]{0,15}$/
 
 function normalizeApprovalId(raw: string): string | null {
   if (APPROVAL_ID_RE.test(raw)) return raw
