@@ -426,8 +426,8 @@ function scrubbedErrorText(err: unknown, secrets: string[]): string {
 }
 
 // Epoch seconds as Budapest local time (APP_TZ), the owner-facing format.
-function budapestTime(epochS: number): string {
-  return new Date(epochS * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ })
+function budapestTime(epochSeconds: number): string {
+  return new Date(epochSeconds * 1000).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
 }
 
 /**
